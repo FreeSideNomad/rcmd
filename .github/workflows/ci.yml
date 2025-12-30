@@ -112,7 +112,9 @@ jobs:
       - name: Run integration tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/commandbus
-        run: uv run pytest tests/integration -v --tb=short -m integration
+        run: |
+          # Allow exit code 5 (no tests collected) since integration tests may not exist yet
+          uv run pytest tests/integration -v --tb=short -m integration || test $? -eq 5
 
   coverage:
     name: Coverage
