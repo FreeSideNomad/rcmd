@@ -217,7 +217,41 @@ gh pr create --title "<type>: <description>" --body "Closes #<issue>"
 
 **Human review is REQUIRED before merge.** Do not merge PRs autonomously.
 
-### 5. Workflow Summary
+### 5. Monitor GitHub Actions (MANDATORY)
+
+**ALWAYS check GitHub Actions after pushing commits.**
+
+```bash
+# Check CI status after push
+gh run list --limit 5
+gh run watch  # Watch current run
+
+# View failed run details
+gh run view <run-id> --log-failed
+```
+
+**CI Monitoring Rules:**
+
+1. After every push, check GitHub Actions status
+2. If CI fails, analyze the error and push a fix
+3. Repeat until CI passes or **10 commits reached**
+4. After 10 failed attempts, **STOP and escalate to human**
+
+```
+Push → Check CI → Failed? → Fix → Push → Check CI → ...
+                    ↓
+            (max 10 attempts)
+                    ↓
+         Escalate to Human
+```
+
+**When escalating to human:**
+- Comment on the PR with the CI failure details
+- List all attempted fixes
+- Provide analysis of the root cause
+- Wait for human guidance
+
+### 6. Workflow Summary
 
 ```
 1. Create Issue (Feature/Bug/Chore)
@@ -230,7 +264,21 @@ gh pr create --title "<type>: <description>" --body "Closes #<issue>"
          ↓
 5. Push Branch + Create PR
          ↓
-6. Human Reviews and Merges PR
+6. Monitor GitHub Actions
+         ↓
+   ┌─── CI Passed? ───┐
+   │                  │
+  YES                 NO
+   │                  │
+   ↓                  ↓
+7. Human         Fix & Push
+   Reviews       (max 10x)
+   & Merges          │
+                     ↓
+              Still failing?
+                     │
+                     ↓
+              Escalate to Human
 ```
 
 ### Example Workflow
@@ -260,7 +308,13 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 git push -u origin feat/42-retry-backoff-config
 gh pr create --title "feat: Add configurable retry backoff" --body "Closes #42"
 
-# 6. Wait for human to review and merge
+# 6. Monitor GitHub Actions
+gh run watch
+
+# If CI fails, fix and push again (repeat up to 10 times)
+# After 10 failures, comment on PR and wait for human
+
+# 7. Wait for human to review and merge
 ```
 
 ## Verification Checklist
@@ -273,3 +327,4 @@ Before submitting changes:
 4. Coverage >= 80%
 5. Issue exists and is referenced in commit
 6. PR created (not pushed to main directly)
+7. GitHub Actions passes (or escalated after 10 attempts)
