@@ -70,8 +70,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run unit tests
-        run: uv run pytest tests/unit -v --tb=short
+      - name: Run unit tests with coverage
+        run: |
+          uv run pytest tests/unit -v --tb=short \
+            --cov=src/commandbus \
+            --cov-report=xml:coverage-unit.xml \
+            --cov-fail-under=80
+
+      - name: Upload unit test coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage-unit.xml
+          retention-days: 1
 
   test-integration:
     name: Integration Tests
@@ -117,66 +128,32 @@ jobs:
           uv run pytest tests/integration -v --tb=short -m integration || test $? -eq 5
 
   coverage:
-    name: Coverage
+    name: Coverage Report
     runs-on: ubuntu-latest
-    needs: [test-unit, test-integration]
-    services:
-      postgres:
-        image: ghcr.io/pgmq/pg17-pgmq:latest
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: commandbus
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
+    needs: [test-unit]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Download unit coverage
+        uses: actions/download-artifact@v4
         with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: uv sync --all-extras
-
-      - name: Initialize database
-        run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d commandbus -f scripts/init-db.sql
-
-      - name: Run tests with coverage
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/commandbus
-        run: |
-          uv run pytest tests \
-            --cov=src/commandbus \
-            --cov-report=xml \
-            --cov-report=term-missing \
-            --cov-fail-under=80
+          name: coverage-unit
+          path: coverage
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
-          files: ./coverage.xml
+          files: coverage/coverage-unit.xml
           fail_ci_if_error: false
 
-  # Matrix test for Python versions
+  # Matrix test for Python versions (excludes 3.11 which is tested in test-unit)
   test-python-versions:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
