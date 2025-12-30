@@ -1,0 +1,8 @@
+cblank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/your-org/your-repo/wiki
+    about: Check the documentation before opening an issue
+  - name: Discussions
+    url: https://github.com/your-org/your-repo/discussions
+    about: Ask questions and discuss ideas

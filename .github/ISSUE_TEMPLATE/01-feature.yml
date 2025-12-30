@@ -1,0 +1,132 @@
+name: Feature Request
+description: Propose a new feature or enhancement
+title: "[Feature]: "
+labels: ["feature", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Feature Request
+        Thank you for suggesting a feature! Please provide as much detail as possible.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A brief description of the feature (1-2 sentences)
+      placeholder: "Enable users to export reports in PDF format"
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this feature needed? What problem does it solve?
+      placeholder: |
+        Users frequently need to share reports with stakeholders who don't have
+        system access. Currently they have to screenshot or manually recreate data.
+    validations:
+      required: true
+
+  - type: textarea
+    id: user-stories
+    attributes:
+      label: User Stories
+      description: Describe who benefits and how (use "As a... I want... So that..." format)
+      placeholder: |
+        As a project manager
+        I want to export monthly reports as PDF
+        So that I can share them with external stakeholders
+
+        As an analyst
+        I want to include charts in exported PDFs
+        So that visual data is preserved
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Specific, testable conditions for this feature to be complete
+      placeholder: |
+        - [ ] User can click "Export PDF" button on any report
+        - [ ] PDF includes all visible data and charts
+        - [ ] PDF is generated within 10 seconds for standard reports
+        - [ ] PDF filename includes report name and date
+        - [ ] Works in Chrome, Firefox, Safari, Edge
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: technical-notes
+    attributes:
+      label: Technical Notes
+      description: Any technical considerations, constraints, or implementation hints
+      placeholder: |
+        Consider using puppeteer or playwright for PDF generation.
+        Must work with existing authentication system.
+        Should integrate with the existing export dropdown menu.
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of Scope
+      description: What is explicitly NOT included in this feature?
+      placeholder: |
+        - Scheduled/automated exports
+        - Email delivery of PDFs
+        - Custom PDF templates
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature?
+      options:
+        - Must Have (critical for release)
+        - Should Have (important but not blocking)
+        - Could Have (nice to have)
+        - Won't Have (out of scope for now)
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches were considered?
+      placeholder: |
+        - Browser print to PDF (limited formatting control)
+        - Third-party service (adds external dependency)
+    validations:
+      required: false
+
+  - type: textarea
+    id: llm-notes
+    attributes:
+      label: LLM Agent Notes
+      description: Specific guidance for AI coding agents working on this feature
+      placeholder: |
+        Reference files:
+        - src/components/ExportMenu.tsx - Add new export option here
+        - src/services/report.ts - Report data fetching patterns
+
+        Patterns to follow:
+        - Use existing Result<T> type for error handling
+        - Follow existing button styling in Button.tsx
+
+        Constraints:
+        - Must not add dependencies > 5MB
+        - Must include unit tests
+      render: markdown
+    validations:
+      required: false

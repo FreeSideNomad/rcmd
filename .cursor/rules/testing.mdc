@@ -1,0 +1,174 @@
+---
+description: Testing rules for Command Bus library
+globs: ["tests/**/*.py"]
+---
+
+# Testing Rules
+
+## Test Organization
+
+```
+tests/
+  conftest.py           # Shared fixtures
+  unit/
+    conftest.py         # Unit test fixtures (fakes)
+    test_api.py
+    test_models.py
+    test_policies.py
+  integration/
+    conftest.py         # Integration fixtures (Docker)
+    test_pgmq_client.py
+    test_repositories.py
+  e2e/
+    conftest.py
+    test_happy_path.py
+    test_retry_scenarios.py
+```
+
+## Fixture Patterns
+
+### Unit Test Fixtures (No External Dependencies)
+
+```python
+# tests/unit/conftest.py
+import pytest
+from commandbus.testing.fakes import FakePgmqClient, FakeCommandRepository
+
+@pytest.fixture
+def fake_pgmq() -> FakePgmqClient:
+    return FakePgmqClient()
+
+@pytest.fixture
+def fake_repo() -> FakeCommandRepository:
+    return FakeCommandRepository()
+
+@pytest.fixture
+def command_bus(fake_pgmq, fake_repo) -> CommandBus:
+    return CommandBus(pgmq=fake_pgmq, repo=fake_repo)
+```
+
+### Integration Test Fixtures (Docker Required)
+
+```python
+# tests/integration/conftest.py
+import pytest
+from testcontainers.postgres import PostgresContainer
+
+@pytest.fixture(scope="session")
+def postgres_container():
+    with PostgresContainer("ghcr.io/pgmq/pg17-pgmq:latest") as pg:
+        yield pg
+
+@pytest.fixture
+async def db_pool(postgres_container):
+    pool = await create_pool(postgres_container.get_connection_url())
+    yield pool
+    await pool.close()
+```
+
+## Test Naming
+
+Use descriptive names following the pattern:
+`test_<method>_<scenario>_<expected_outcome>`
+
+```python
+# Good
+def test_send_with_duplicate_id_raises_duplicate_error(): ...
+def test_receive_when_queue_empty_returns_none(): ...
+def test_complete_after_timeout_succeeds(): ...
+
+# Bad
+def test_send(): ...
+def test_error(): ...
+def test_it_works(): ...
+```
+
+## Async Testing
+
+Always use `pytest.mark.asyncio` for async tests:
+
+```python
+import pytest
+
+@pytest.mark.asyncio
+async def test_send_command_succeeds(command_bus: CommandBus) -> None:
+    command_id = await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=uuid4(),
+        data={"amount": 100},
+    )
+    assert command_id is not None
+```
+
+## Integration Test Markers
+
+Mark tests that require external services:
+
+```python
+import pytest
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pgmq_send_and_read(pgmq_client: PgmqClient) -> None:
+    ...
+```
+
+Configure pytest to skip by default:
+```ini
+# pyproject.toml
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests requiring PostgreSQL (deselect with '-m not integration')",
+]
+```
+
+## Assertion Patterns
+
+Use specific assertions with clear messages:
+
+```python
+# Good
+assert result.status == CommandStatus.COMPLETED
+assert len(messages) == 1, f"Expected 1 message, got {len(messages)}"
+
+# For exceptions
+with pytest.raises(TransientCommandError) as exc_info:
+    await handler.execute(command)
+assert exc_info.value.code == "TIMEOUT"
+
+# For async context managers
+async with asyncio.timeout(5):
+    result = await command_bus.receive("payments")
+```
+
+## Test Data Factories
+
+Use factories for test data:
+
+```python
+# tests/factories.py
+from uuid import uuid4
+from commandbus.models import Command
+
+def make_command(
+    *,
+    domain: str = "test",
+    command_type: str = "TestCommand",
+    command_id: UUID | None = None,
+    data: dict | None = None,
+) -> Command:
+    return Command(
+        domain=domain,
+        command_type=command_type,
+        command_id=command_id or uuid4(),
+        data=data or {},
+    )
+```
+
+## Coverage Requirements
+
+- Minimum 80% overall coverage
+- 95%+ for core modules (`api.py`, `worker.py`)
+- All error paths must be tested
+- All public methods must have at least one test

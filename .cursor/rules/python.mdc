@@ -1,0 +1,148 @@
+---
+description: Python development rules for Command Bus library
+globs: ["**/*.py"]
+---
+
+# Python Development Rules
+
+## Code Style
+
+- Follow PEP 8 with 100 character line limit
+- Use type hints on ALL functions, including return types
+- Use `from __future__ import annotations` for forward references
+- Prefer `|` union syntax over `Union[]` (Python 3.10+)
+- Use `@dataclass` or Pydantic for data structures
+
+## Imports
+
+- Group imports: stdlib, third-party, local (separated by blank lines)
+- Use absolute imports from `commandbus` package
+- Prefer explicit imports over `from module import *`
+
+```python
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+import psycopg
+from psycopg_pool import AsyncConnectionPool
+
+from commandbus.models import Command, CommandStatus
+from commandbus.exceptions import TransientCommandError
+```
+
+## Async Patterns
+
+- Use `async/await` consistently - don't mix sync and async
+- Use `AsyncConnectionPool` for database connections
+- Use `asyncio.TaskGroup` for concurrent operations (Python 3.11+)
+- Always handle cancellation properly
+
+```python
+async def process_batch(self, commands: list[Command]) -> None:
+    async with asyncio.TaskGroup() as tg:
+        for cmd in commands:
+            tg.create_task(self.process_one(cmd))
+```
+
+## Error Handling
+
+- Use custom exception types from `commandbus.exceptions`
+- Never use bare `except:` - catch specific exceptions
+- Log exceptions with context before re-raising
+- Use `raise ... from e` to preserve exception chains
+
+```python
+try:
+    await self.execute(command)
+except psycopg.OperationalError as e:
+    logger.warning("Database error", exc_info=True, extra={"command_id": command.id})
+    raise TransientCommandError(code="DB_ERROR", message=str(e)) from e
+```
+
+## Logging
+
+- Use `logging` module, never `print()`
+- Use structured logging with `extra` dict
+- Log at appropriate levels: DEBUG for tracing, INFO for operations, WARNING for recoverable errors, ERROR for failures
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+logger.info(
+    "Command processed",
+    extra={"command_id": str(command.id), "duration_ms": duration}
+)
+```
+
+## Testing
+
+- Use pytest with async support (`pytest-asyncio`)
+- Name test files `test_*.py`
+- Name test functions `test_<what>_<condition>_<expected>`
+- Use fixtures for setup, fakes for dependencies
+- Mark integration tests with `@pytest.mark.integration`
+
+```python
+@pytest.mark.asyncio
+async def test_send_duplicate_command_raises_error(
+    command_bus: CommandBus,
+    sample_command: Command,
+) -> None:
+    await command_bus.send(sample_command)
+
+    with pytest.raises(DuplicateCommandError):
+        await command_bus.send(sample_command)
+```
+
+## Documentation
+
+- Docstrings on all public classes and functions
+- Use Google-style docstrings
+- Include Args, Returns, Raises sections
+
+```python
+async def send(
+    self,
+    domain: str,
+    command_type: str,
+    command_id: UUID,
+    data: dict[str, Any],
+) -> UUID:
+    """Send a command to the specified domain queue.
+
+    Args:
+        domain: The domain name (e.g., "payments")
+        command_type: The command type (e.g., "DebitAccount")
+        command_id: Client-supplied idempotency key
+        data: Command payload data
+
+    Returns:
+        The command_id for correlation
+
+    Raises:
+        DuplicateCommandError: If command_id already exists
+        ConnectionError: If database is unavailable
+    """
+```
+
+## Repository Pattern
+
+- Define protocols in `repositories/base.py`
+- Implement PostgreSQL in `repositories/postgres.py`
+- Always accept optional `conn` parameter for transactions
+
+```python
+class CommandRepository(Protocol):
+    async def save(
+        self,
+        command: CommandMetadata,
+        *,
+        conn: AsyncConnection | None = None,
+    ) -> None: ...
+```

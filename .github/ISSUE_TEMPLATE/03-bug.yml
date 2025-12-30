@@ -1,0 +1,166 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Bug Report
+        Please provide detailed information to help us reproduce and fix the issue.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A brief description of the bug (one line)
+      placeholder: "Date picker crashes when selecting February 30"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Where did this occur?
+      placeholder: |
+        - OS: macOS 14.0 / Windows 11 / Ubuntu 22.04
+        - Browser: Chrome 120 / Firefox 121 / Safari 17
+        - App Version: v1.2.3
+        - Node Version: 20.x (if applicable)
+        - Python Version: 3.11 (if applicable)
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the behavior
+      placeholder: |
+        1. Go to the Reports page
+        2. Click on the date picker
+        3. Select February in the month dropdown
+        4. Click on day 30
+        5. See error in console
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+      placeholder: "Date picker should not allow selecting invalid dates"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happens?
+      placeholder: |
+        The application crashes with error:
+        "TypeError: Cannot read property 'getDate' of undefined"
+        The page becomes unresponsive and requires refresh.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Screenshots
+      description: Paste error messages, stack traces, or attach screenshots
+      placeholder: |
+        ```
+        Error: TypeError: Cannot read property 'getDate' of undefined
+            at DatePicker.handleSelect (DatePicker.tsx:45)
+            at onClick (DatePicker.tsx:78)
+        ```
+      render: markdown
+    validations:
+      required: false
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How severe is this bug?
+      options:
+        - Critical (system unusable, data loss)
+        - High (major feature broken, no workaround)
+        - Medium (feature broken, workaround exists)
+        - Low (minor issue, cosmetic)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Frequency
+      description: How often does this occur?
+      options:
+        - Always (100% reproducible)
+        - Often (> 50% of attempts)
+        - Sometimes (< 50% of attempts)
+        - Rarely (hard to reproduce)
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      description: Is there a temporary workaround?
+      placeholder: "Users can type the date manually instead of using the picker"
+    validations:
+      required: false
+
+  - type: textarea
+    id: possible-cause
+    attributes:
+      label: Possible Cause
+      description: If you have ideas about what might be causing this
+      placeholder: |
+        The DatePicker component doesn't validate the day against the selected month.
+        Issue might be in src/components/DatePicker.tsx around line 45.
+    validations:
+      required: false
+
+  - type: textarea
+    id: suggested-fix
+    attributes:
+      label: Suggested Fix
+      description: If you have ideas for how to fix this
+      placeholder: |
+        Add validation in handleSelect() to check if the day is valid for the month:
+        - Use date-fns getDaysInMonth() to get valid day count
+        - Disable invalid days in the calendar UI
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria for Fix
+      description: How will we know the bug is fixed?
+      placeholder: |
+        - [ ] Invalid dates (Feb 30, Apr 31, etc.) are disabled in picker
+        - [ ] Selecting a valid date works correctly
+        - [ ] No console errors when interacting with date picker
+        - [ ] Test added to prevent regression
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: related
+    attributes:
+      label: Related Issues / Code
+      description: Links to related issues or code locations
+      placeholder: |
+        - Related issue: #456
+        - Related code: `src/components/DatePicker.tsx:45`
+    validations:
+      required: false

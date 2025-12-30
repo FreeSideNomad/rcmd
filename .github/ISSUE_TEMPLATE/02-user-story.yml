@@ -1,0 +1,171 @@
+name: User Story
+description: A specific user capability with testable acceptance criteria
+title: "[Story]: "
+labels: ["user-story", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## User Story
+        A focused, testable piece of functionality. Stories should be small enough
+        to complete in one iteration and follow INVEST criteria.
+
+  - type: input
+    id: parent-feature
+    attributes:
+      label: Parent Feature
+      description: Link to parent feature issue (if applicable)
+      placeholder: "#123"
+    validations:
+      required: false
+
+  - type: textarea
+    id: user-story
+    attributes:
+      label: User Story
+      description: Standard user story format
+      placeholder: |
+        **As a** [type of user]
+        **I want** [capability/action]
+        **So that** [benefit/value]
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Additional background that helps understand this story
+      placeholder: |
+        This story is part of the Q1 reporting feature. Users have requested
+        the ability to filter reports by date range, which is currently not
+        possible.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria (Given-When-Then)
+      description: |
+        Testable scenarios in Gherkin format. Each scenario should map to a test.
+      placeholder: |
+        ### Scenario: User filters by valid date range
+        **Given** the user is on the reports page
+        **And** there are reports from January to March
+        **When** the user selects "January 1" as start date
+        **And** the user selects "January 31" as end date
+        **Then** only January reports are displayed
+        **And** the result count shows the filtered total
+
+        ### Scenario: User enters invalid date range
+        **Given** the user is on the reports page
+        **When** the user selects an end date before the start date
+        **Then** an error message "End date must be after start date" is shown
+        **And** the filter is not applied
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-mapping
+    attributes:
+      label: Test Mapping
+      description: Map acceptance criteria to specific test files/cases
+      placeholder: |
+        | Criterion | Test Type | Test Location |
+        |-----------|-----------|---------------|
+        | Valid date range filter | Integration | `tests/integration/test_reports.py::test_date_filter` |
+        | Invalid date range error | Unit | `tests/unit/test_validation.py::test_date_range` |
+        | UI shows filtered count | E2E | `tests/e2e/reports.spec.ts::filters by date` |
+      render: markdown
+    validations:
+      required: false
+
+  - type: dropdown
+    id: story-size
+    attributes:
+      label: Story Size
+      description: Estimated complexity (should be S or M for LLM collaboration)
+      options:
+        - XS (< 500 tokens, single function)
+        - S (500-2000 tokens, small feature)
+        - M (2000-5000 tokens, module implementation)
+        - L (5000-10000 tokens, complex - consider breaking down)
+        - XL (> 10000 tokens, too large - must decompose)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority (MoSCoW)
+      options:
+        - Must Have
+        - Should Have
+        - Could Have
+        - Won't Have
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Other stories or components this depends on
+      placeholder: |
+        - Depends on #45 (Date picker component)
+        - Requires API endpoint from backend team
+    validations:
+      required: false
+
+  - type: textarea
+    id: technical-notes
+    attributes:
+      label: Technical Notes
+      description: Implementation hints for developers and LLM agents
+      placeholder: |
+        - Use existing DatePicker component from src/components/DatePicker
+        - API endpoint: GET /api/reports?start={date}&end={date}
+        - Follow existing filter pattern in src/hooks/useFilters.ts
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: llm-instructions
+    attributes:
+      label: LLM Agent Instructions
+      description: Specific guidance for AI coding agents
+      placeholder: |
+        **Reference Files:**
+        - `src/pages/Reports.tsx` - Add filter UI here
+        - `src/hooks/useFilters.ts` - Follow this pattern
+        - `tests/unit/test_filters.py` - Match test style
+
+        **Constraints:**
+        - Use existing `useQuery` hook for data fetching
+        - Must work with existing Redux state
+        - No new dependencies allowed
+
+        **Verification Steps:**
+        1. Run `pytest tests/unit/test_reports.py -v`
+        2. Run `npm run test:e2e -- --grep "date filter"`
+        3. Run `npm run lint`
+      render: markdown
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: definition-of-done
+    attributes:
+      label: Definition of Done
+      description: Standard completion criteria
+      options:
+        - label: Code complete and reviewed
+        - label: Unit tests written and passing
+        - label: Integration tests written and passing
+        - label: Acceptance criteria verified
+        - label: Documentation updated (if applicable)
+        - label: No regressions in related functionality

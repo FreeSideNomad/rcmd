@@ -1,0 +1,36 @@
+# CODEOWNERS file for Command Bus
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+* @your-org/commandbus-maintainers
+
+# Core library code requires maintainer review
+/src/commandbus/ @your-org/commandbus-maintainers
+
+# API changes require additional review
+/src/commandbus/api.py @your-org/commandbus-maintainers @your-org/api-reviewers
+/src/commandbus/models.py @your-org/commandbus-maintainers @your-org/api-reviewers
+
+# Database and migrations require DBA review
+/src/commandbus/repositories/ @your-org/commandbus-maintainers @your-org/dba-team
+/src/commandbus/migrations/ @your-org/commandbus-maintainers @your-org/dba-team
+/scripts/*.sql @your-org/dba-team
+
+# CI/CD changes require DevOps review
+/.github/workflows/ @your-org/commandbus-maintainers @your-org/devops-team
+/docker-compose.yml @your-org/devops-team
+
+# Documentation can be reviewed by any maintainer
+/docs/ @your-org/commandbus-maintainers
+/README.md @your-org/commandbus-maintainers
+/CONTRIBUTING.md @your-org/commandbus-maintainers
+
+# ADRs require maintainer review
+/docs/architecture/adr/ @your-org/commandbus-maintainers
+
+# Test files can be reviewed by any team member
+/tests/ @your-org/commandbus-team
+
+# Dependencies and build config require maintainer review
+/pyproject.toml @your-org/commandbus-maintainers
+/uv.lock @your-org/commandbus-maintainers
