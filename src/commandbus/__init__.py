@@ -1,5 +1,6 @@
 """Command Bus - A Python library for Command Bus over PostgreSQL + PGMQ."""
 
+from commandbus.bus import CommandBus, SendResult
 from commandbus.exceptions import (
     CommandBusError,
     DuplicateCommandError,
@@ -9,11 +10,23 @@ from commandbus.exceptions import (
     TransientCommandError,
 )
 from commandbus.handler import HandlerRegistry
-from commandbus.models import Command, CommandStatus, HandlerContext, ReplyOutcome
+from commandbus.models import (
+    Command,
+    CommandMetadata,
+    CommandStatus,
+    HandlerContext,
+    ReplyOutcome,
+)
+from commandbus.pgmq.client import PgmqClient, PgmqMessage
+from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
+from commandbus.repositories.command import PostgresCommandRepository
 
 __all__ = [
+    "AuditEventType",
     "Command",
+    "CommandBus",
     "CommandBusError",
+    "CommandMetadata",
     "CommandStatus",
     "DuplicateCommandError",
     "HandlerAlreadyRegisteredError",
@@ -21,7 +34,12 @@ __all__ = [
     "HandlerNotFoundError",
     "HandlerRegistry",
     "PermanentCommandError",
+    "PgmqClient",
+    "PgmqMessage",
+    "PostgresAuditLogger",
+    "PostgresCommandRepository",
     "ReplyOutcome",
+    "SendResult",
     "TransientCommandError",
 ]
 
