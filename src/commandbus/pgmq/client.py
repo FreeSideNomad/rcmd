@@ -56,9 +56,7 @@ class PgmqClient:
         async with self._pool.connection() as conn:
             await self._create_queue(conn, queue_name)
 
-    async def _create_queue(
-        self, conn: AsyncConnection[Any], queue_name: str
-    ) -> None:
+    async def _create_queue(self, conn: AsyncConnection[Any], queue_name: str) -> None:
         """Create a queue using an existing connection.
 
         Args:
@@ -145,9 +143,7 @@ class PgmqClient:
             return await self._read(conn, queue_name, visibility_timeout, batch_size)
 
         async with self._pool.connection() as acquired_conn:
-            return await self._read(
-                acquired_conn, queue_name, visibility_timeout, batch_size
-            )
+            return await self._read(acquired_conn, queue_name, visibility_timeout, batch_size)
 
     async def _read(
         self,
@@ -170,9 +166,7 @@ class PgmqClient:
                     read_count=row[1],
                     enqueued_at=str(row[2]),
                     vt=str(row[3]),
-                    message=json.loads(row[4])
-                    if isinstance(row[4], str)
-                    else row[4],
+                    message=json.loads(row[4]) if isinstance(row[4], str) else row[4],
                 )
                 for row in rows
             ]
@@ -273,9 +267,7 @@ class PgmqClient:
             return await self._set_vt(conn, queue_name, msg_id, visibility_timeout)
 
         async with self._pool.connection() as acquired_conn:
-            return await self._set_vt(
-                acquired_conn, queue_name, msg_id, visibility_timeout
-            )
+            return await self._set_vt(acquired_conn, queue_name, msg_id, visibility_timeout)
 
     async def _set_vt(
         self,

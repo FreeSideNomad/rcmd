@@ -75,15 +75,9 @@ class TestCommandBusSend:
             patch.object(
                 command_bus._command_repo, "exists", new_callable=AsyncMock
             ) as mock_exists,
-            patch.object(
-                command_bus._pgmq, "send", new_callable=AsyncMock
-            ) as mock_pgmq_send,
-            patch.object(
-                command_bus._command_repo, "save", new_callable=AsyncMock
-            ) as mock_save,
-            patch.object(
-                command_bus._audit_logger, "log", new_callable=AsyncMock
-            ) as mock_audit,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
         ):
             mock_exists.return_value = False
             mock_pgmq_send.return_value = 42
@@ -113,15 +107,9 @@ class TestCommandBusSend:
             patch.object(
                 command_bus._command_repo, "exists", new_callable=AsyncMock
             ) as mock_exists,
-            patch.object(
-                command_bus._pgmq, "send", new_callable=AsyncMock
-            ) as mock_pgmq_send,
-            patch.object(
-                command_bus._command_repo, "save", new_callable=AsyncMock
-            ) as mock_save,
-            patch.object(
-                command_bus._audit_logger, "log", new_callable=AsyncMock
-            ),
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
         ):
             mock_exists.return_value = False
             mock_pgmq_send.return_value = 42
@@ -150,15 +138,9 @@ class TestCommandBusSend:
             patch.object(
                 command_bus._command_repo, "exists", new_callable=AsyncMock
             ) as mock_exists,
-            patch.object(
-                command_bus._pgmq, "send", new_callable=AsyncMock
-            ) as mock_pgmq_send,
-            patch.object(
-                command_bus._command_repo, "save", new_callable=AsyncMock
-            ) as mock_save,
-            patch.object(
-                command_bus._audit_logger, "log", new_callable=AsyncMock
-            ),
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
         ):
             mock_exists.return_value = False
             mock_pgmq_send.return_value = 42
@@ -179,9 +161,7 @@ class TestCommandBusSend:
             assert metadata.reply_to == "payments__replies"
 
     @pytest.mark.asyncio
-    async def test_send_duplicate_command_raises_error(
-        self, command_bus: CommandBus
-    ) -> None:
+    async def test_send_duplicate_command_raises_error(self, command_bus: CommandBus) -> None:
         """Test that duplicate command raises DuplicateCommandError."""
         command_id = uuid4()
 
@@ -210,15 +190,9 @@ class TestCommandBusSend:
             patch.object(
                 command_bus._command_repo, "exists", new_callable=AsyncMock
             ) as mock_exists,
-            patch.object(
-                command_bus._pgmq, "send", new_callable=AsyncMock
-            ) as mock_pgmq_send,
-            patch.object(
-                command_bus._command_repo, "save", new_callable=AsyncMock
-            ) as mock_save,
-            patch.object(
-                command_bus._audit_logger, "log", new_callable=AsyncMock
-            ),
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
         ):
             mock_exists.return_value = False
             mock_pgmq_send.return_value = 42
@@ -243,15 +217,9 @@ class TestCommandBusSend:
             patch.object(
                 command_bus._command_repo, "exists", new_callable=AsyncMock
             ) as mock_exists,
-            patch.object(
-                command_bus._pgmq, "send", new_callable=AsyncMock
-            ) as mock_pgmq_send,
-            patch.object(
-                command_bus._command_repo, "save", new_callable=AsyncMock
-            ),
-            patch.object(
-                command_bus._audit_logger, "log", new_callable=AsyncMock
-            ) as mock_audit,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
         ):
             mock_exists.return_value = False
             mock_pgmq_send.return_value = 42
@@ -271,9 +239,7 @@ class TestCommandBusSend:
             assert "command_type" in call_kwargs["details"]
 
     @pytest.mark.asyncio
-    async def test_send_uses_default_max_attempts(
-        self, command_bus: CommandBus
-    ) -> None:
+    async def test_send_uses_default_max_attempts(self, command_bus: CommandBus) -> None:
         """Test that default max_attempts is used when not specified."""
         command_id = uuid4()
 
@@ -281,12 +247,8 @@ class TestCommandBusSend:
             patch.object(
                 command_bus._command_repo, "exists", new_callable=AsyncMock
             ) as mock_exists,
-            patch.object(
-                command_bus._pgmq, "send", new_callable=AsyncMock
-            ) as mock_pgmq_send,
-            patch.object(
-                command_bus._command_repo, "save", new_callable=AsyncMock
-            ) as mock_save,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
             patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
         ):
             mock_exists.return_value = False
@@ -304,9 +266,7 @@ class TestCommandBusSend:
             assert metadata.max_attempts == 3  # default
 
     @pytest.mark.asyncio
-    async def test_send_uses_custom_max_attempts(
-        self, command_bus: CommandBus
-    ) -> None:
+    async def test_send_uses_custom_max_attempts(self, command_bus: CommandBus) -> None:
         """Test that custom max_attempts is used when specified."""
         command_id = uuid4()
 
@@ -314,12 +274,8 @@ class TestCommandBusSend:
             patch.object(
                 command_bus._command_repo, "exists", new_callable=AsyncMock
             ) as mock_exists,
-            patch.object(
-                command_bus._pgmq, "send", new_callable=AsyncMock
-            ) as mock_pgmq_send,
-            patch.object(
-                command_bus._command_repo, "save", new_callable=AsyncMock
-            ) as mock_save,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
             patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
         ):
             mock_exists.return_value = False
@@ -410,15 +366,11 @@ class TestCommandBusGetCommand:
         return CommandBus(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_get_command_delegates_to_repo(
-        self, command_bus: CommandBus
-    ) -> None:
+    async def test_get_command_delegates_to_repo(self, command_bus: CommandBus) -> None:
         """Test that get_command delegates to repository."""
         command_id = uuid4()
 
-        with patch.object(
-            command_bus._command_repo, "get", new_callable=AsyncMock
-        ) as mock_get:
+        with patch.object(command_bus._command_repo, "get", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = None
 
             result = await command_bus.get_command("payments", command_id)
@@ -441,9 +393,7 @@ class TestCommandBusCommandExists:
         return CommandBus(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_command_exists_delegates_to_repo(
-        self, command_bus: CommandBus
-    ) -> None:
+    async def test_command_exists_delegates_to_repo(self, command_bus: CommandBus) -> None:
         """Test that command_exists delegates to repository."""
         command_id = uuid4()
 

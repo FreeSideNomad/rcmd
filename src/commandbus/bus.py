@@ -171,8 +171,7 @@ class CommandBus:
             )
 
             logger.info(
-                f"Sent command {domain}.{command_type} "
-                f"(command_id={command_id}, msg_id={msg_id})"
+                f"Sent command {domain}.{command_type} (command_id={command_id}, msg_id={msg_id})"
             )
 
             return SendResult(command_id=command_id, msg_id=msg_id)

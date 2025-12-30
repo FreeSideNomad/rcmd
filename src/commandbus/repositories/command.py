@@ -117,9 +117,7 @@ class PostgresCommandRepository:
                 metadata.updated_at,
             ),
         )
-        logger.debug(
-            f"Saved command metadata: {metadata.domain}.{metadata.command_id}"
-        )
+        logger.debug(f"Saved command metadata: {metadata.domain}.{metadata.command_id}")
 
     async def get(
         self,

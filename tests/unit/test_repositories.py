@@ -52,9 +52,7 @@ class TestPostgresCommandRepositorySave:
         mock_pool._mock_conn.execute.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_save_with_external_conn(
-        self, repo: PostgresCommandRepository
-    ) -> None:
+    async def test_save_with_external_conn(self, repo: PostgresCommandRepository) -> None:
         """Test saving metadata with external connection."""
         conn = MagicMock()
         conn.execute = AsyncMock()
@@ -378,9 +376,7 @@ class TestPostgresAuditLoggerGetEvents:
         return PostgresAuditLogger(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_get_events(
-        self, logger: PostgresAuditLogger, mock_pool: MagicMock
-    ) -> None:
+    async def test_get_events(self, logger: PostgresAuditLogger, mock_pool: MagicMock) -> None:
         """Test getting audit events."""
         events = await logger.get_events(mock_pool._command_id)
 

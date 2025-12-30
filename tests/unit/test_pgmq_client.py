@@ -93,9 +93,7 @@ class TestPgmqClientSend:
         return PgmqClient(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_send_without_conn(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_send_without_conn(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test sending a message using pool connection."""
         result = await client.send("test_queue", {"key": "value"})
 
@@ -121,9 +119,7 @@ class TestPgmqClientSend:
         assert result == 99
 
     @pytest.mark.asyncio
-    async def test_send_with_delay(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_send_with_delay(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test sending a message with delay."""
         await client.send("test_queue", {"key": "value"}, delay=10)
 
@@ -184,9 +180,7 @@ class TestPgmqClientRead:
         return PgmqClient(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_read_returns_messages(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_read_returns_messages(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test reading messages from queue."""
         messages = await client.read("test_queue")
 
@@ -266,18 +260,14 @@ class TestPgmqClientDelete:
         return PgmqClient(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_delete_returns_true(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_delete_returns_true(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test deleting a message."""
         result = await client.delete("test_queue", 1)
 
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_delete_not_found(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_delete_not_found(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test delete when message not found."""
         mock_pool._mock_cursor.fetchone = AsyncMock(return_value=(False,))
 
@@ -286,9 +276,7 @@ class TestPgmqClientDelete:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_delete_no_row(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_delete_no_row(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test delete when no row returned."""
         mock_pool._mock_cursor.fetchone = AsyncMock(return_value=None)
 
@@ -329,18 +317,14 @@ class TestPgmqClientArchive:
         return PgmqClient(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_archive_returns_true(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_archive_returns_true(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test archiving a message."""
         result = await client.archive("test_queue", 1)
 
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_archive_no_row(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_archive_no_row(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test archive when no row returned."""
         mock_pool._mock_cursor.fetchone = AsyncMock(return_value=None)
 
@@ -381,18 +365,14 @@ class TestPgmqClientSetVt:
         return PgmqClient(mock_pool)
 
     @pytest.mark.asyncio
-    async def test_set_vt_returns_true(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_set_vt_returns_true(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test setting visibility timeout."""
         result = await client.set_vt("test_queue", 1, 60)
 
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_set_vt_not_found(
-        self, client: PgmqClient, mock_pool: MagicMock
-    ) -> None:
+    async def test_set_vt_not_found(self, client: PgmqClient, mock_pool: MagicMock) -> None:
         """Test set_vt when message not found."""
         mock_pool._mock_cursor.fetchone = AsyncMock(return_value=None)
 
