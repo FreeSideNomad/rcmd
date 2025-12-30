@@ -20,6 +20,8 @@ help:
 	@echo "  make test-integration  Run integration tests (requires Docker)"
 	@echo "  make test-e2e       Run end-to-end tests (requires Docker)"
 	@echo "  make coverage       Run tests with coverage report"
+	@echo "  make test-coverage  Check coverage >= 80% (pre-commit hook)"
+	@echo "  make coverage-html  Generate and open HTML coverage report"
 	@echo ""
 	@echo "Docker:"
 	@echo "  make docker-up      Start PostgreSQL + PGMQ containers"
@@ -77,6 +79,17 @@ test-e2e:
 coverage:
 	uv run pytest tests --cov=src/commandbus --cov-report=html --cov-report=term-missing
 	@echo "Coverage report: htmlcov/index.html"
+
+# Check coverage meets 80% threshold (used by pre-commit hook)
+test-coverage:
+	uv run pytest tests/unit --cov=src/commandbus --cov-branch --cov-fail-under=80 -q
+	@echo "Coverage check passed (>= 80%)"
+
+# Generate HTML coverage report
+coverage-html:
+	uv run pytest tests --cov=src/commandbus --cov-branch --cov-report=html --cov-report=term
+	@echo "HTML report: htmlcov/index.html"
+	@open htmlcov/index.html 2>/dev/null || xdg-open htmlcov/index.html 2>/dev/null || echo "Open htmlcov/index.html in browser"
 
 # Run a specific test file
 # Usage: make test-file FILE=tests/unit/test_api.py

@@ -52,6 +52,17 @@ repos:
     hooks:
       - id: validate-pyproject
 
+  # Coverage check - MANDATORY 80% line and branch coverage
+  - repo: local
+    hooks:
+      - id: coverage-check
+        name: coverage-check
+        entry: bash -c 'pytest --cov=src/commandbus --cov-branch --cov-fail-under=80 tests/unit/ -q --no-header || (echo "ERROR: Coverage below 80%. Add tests before committing." && exit 1)'
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
 # CI configuration
 ci:
   autofix_commit_msg: |

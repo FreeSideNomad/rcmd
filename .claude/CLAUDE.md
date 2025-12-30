@@ -97,7 +97,26 @@ async with self.pool.connection() as conn:
 - Unit tests: No Postgres, use `FakePgmqClient` from `testing/fakes.py`
 - Integration tests: Use `@pytest.mark.integration` marker
 - All public methods must have type hints
-- Minimum 80% coverage
+
+### Coverage Requirements (MANDATORY)
+
+**80% line and branch coverage is required for ALL commits.**
+
+This is enforced via pre-commit hook. Commits will be **rejected** if coverage falls below 80%.
+
+```bash
+# Check coverage before committing
+make test-coverage
+
+# View detailed coverage report
+make coverage-html
+```
+
+If coverage drops below 80%:
+1. Write additional tests to cover uncovered code paths
+2. Focus on branch coverage (if/else, try/except paths)
+3. Do NOT reduce coverage threshold - add tests instead
+4. Report to user if unable to achieve 80% coverage
 
 ## Key Files Reference
 

@@ -2,6 +2,10 @@
 
 This directory contains feature specifications and user stories for the Command Bus library.
 
+## Development Plan
+
+See [development-plan.md](development-plan.md) for the implementation sequence and milestones.
+
 ## Feature Index
 
 | ID | Feature | Priority | Status |
