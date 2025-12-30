@@ -1,4 +1,4 @@
-# Pre-commit hooks for Command Bus
+lets # Pre-commit hooks for Command Bus
 # Install: make install-dev (runs pre-commit install)
 # Run manually: make pre-commit
 
