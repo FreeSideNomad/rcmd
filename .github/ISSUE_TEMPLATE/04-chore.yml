@@ -1,0 +1,128 @@
+name: Chore
+description: Maintenance task, tooling, dependencies, or configuration
+title: "[Chore]: "
+labels: ["chore", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Chore / Maintenance Task
+        Use this for routine maintenance, tooling changes, dependency updates, or configuration work.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A brief description of the task (1-2 sentences)
+      placeholder: "Update pytest to version 8.0 and fix deprecation warnings"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: What type of chore is this?
+      options:
+        - Dependencies (update/add/remove packages)
+        - CI/CD (GitHub Actions, pipelines)
+        - Build (Makefile, pyproject.toml, packaging)
+        - Tooling (linting, formatting, pre-commit)
+        - Configuration (settings, environment)
+        - Documentation (README, CLAUDE.md, docs/)
+        - Refactor (code restructuring, no behavior change)
+        - Performance (optimization, profiling)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this task needed?
+      placeholder: |
+        The current version of pytest has known issues with async fixtures.
+        Upgrading will improve test reliability and remove deprecation warnings.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Tasks
+      description: Specific tasks to complete
+      placeholder: |
+        - [ ] Update pytest in pyproject.toml to ^8.0.0
+        - [ ] Run tests and fix any breaking changes
+        - [ ] Update pytest-asyncio if needed
+        - [ ] Remove deprecated fixture usage
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: files-affected
+    attributes:
+      label: Files Affected
+      description: Which files will be modified?
+      placeholder: |
+        - pyproject.toml
+        - tests/conftest.py
+        - .github/workflows/ci.yml
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How urgent is this task?
+      options:
+        - High (blocking other work or security issue)
+        - Medium (should be done soon)
+        - Low (nice to have, do when convenient)
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks / Considerations
+      description: Any risks or things to watch out for?
+      placeholder: |
+        - Breaking changes in pytest 8.0 may require fixture updates
+        - Need to verify all CI jobs still pass
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How will we know this is complete?
+      placeholder: |
+        - [ ] All tests pass with new version
+        - [ ] No deprecation warnings in test output
+        - [ ] CI pipeline succeeds
+        - [ ] Documentation updated if needed
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: llm-notes
+    attributes:
+      label: LLM Agent Notes
+      description: Specific guidance for AI coding agents
+      placeholder: |
+        Reference files:
+        - pyproject.toml - Update dependency version
+        - tests/conftest.py - May need fixture updates
+
+        Constraints:
+        - Do not change test behavior
+        - Ensure 80% coverage maintained
+      render: markdown
+    validations:
+      required: false

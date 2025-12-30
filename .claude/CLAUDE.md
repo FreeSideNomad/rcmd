@@ -137,6 +137,132 @@ If coverage drops below 80%:
 - No magic numbers - use named constants
 - No mutable default arguments
 
+## Git Workflow Rules (MANDATORY)
+
+These rules MUST be followed for all code changes:
+
+### 1. Issue First
+
+**ALWAYS create a GitHub issue before starting work.**
+
+- **Feature/User Story**: Use `[Feature]` or `[Story]` template for new functionality
+- **Bug**: Use `[Bug]` template for defects
+- **Chore**: Use `[Chore]` template for everything else:
+  - Dependency updates
+  - CI/CD changes
+  - Tooling configuration
+  - Documentation updates
+  - Refactoring
+  - Performance improvements
+
+When in doubt, create a **Chore** issue.
+
+### 2. Feature Branch Required
+
+**NEVER commit directly to `main`.**
+
+```bash
+# Create feature branch from issue number
+git checkout -b <type>/<issue-number>-<short-description>
+
+# Examples:
+git checkout -b feat/23-add-retry-policy
+git checkout -b fix/45-handle-null-payload
+git checkout -b chore/67-update-dependencies
+```
+
+Branch naming convention:
+- `feat/` - New features or user stories
+- `fix/` - Bug fixes
+- `chore/` - Maintenance, docs, refactoring, CI/CD
+- `docs/` - Documentation only
+
+### 3. Reference Issue in Commits
+
+**EVERY commit MUST reference a GitHub issue.**
+
+```bash
+# Commit message format
+<type>: <description>
+
+<optional body>
+
+Closes #<issue-number>
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+Commit types:
+- `feat:` - New feature
+- `fix:` - Bug fix
+- `chore:` - Maintenance task
+- `docs:` - Documentation
+- `refactor:` - Code restructuring
+- `test:` - Adding tests
+- `ci:` - CI/CD changes
+
+### 4. Pull Request Required
+
+**NEVER push directly to `main`. Always create a PR.**
+
+```bash
+# Push feature branch
+git push -u origin <branch-name>
+
+# Create PR
+gh pr create --title "<type>: <description>" --body "Closes #<issue>"
+```
+
+**Human review is REQUIRED before merge.** Do not merge PRs autonomously.
+
+### 5. Workflow Summary
+
+```
+1. Create Issue (Feature/Bug/Chore)
+         ↓
+2. Create Feature Branch (feat/fix/chore)
+         ↓
+3. Make Changes + Write Tests
+         ↓
+4. Commit with Issue Reference
+         ↓
+5. Push Branch + Create PR
+         ↓
+6. Human Reviews and Merges PR
+```
+
+### Example Workflow
+
+```bash
+# 1. Issue exists: #42 - Add retry backoff configuration
+
+# 2. Create branch
+git checkout -b feat/42-retry-backoff-config
+
+# 3. Make changes, ensure tests pass
+make test-coverage
+
+# 4. Commit with issue reference
+git add .
+git commit -m "feat: Add configurable retry backoff
+
+Implement RetryPolicy with customizable backoff schedule.
+
+Closes #42
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+
+# 5. Push and create PR
+git push -u origin feat/42-retry-backoff-config
+gh pr create --title "feat: Add configurable retry backoff" --body "Closes #42"
+
+# 6. Wait for human to review and merge
+```
+
 ## Verification Checklist
 
 Before submitting changes:
@@ -144,4 +270,6 @@ Before submitting changes:
 1. `make lint` passes
 2. `make typecheck` passes
 3. `make test` passes
-4. Coverage not decreased
+4. Coverage >= 80%
+5. Issue exists and is referenced in commit
+6. PR created (not pushed to main directly)
