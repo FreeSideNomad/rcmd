@@ -20,6 +20,7 @@ from commandbus.models import (
 from commandbus.pgmq.client import PgmqClient, PgmqMessage
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
+from commandbus.worker import ReceivedCommand, Worker
 
 __all__ = [
     "AuditEventType",
@@ -38,9 +39,11 @@ __all__ = [
     "PgmqMessage",
     "PostgresAuditLogger",
     "PostgresCommandRepository",
+    "ReceivedCommand",
     "ReplyOutcome",
     "SendResult",
     "TransientCommandError",
+    "Worker",
 ]
 
 __version__ = "0.1.0"
