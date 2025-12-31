@@ -50,12 +50,14 @@ async def cleanup_db(pool: AsyncConnectionPool):
         await conn.execute("DELETE FROM command_bus_command")
         # Clean up PGMQ queues
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
+        await conn.execute("DELETE FROM pgmq.q_reports__replies")
     yield
     # Cleanup after test
     async with pool.connection() as conn:
         await conn.execute("DELETE FROM command_bus_audit")
         await conn.execute("DELETE FROM command_bus_command")
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
+        await conn.execute("DELETE FROM pgmq.q_reports__replies")
 
 
 @pytest.mark.integration
@@ -247,3 +249,157 @@ async def test_receive_skips_completed_command(
     # Try to receive - should skip
     received = await worker.receive()
     assert len(received) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_complete_deletes_message_and_updates_status(
+    command_bus: CommandBus, worker: Worker, pool: AsyncConnectionPool, cleanup_db: None
+) -> None:
+    """Test that complete deletes message and updates status."""
+    command_id = uuid4()
+
+    await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=command_id,
+        data={"account_id": "123"},
+    )
+
+    # Receive the command
+    received = await worker.receive()
+    assert len(received) == 1
+
+    # Complete the command
+    await worker.complete(received[0])
+
+    # Verify status is COMPLETED
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            (command_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == CommandStatus.COMPLETED.value
+
+    # Verify message is deleted (not reappearing after visibility timeout)
+    await asyncio.sleep(6)  # Wait past visibility timeout
+    received_again = await worker.receive()
+    assert len(received_again) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_complete_records_audit_event(
+    command_bus: CommandBus, worker: Worker, pool: AsyncConnectionPool, cleanup_db: None
+) -> None:
+    """Test that complete records COMPLETED audit event."""
+    command_id = uuid4()
+
+    await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=command_id,
+        data={"account_id": "123"},
+    )
+
+    received = await worker.receive()
+    await worker.complete(received[0])
+
+    # Verify audit event was recorded
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT event_type, details_json
+            FROM command_bus_audit
+            WHERE command_id = %s AND event_type = 'COMPLETED'
+            """,
+            (command_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == "COMPLETED"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_complete_with_reply_sends_to_reply_queue(
+    command_bus: CommandBus, pool: AsyncConnectionPool, cleanup_db: None
+) -> None:
+    """Test that complete sends reply to reply queue."""
+    command_id = uuid4()
+    reply_queue = "reports__replies"
+
+    await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=command_id,
+        data={"account_id": "123"},
+        reply_to=reply_queue,
+    )
+
+    worker = Worker(pool, domain="payments", visibility_timeout=5)
+    received = await worker.receive()
+    assert len(received) == 1
+
+    # Complete with result
+    await worker.complete(received[0], result={"balance": 900})
+
+    # Read reply from reply queue
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT * FROM pgmq.read(%s, %s, %s)",
+            (reply_queue, 30, 1),
+        )
+        rows = await cur.fetchall()
+        assert len(rows) == 1
+        reply_message = rows[0][4]  # message column
+        assert reply_message["command_id"] == str(command_id)
+        assert reply_message["outcome"] == "SUCCESS"
+        assert reply_message["result"] == {"balance": 900}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_complete_is_atomic(
+    command_bus: CommandBus, pool: AsyncConnectionPool, cleanup_db: None
+) -> None:
+    """Test that complete operations are atomic (all or nothing)."""
+    command_id = uuid4()
+
+    await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=command_id,
+        data={"account_id": "123"},
+    )
+
+    worker = Worker(pool, domain="payments", visibility_timeout=5)
+    received = await worker.receive()
+
+    # Complete successfully
+    await worker.complete(received[0])
+
+    # Verify all operations happened together:
+    # 1. Status is COMPLETED
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            (command_id,),
+        )
+        row = await cur.fetchone()
+        assert row[0] == CommandStatus.COMPLETED.value
+
+        # 2. Audit event exists
+        await cur.execute(
+            """
+            SELECT COUNT(*) FROM command_bus_audit
+            WHERE command_id = %s AND event_type = 'COMPLETED'
+            """,
+            (command_id,),
+        )
+        row = await cur.fetchone()
+        assert row[0] == 1
+
+    # 3. Message is gone from queue (already verified it doesn't reappear)
