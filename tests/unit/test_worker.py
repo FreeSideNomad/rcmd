@@ -7,10 +7,10 @@ from uuid import uuid4
 
 import pytest
 
-from commandbus.models import CommandMetadata, CommandStatus
+from commandbus.models import Command, CommandMetadata, CommandStatus, HandlerContext
 from commandbus.pgmq.client import PgmqMessage
 from commandbus.repositories.audit import AuditEventType
-from commandbus.worker import Worker
+from commandbus.worker import ReceivedCommand, Worker
 
 
 class TestWorkerInit:
@@ -445,3 +445,199 @@ class TestWorkerReceive:
                 visibility_timeout=30,
                 batch_size=10,
             )
+
+
+class TestWorkerComplete:
+    """Tests for Worker.complete()."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with transaction support."""
+        pool = MagicMock()
+        conn = MagicMock()
+        transaction = MagicMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield transaction
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+        return pool
+
+    @pytest.fixture
+    def worker(self, mock_pool: MagicMock) -> Worker:
+        """Create a worker with mocked pool."""
+        return Worker(mock_pool, domain="payments")
+
+    @pytest.fixture
+    def received_command(self) -> ReceivedCommand:
+        """Create a received command for testing."""
+        command_id = uuid4()
+        correlation_id = uuid4()
+        now = datetime.now(UTC)
+
+        command = Command(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=command_id,
+            data={"account_id": "123", "amount": 100},
+            correlation_id=correlation_id,
+            reply_to=None,
+            created_at=now,
+        )
+
+        context = HandlerContext(
+            command=command,
+            attempt=1,
+            max_attempts=3,
+            msg_id=42,
+        )
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_PROGRESS,
+            attempts=1,
+            max_attempts=3,
+            created_at=now,
+            updated_at=now,
+        )
+
+        return ReceivedCommand(
+            command=command,
+            context=context,
+            msg_id=42,
+            metadata=metadata,
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_deletes_message(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that complete deletes the message from the queue."""
+        with (
+            patch.object(worker._pgmq, "delete", new_callable=AsyncMock) as mock_delete,
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            mock_delete.return_value = True
+
+            await worker.complete(received_command)
+
+            mock_delete.assert_called_once()
+            call_args = mock_delete.call_args
+            assert call_args[0][0] == "payments__commands"
+            assert call_args[0][1] == 42
+
+    @pytest.mark.asyncio
+    async def test_complete_updates_status_to_completed(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that complete updates status to COMPLETED."""
+        with (
+            patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "update_status", new_callable=AsyncMock
+            ) as mock_update,
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker.complete(received_command)
+
+            mock_update.assert_called_once()
+            call_args = mock_update.call_args
+            assert call_args[0][0] == "payments"
+            assert call_args[0][1] == received_command.command.command_id
+            assert call_args[0][2] == CommandStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_complete_records_audit_event(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that complete records COMPLETED audit event."""
+        with (
+            patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+        ):
+            await worker.complete(received_command)
+
+            mock_audit.assert_called_once()
+            call_kwargs = mock_audit.call_args[1]
+            assert call_kwargs["domain"] == "payments"
+            assert call_kwargs["command_id"] == received_command.command.command_id
+            assert call_kwargs["event_type"] == AuditEventType.COMPLETED
+            assert call_kwargs["details"]["msg_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_complete_with_reply_to_sends_reply(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that complete sends reply when reply_to is configured."""
+        # Modify command to have reply_to
+        command = Command(
+            domain=received_command.command.domain,
+            command_type=received_command.command.command_type,
+            command_id=received_command.command.command_id,
+            data=received_command.command.data,
+            correlation_id=received_command.command.correlation_id,
+            reply_to="reports__replies",
+            created_at=received_command.command.created_at,
+        )
+        received_with_reply = ReceivedCommand(
+            command=command,
+            context=received_command.context,
+            msg_id=received_command.msg_id,
+            metadata=received_command.metadata,
+        )
+
+        with (
+            patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
+            patch.object(worker._pgmq, "send", new_callable=AsyncMock) as mock_send,
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker.complete(received_with_reply, result={"status": "ok"})
+
+            mock_send.assert_called_once()
+            call_args = mock_send.call_args
+            assert call_args[0][0] == "reports__replies"
+            reply_message = call_args[0][1]
+            assert reply_message["command_id"] == str(command.command_id)
+            assert reply_message["outcome"] == "SUCCESS"
+            assert reply_message["result"] == {"status": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_complete_without_reply_to_does_not_send(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that complete does not send reply when reply_to is None."""
+        with (
+            patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
+            patch.object(worker._pgmq, "send", new_callable=AsyncMock) as mock_send,
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker.complete(received_command)
+
+            mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_complete_with_result(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that complete includes result in audit details."""
+        with (
+            patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+        ):
+            await worker.complete(received_command, result={"status": "processed"})
+
+            call_kwargs = mock_audit.call_args[1]
+            assert call_kwargs["details"]["has_result"] is True

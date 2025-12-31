@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from commandbus.models import Command, CommandMetadata, CommandStatus, HandlerContext
+from commandbus.models import (
+    Command,
+    CommandMetadata,
+    CommandStatus,
+    HandlerContext,
+    ReplyOutcome,
+)
 from commandbus.pgmq.client import PgmqClient
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
@@ -220,3 +226,58 @@ class Worker:
             msg_id=msg_id,
             metadata=updated_metadata,
         )
+
+    async def complete(
+        self,
+        received: ReceivedCommand,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        """Complete a command successfully.
+
+        Deletes the message from the queue, updates status to COMPLETED,
+        sends a reply if configured, and records an audit event.
+        All operations are performed atomically in a single transaction.
+
+        Args:
+            received: The received command to complete
+            result: Optional result data to include in the reply
+        """
+        command = received.command
+        command_id = command.command_id
+        domain = command.domain
+
+        async with self._pool.connection() as conn, conn.transaction():
+            # Delete message from queue
+            await self._pgmq.delete(self._queue_name, received.msg_id, conn)
+
+            # Update status to COMPLETED
+            await self._command_repo.update_status(
+                domain, command_id, CommandStatus.COMPLETED, conn
+            )
+
+            # Send reply if reply_to is configured
+            if command.reply_to:
+                reply_message = {
+                    "command_id": str(command_id),
+                    "correlation_id": str(command.correlation_id)
+                    if command.correlation_id
+                    else None,
+                    "outcome": ReplyOutcome.SUCCESS.value,
+                    "result": result,
+                }
+                await self._pgmq.send(command.reply_to, reply_message, conn=conn)
+
+            # Record audit event
+            await self._audit_logger.log(
+                domain=domain,
+                command_id=command_id,
+                event_type=AuditEventType.COMPLETED,
+                details={
+                    "msg_id": received.msg_id,
+                    "reply_to": command.reply_to,
+                    "has_result": result is not None,
+                },
+                conn=conn,
+            )
+
+        logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
