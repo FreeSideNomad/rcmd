@@ -373,6 +373,64 @@ class Worker:
                 f"[{error_code}] {error_msg}"
             )
 
+    async def fail_permanent(
+        self,
+        received: ReceivedCommand,
+        error: PermanentCommandError,
+    ) -> None:
+        """Handle a permanent failure by moving command to troubleshooting queue.
+
+        Archives the message, updates status to IN_TROUBLESHOOTING_QUEUE,
+        stores error details, and records an audit event.
+
+        Args:
+            received: The received command that failed
+            error: The permanent error that occurred
+        """
+        command = received.command
+        command_id = command.command_id
+        domain = command.domain
+
+        async with self._pool.connection() as conn, conn.transaction():
+            # Archive message (not delete - keeps history)
+            await self._pgmq.archive(self._queue_name, received.msg_id, conn)
+
+            # Update status to IN_TROUBLESHOOTING_QUEUE
+            await self._command_repo.update_status(
+                domain, command_id, CommandStatus.IN_TROUBLESHOOTING_QUEUE, conn
+            )
+
+            # Update error information
+            await self._command_repo.update_error(
+                domain,
+                command_id,
+                "PERMANENT",
+                error.code,
+                error.error_message,
+                conn,
+            )
+
+            # Record audit event
+            await self._audit_logger.log(
+                domain=domain,
+                command_id=command_id,
+                event_type=AuditEventType.MOVED_TO_TSQ,
+                details={
+                    "msg_id": received.msg_id,
+                    "attempt": received.context.attempt,
+                    "error_code": error.code,
+                    "error_msg": error.error_message,
+                    "error_details": error.details,
+                },
+                conn=conn,
+            )
+
+        logger.warning(
+            f"Permanent failure for {domain}.{command.command_type} "
+            f"(command_id={command_id}), moved to troubleshooting queue: "
+            f"[{error.code}] {error.error_message}"
+        )
+
     @property
     def is_running(self) -> bool:
         """Check if the worker is currently running."""
@@ -546,8 +604,8 @@ class Worker:
                 # Explicit transient error - apply backoff and retry
                 await self.fail(received, e, is_transient=True)
             except PermanentCommandError as e:
-                # Permanent error - will be handled by S009
-                await self.fail(received, e, is_transient=False)
+                # Permanent error - move to troubleshooting queue
+                await self.fail_permanent(received, e)
             except Exception as e:
                 # Unknown exception treated as transient
                 logger.exception(f"Error processing command {received.command.command_id}")

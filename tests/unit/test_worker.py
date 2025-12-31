@@ -1224,14 +1224,13 @@ class TestWorkerTransientErrorHandling:
         mock_registry.dispatch.side_effect = PermanentCommandError("INVALID", "Invalid data")
         semaphore = asyncio.Semaphore(1)
 
-        with patch.object(worker, "fail", new_callable=AsyncMock) as mock_fail:
+        with patch.object(worker, "fail_permanent", new_callable=AsyncMock) as mock_fail_permanent:
             await worker._process_command(received_command, semaphore)
 
-            mock_fail.assert_called_once()
-            call_args = mock_fail.call_args
+            mock_fail_permanent.assert_called_once()
+            call_args = mock_fail_permanent.call_args
             assert call_args[0][0] == received_command
             assert isinstance(call_args[0][1], PermanentCommandError)
-            assert call_args[1]["is_transient"] is False
 
     @pytest.mark.asyncio
     async def test_process_command_treats_unknown_as_transient(
@@ -1251,3 +1250,197 @@ class TestWorkerTransientErrorHandling:
             call_args = mock_fail.call_args
             assert isinstance(call_args[0][1], RuntimeError)
             assert call_args[1]["is_transient"] is True
+
+
+class TestWorkerFailPermanent:
+    """Tests for Worker.fail_permanent() permanent error handling."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with transaction support."""
+        pool = MagicMock()
+        conn = MagicMock()
+        transaction = MagicMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield transaction
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+        return pool
+
+    @pytest.fixture
+    def worker(self, mock_pool: MagicMock) -> Worker:
+        """Create a worker with mocked pool."""
+        return Worker(mock_pool, domain="payments")
+
+    @pytest.fixture
+    def received_command(self) -> ReceivedCommand:
+        """Create a received command for testing."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        command = Command(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=command_id,
+            data={"account_id": "123", "amount": 100},
+            created_at=now,
+        )
+
+        context = HandlerContext(
+            command=command,
+            attempt=1,
+            max_attempts=3,
+            msg_id=42,
+        )
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_PROGRESS,
+            attempts=1,
+            max_attempts=3,
+            created_at=now,
+            updated_at=now,
+        )
+
+        return ReceivedCommand(
+            command=command,
+            context=context,
+            msg_id=42,
+            metadata=metadata,
+        )
+
+    @pytest.mark.asyncio
+    async def test_fail_permanent_archives_message(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_permanent archives the message."""
+        error = PermanentCommandError("INVALID_ACCOUNT", "Account not found")
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker.fail_permanent(received_command, error)
+
+            mock_archive.assert_called_once()
+            call_args = mock_archive.call_args
+            assert call_args[0][0] == "payments__commands"
+            assert call_args[0][1] == 42
+
+    @pytest.mark.asyncio
+    async def test_fail_permanent_sets_tsq_status(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_permanent sets status to IN_TROUBLESHOOTING_QUEUE."""
+        error = PermanentCommandError("INVALID_ACCOUNT", "Account not found")
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "update_status", new_callable=AsyncMock
+            ) as mock_update_status,
+            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker.fail_permanent(received_command, error)
+
+            mock_update_status.assert_called_once()
+            call_args = mock_update_status.call_args
+            assert call_args[0][0] == "payments"
+            assert call_args[0][1] == received_command.command.command_id
+            assert call_args[0][2] == CommandStatus.IN_TROUBLESHOOTING_QUEUE
+
+    @pytest.mark.asyncio
+    async def test_fail_permanent_stores_error_details(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_permanent stores error details in metadata."""
+        error = PermanentCommandError(
+            "INVALID_ACCOUNT", "Account not found", details={"account_id": "xyz"}
+        )
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "update_error", new_callable=AsyncMock
+            ) as mock_update_error,
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker.fail_permanent(received_command, error)
+
+            mock_update_error.assert_called_once()
+            call_args = mock_update_error.call_args
+            assert call_args[0][0] == "payments"
+            assert call_args[0][1] == received_command.command.command_id
+            assert call_args[0][2] == "PERMANENT"
+            assert call_args[0][3] == "INVALID_ACCOUNT"
+            assert call_args[0][4] == "Account not found"
+
+    @pytest.mark.asyncio
+    async def test_fail_permanent_records_moved_to_tsq_audit_event(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_permanent records MOVED_TO_TSQ audit event."""
+        error = PermanentCommandError(
+            "INVALID_ACCOUNT", "Account not found", details={"account_id": "xyz"}
+        )
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+        ):
+            await worker.fail_permanent(received_command, error)
+
+            mock_audit.assert_called_once()
+            call_kwargs = mock_audit.call_args[1]
+            assert call_kwargs["domain"] == "payments"
+            assert call_kwargs["command_id"] == received_command.command.command_id
+            assert call_kwargs["event_type"] == AuditEventType.MOVED_TO_TSQ
+            assert call_kwargs["details"]["error_code"] == "INVALID_ACCOUNT"
+            assert call_kwargs["details"]["error_msg"] == "Account not found"
+            assert call_kwargs["details"]["error_details"] == {"account_id": "xyz"}
+
+    @pytest.mark.asyncio
+    async def test_fail_permanent_first_attempt(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that first attempt permanent failure goes directly to troubleshooting."""
+        # Confirm attempt is 1
+        assert received_command.context.attempt == 1
+
+        error = PermanentCommandError("VALIDATION", "Missing required field")
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
+            patch.object(
+                worker._command_repo, "update_status", new_callable=AsyncMock
+            ) as mock_update_status,
+            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+        ):
+            await worker.fail_permanent(received_command, error)
+
+            # Message should be archived
+            mock_archive.assert_called_once()
+
+            # Status should be IN_TROUBLESHOOTING_QUEUE
+            call_args = mock_update_status.call_args
+            assert call_args[0][2] == CommandStatus.IN_TROUBLESHOOTING_QUEUE
+
+            # Audit should record attempt number
+            call_kwargs = mock_audit.call_args[1]
+            assert call_kwargs["details"]["attempt"] == 1

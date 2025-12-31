@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import os
 from uuid import uuid4
 
 import pytest
@@ -20,6 +21,27 @@ from commandbus import (
     Worker,
 )
 from commandbus.repositories.audit import AuditEventType
+
+
+@pytest.fixture
+def database_url() -> str:
+    """Get database URL from environment."""
+    return os.environ.get(
+        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/commandbus"
+    )
+
+
+@pytest.fixture
+async def pool(database_url: str) -> AsyncConnectionPool:
+    """Create a connection pool for testing."""
+    async with AsyncConnectionPool(conninfo=database_url, min_size=1, max_size=5, open=False) as p:
+        yield p
+
+
+@pytest.fixture
+async def command_bus(pool: AsyncConnectionPool) -> CommandBus:
+    """Create a CommandBus with real database connection."""
+    return CommandBus(pool)
 
 
 @pytest.fixture
