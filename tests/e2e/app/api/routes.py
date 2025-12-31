@@ -1,6 +1,8 @@
 """E2E API routes - JSON endpoints."""
 
+import random
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -79,6 +81,107 @@ def create_bulk_commands():
             "message": "Commands created (database persistence coming in future iteration)",
         }
     ), 201
+
+
+@api_bp.route("/commands", methods=["GET"])
+def list_commands():
+    """Query commands with filters.
+
+    Query Parameters:
+    - status: Filter by status (PENDING, IN_PROGRESS, COMPLETED, etc.)
+    - domain: Filter by domain
+    - command_type: Filter by command type
+    - created_after: ISO datetime
+    - created_before: ISO datetime
+    - limit: Page size (default 20)
+    - offset: Pagination offset
+    """
+    status = request.args.get("status")
+    domain = request.args.get("domain")
+    command_type = request.args.get("command_type")
+    # Date filters captured for future DB implementation
+    _ = request.args.get("created_after")
+    _ = request.args.get("created_before")
+    limit = min(int(request.args.get("limit", 20)), 100)
+    offset = int(request.args.get("offset", 0))
+
+    # Generate mock data for demo purposes
+    # In production this would call command_repository.query_commands()
+    mock_commands = _generate_mock_commands(
+        status=status,
+        domain=domain,
+        command_type=command_type,
+        limit=limit,
+        offset=offset,
+    )
+
+    return jsonify(
+        {
+            "commands": mock_commands,
+            "total": 100,  # Mock total
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+@api_bp.route("/commands/<command_id>", methods=["GET"])
+def get_command(command_id: str):
+    """Get single command details."""
+    return jsonify(
+        {
+            "command_id": command_id,
+            "domain": "e2e",
+            "command_type": "TestCommand",
+            "status": "PENDING",
+            "attempts": 0,
+            "max_attempts": 3,
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "correlation_id": str(uuid.uuid4()),
+            "last_error_code": None,
+            "last_error_message": None,
+            "payload": {"behavior": {"type": "success"}},
+        }
+    )
+
+
+def _generate_mock_commands(
+    status: str | None = None,
+    domain: str | None = None,
+    command_type: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[dict]:
+    """Generate mock commands for demo purposes."""
+    statuses = ["PENDING", "IN_PROGRESS", "COMPLETED", "CANCELLED", "IN_TSQ"]
+    if status:
+        statuses = [status]
+
+    commands = []
+    base_time = datetime.now(UTC)
+
+    for i in range(limit):
+        cmd_status = random.choice(statuses)
+        attempts = 0 if cmd_status == "PENDING" else random.randint(1, 3)
+        created = base_time - timedelta(minutes=offset + i * 5)
+
+        cmd = {
+            "command_id": str(uuid.uuid4()),
+            "domain": domain or "e2e",
+            "command_type": command_type or "TestCommand",
+            "status": cmd_status,
+            "attempts": attempts,
+            "max_attempts": 3,
+            "created_at": created.isoformat(),
+            "updated_at": created.isoformat(),
+            "correlation_id": str(uuid.uuid4()),
+            "last_error_code": "TRANSIENT_ERROR" if cmd_status == "IN_TSQ" else None,
+            "last_error_message": "Temporary failure" if cmd_status == "IN_TSQ" else None,
+        }
+        commands.append(cmd)
+
+    return commands
 
 
 @api_bp.route("/health", methods=["GET"])
