@@ -161,6 +161,77 @@ class TestCommandBusSend:
             assert metadata.reply_to == "payments__replies"
 
     @pytest.mark.asyncio
+    async def test_send_generates_correlation_id_when_not_provided(
+        self, command_bus: CommandBus
+    ) -> None:
+        """Test that correlation_id is auto-generated when not provided."""
+        command_id = uuid4()
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists", new_callable=AsyncMock
+            ) as mock_exists,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+        ):
+            mock_exists.return_value = False
+            mock_pgmq_send.return_value = 42
+
+            await command_bus.send(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=command_id,
+                data={"account_id": "123"},
+                # No correlation_id provided
+            )
+
+            # Check that correlation_id was auto-generated in metadata
+            save_call = mock_save.call_args
+            metadata = save_call[0][0]
+            assert metadata.correlation_id is not None
+
+            # Check that correlation_id is in the message payload
+            pgmq_call = mock_pgmq_send.call_args
+            message = pgmq_call[0][1]
+            assert "correlation_id" in message
+            assert message["correlation_id"] == str(metadata.correlation_id)
+
+            # Check that correlation_id is in audit details
+            audit_call = mock_audit.call_args
+            assert audit_call[1]["details"]["correlation_id"] == str(metadata.correlation_id)
+
+    @pytest.mark.asyncio
+    async def test_send_correlation_id_in_message_payload(self, command_bus: CommandBus) -> None:
+        """Test that explicit correlation_id is included in message payload."""
+        command_id = uuid4()
+        correlation_id = uuid4()
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists", new_callable=AsyncMock
+            ) as mock_exists,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            mock_exists.return_value = False
+            mock_pgmq_send.return_value = 42
+
+            await command_bus.send(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=command_id,
+                data={"account_id": "123"},
+                correlation_id=correlation_id,
+            )
+
+            # Check that correlation_id is in the message payload
+            pgmq_call = mock_pgmq_send.call_args
+            message = pgmq_call[0][1]
+            assert message["correlation_id"] == str(correlation_id)
+
+    @pytest.mark.asyncio
     async def test_send_duplicate_command_raises_error(self, command_bus: CommandBus) -> None:
         """Test that duplicate command raises DuplicateCommandError."""
         command_id = uuid4()
@@ -344,12 +415,13 @@ class TestCommandBusBuildMessage:
     def test_build_message_basic(self, command_bus: CommandBus) -> None:
         """Test building a basic message."""
         command_id = uuid4()
+        correlation_id = uuid4()
         message = command_bus._build_message(
             domain="payments",
             command_type="DebitAccount",
             command_id=command_id,
             data={"account_id": "123"},
-            correlation_id=None,
+            correlation_id=correlation_id,
             reply_to=None,
         )
 
@@ -357,7 +429,7 @@ class TestCommandBusBuildMessage:
         assert message["command_type"] == "DebitAccount"
         assert message["command_id"] == str(command_id)
         assert message["data"] == {"account_id": "123"}
-        assert "correlation_id" not in message
+        assert message["correlation_id"] == str(correlation_id)
         assert "reply_to" not in message
 
     def test_build_message_with_correlation_id(self, command_bus: CommandBus) -> None:
@@ -378,16 +450,18 @@ class TestCommandBusBuildMessage:
     def test_build_message_with_reply_to(self, command_bus: CommandBus) -> None:
         """Test building message with reply_to."""
         command_id = uuid4()
+        correlation_id = uuid4()
         message = command_bus._build_message(
             domain="payments",
             command_type="DebitAccount",
             command_id=command_id,
             data={"account_id": "123"},
-            correlation_id=None,
+            correlation_id=correlation_id,
             reply_to="payments__replies",
         )
 
         assert message["reply_to"] == "payments__replies"
+        assert message["correlation_id"] == str(correlation_id)
 
 
 class TestCommandBusGetCommand:
