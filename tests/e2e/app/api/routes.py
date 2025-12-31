@@ -223,22 +223,39 @@ def update_config():
 @api_bp.route("/stats/overview", methods=["GET"])
 def stats_overview():
     """Get dashboard statistics."""
-    # Placeholder - will be implemented with real data
+    # Generate mock stats for demo
     return jsonify(
         {
             "status_counts": {
-                "PENDING": 0,
-                "IN_PROGRESS": 0,
-                "COMPLETED": 0,
-                "CANCELLED": 0,
-                "IN_TSQ": 0,
+                "PENDING": random.randint(50, 200),
+                "IN_PROGRESS": random.randint(1, 10),
+                "COMPLETED": random.randint(10000, 15000),
+                "CANCELLED": random.randint(50, 150),
+                "IN_TSQ": random.randint(5, 25),
             },
             "processing_rate": {
-                "per_minute": 0,
-                "avg_time_ms": 0,
+                "per_minute": round(random.uniform(30.0, 60.0), 1),
+                "avg_time_ms": random.randint(100, 250),
+                "p50_ms": random.randint(80, 150),
+                "p95_ms": random.randint(300, 500),
+                "p99_ms": random.randint(700, 1200),
+            },
+            "recent_change": {
+                "PENDING": random.randint(-10, 30),
+                "COMPLETED": random.randint(50, 200),
             },
         }
     )
+
+
+@api_bp.route("/stats/recent-activity", methods=["GET"])
+def recent_activity():
+    """Get recent activity feed for dashboard."""
+    limit = min(int(request.args.get("limit", 10)), 50)
+
+    events = _generate_mock_recent_activity(limit)
+
+    return jsonify({"events": events})
 
 
 # =============================================================================
@@ -564,3 +581,39 @@ def _get_event_details(event_type: str) -> dict:
         },
     }
     return details_map.get(event_type, {})
+
+
+def _generate_mock_recent_activity(limit: int = 10) -> list[dict]:
+    """Generate mock recent activity events for dashboard."""
+    event_types = ["SENT", "STARTED", "COMPLETED", "FAILED", "MOVED_TO_TSQ"]
+    command_types = ["TestCommand", "ProcessOrder", "SendNotification", "UpdateRecord"]
+
+    events = []
+    base_time = datetime.now(UTC)
+
+    for i in range(limit):
+        evt_type = random.choice(event_types)
+        # Weight towards COMPLETED and SENT for realistic feel
+        if random.random() > 0.3:
+            evt_type = random.choice(["COMPLETED", "SENT", "STARTED"])
+
+        created = base_time - timedelta(seconds=i * random.randint(2, 8))
+        cmd_id = str(uuid.uuid4())
+
+        summary_map = {
+            "SENT": f"{random.choice(command_types)} queued",
+            "STARTED": f"{random.choice(command_types)} processing",
+            "COMPLETED": f"{random.choice(command_types)} completed",
+            "FAILED": f"{random.choice(command_types)} failed",
+            "MOVED_TO_TSQ": f"{random.choice(command_types)} moved to TSQ",
+        }
+
+        evt = {
+            "timestamp": created.isoformat().replace("+00:00", "Z"),
+            "event_type": evt_type,
+            "command_id": cmd_id,
+            "summary": summary_map[evt_type],
+        }
+        events.append(evt)
+
+    return events

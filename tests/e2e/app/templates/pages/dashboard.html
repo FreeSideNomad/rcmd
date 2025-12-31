@@ -3,69 +3,172 @@
 {% block title %}Dashboard - Command Bus E2E{% endblock %}
 
 {% block content %}
-<div class="mb-4">
-    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-    <p class="text-gray-500 dark:text-gray-400">Overview of command processing status</p>
+<div class="flex justify-between items-center mb-4">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
+        <p class="text-gray-500 dark:text-gray-400">Overview of command processing status</p>
+    </div>
+    <div class="text-sm text-gray-500 dark:text-gray-400">
+        Last updated: <span id="last-updated">-</span>
+    </div>
 </div>
 
 <!-- Status Cards -->
 <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
-        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Pending</div>
-        <div class="text-2xl font-bold text-blue-600" id="count-pending">0</div>
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Pending</div>
+            <svg class="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+        </div>
+        <div class="text-2xl font-bold text-blue-600 mt-2" id="count-pending">0</div>
+        <div class="text-xs text-gray-400 mt-1">
+            <span id="change-pending" class="text-green-500"></span>
+        </div>
     </div>
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
-        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">In Progress</div>
-        <div class="text-2xl font-bold text-yellow-500" id="count-in-progress">0</div>
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">In Progress</div>
+            <svg class="w-5 h-5 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+        </div>
+        <div class="text-2xl font-bold text-yellow-500 mt-2" id="count-in-progress">0</div>
     </div>
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
-        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Completed</div>
-        <div class="text-2xl font-bold text-green-600" id="count-completed">0</div>
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Completed</div>
+            <svg class="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+            </svg>
+        </div>
+        <div class="text-2xl font-bold text-green-600 mt-2" id="count-completed">0</div>
+        <div class="text-xs text-gray-400 mt-1">
+            <span id="change-completed" class="text-green-500"></span>
+        </div>
     </div>
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
-        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Cancelled</div>
-        <div class="text-2xl font-bold text-gray-500" id="count-cancelled">0</div>
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Cancelled</div>
+            <svg class="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+        </div>
+        <div class="text-2xl font-bold text-gray-500 mt-2" id="count-cancelled">0</div>
     </div>
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
-        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">In TSQ</div>
-        <div class="text-2xl font-bold text-red-600" id="count-tsq">0</div>
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">In TSQ</div>
+            <svg class="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+        </div>
+        <div class="text-2xl font-bold text-red-600 mt-2" id="count-tsq">0</div>
     </div>
 </div>
 
-<!-- Quick Actions -->
-<div class="bg-white rounded-lg shadow p-4 mb-6 dark:bg-gray-800">
-    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Quick Actions</h2>
-    <div class="flex flex-wrap gap-3">
-        <a href="/send-command" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
-            Send Test Command
-        </a>
-        <a href="/commands" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600">
-            View All Commands
-        </a>
-        <a href="/tsq" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600">
+<!-- TSQ Alert (shown when there are items in TSQ) -->
+<div id="tsq-alert" class="hidden bg-red-50 border border-red-200 rounded-lg p-4 mb-6 dark:bg-red-900/20 dark:border-red-800">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center">
+            <svg class="w-5 h-5 text-red-600 dark:text-red-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+            </svg>
+            <span class="text-red-800 dark:text-red-300 font-medium">
+                TROUBLESHOOTING QUEUE: <span id="tsq-alert-count">0</span> commands need attention
+            </span>
+        </div>
+        <a href="/tsq" class="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-200 font-medium text-sm flex items-center">
             View TSQ
+            <svg class="w-4 h-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
         </a>
     </div>
 </div>
 
-<!-- Processing Rate -->
-<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+<!-- Processing Rate and Recent Activity -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <!-- Processing Rate -->
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
         <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Processing Rate</h2>
-        <div class="space-y-2">
-            <div class="flex justify-between">
-                <span class="text-gray-500 dark:text-gray-400">Commands/min</span>
-                <span class="font-medium text-gray-900 dark:text-white" id="rate-per-minute">0</span>
+        <div class="grid grid-cols-2 gap-4">
+            <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                <div class="text-sm text-gray-500 dark:text-gray-400">Commands/min</div>
+                <div class="text-xl font-bold text-gray-900 dark:text-white" id="rate-per-minute">0</div>
             </div>
-            <div class="flex justify-between">
-                <span class="text-gray-500 dark:text-gray-400">Avg Processing Time</span>
-                <span class="font-medium text-gray-900 dark:text-white" id="rate-avg-time">0ms</span>
+            <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                <div class="text-sm text-gray-500 dark:text-gray-400">Avg Time</div>
+                <div class="text-xl font-bold text-gray-900 dark:text-white" id="rate-avg-time">0ms</div>
+            </div>
+        </div>
+        <div class="mt-4 space-y-2">
+            <div class="flex justify-between text-sm">
+                <span class="text-gray-500 dark:text-gray-400">p50</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="rate-p50">0ms</span>
+            </div>
+            <div class="flex justify-between text-sm">
+                <span class="text-gray-500 dark:text-gray-400">p95</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="rate-p95">0ms</span>
+            </div>
+            <div class="flex justify-between text-sm">
+                <span class="text-gray-500 dark:text-gray-400">p99</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="rate-p99">0ms</span>
             </div>
         </div>
     </div>
 
+    <!-- Recent Activity -->
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
-        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Current Configuration</h2>
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Recent Activity</h2>
+            <div class="flex items-center text-xs text-gray-400">
+                <span class="w-2 h-2 bg-green-500 rounded-full mr-1 animate-pulse"></span>
+                Live
+            </div>
+        </div>
+        <div id="activity-feed" class="space-y-2 max-h-64 overflow-y-auto">
+            <div class="text-sm text-gray-500 dark:text-gray-400 text-center py-4">Loading...</div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions and Configuration -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Quick Actions -->
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Quick Actions</h2>
+        <div class="flex flex-wrap gap-3">
+            <a href="/send-command" class="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                <svg class="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Send Test Command
+            </a>
+            <a href="/commands" class="inline-flex items-center px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600">
+                <svg class="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                </svg>
+                View All Commands
+            </a>
+            <a href="/tsq" class="inline-flex items-center px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600">
+                <svg class="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                View TSQ
+            </a>
+        </div>
+    </div>
+
+    <!-- Current Configuration -->
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Current Configuration</h2>
+            <a href="/settings" class="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200 text-sm">
+                Edit
+            </a>
+        </div>
         <div class="space-y-2 text-sm">
             <div class="flex justify-between">
                 <span class="text-gray-500 dark:text-gray-400">Visibility Timeout</span>
@@ -74,6 +177,10 @@
             <div class="flex justify-between">
                 <span class="text-gray-500 dark:text-gray-400">Max Attempts</span>
                 <span class="font-medium text-gray-900 dark:text-white" id="config-max-attempts">3</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Concurrency</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="config-concurrency">4</span>
             </div>
             <div class="flex justify-between">
                 <span class="text-gray-500 dark:text-gray-400">Backoff</span>
@@ -90,19 +197,108 @@
 
     const api = new ApiClient();
 
+    // Event type icons and colors
+    const eventStyles = {
+        'SENT': { icon: 'M13 10V3L4 14h7v7l9-11h-7z', color: 'text-blue-500', bg: 'bg-blue-100 dark:bg-blue-900' },
+        'STARTED': { icon: 'M5 3l14 9-14 9V3z', color: 'text-yellow-500', bg: 'bg-yellow-100 dark:bg-yellow-900' },
+        'COMPLETED': { icon: 'M5 13l4 4L19 7', color: 'text-green-500', bg: 'bg-green-100 dark:bg-green-900' },
+        'FAILED': { icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z', color: 'text-orange-500', bg: 'bg-orange-100 dark:bg-orange-900' },
+        'MOVED_TO_TSQ': { icon: 'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636', color: 'text-red-500', bg: 'bg-red-100 dark:bg-red-900' },
+    };
+
+    const defaultStyle = { icon: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z', color: 'text-gray-500', bg: 'bg-gray-100 dark:bg-gray-900' };
+
+    function formatTime(isoString) {
+        const date = new Date(isoString);
+        return date.toLocaleTimeString();
+    }
+
+    function formatNumber(num) {
+        return num.toLocaleString();
+    }
+
+    function formatChange(num) {
+        if (num > 0) return `+${num}`;
+        return num.toString();
+    }
+
     async function loadStats() {
         const stats = await api.get('/stats/overview');
         if (stats) {
-            document.getElementById('count-pending').textContent = stats.status_counts.PENDING || 0;
-            document.getElementById('count-in-progress').textContent = stats.status_counts.IN_PROGRESS || 0;
-            document.getElementById('count-completed').textContent = stats.status_counts.COMPLETED || 0;
-            document.getElementById('count-cancelled').textContent = stats.status_counts.CANCELLED || 0;
-            document.getElementById('count-tsq').textContent = stats.status_counts.IN_TSQ || 0;
+            // Update counts
+            document.getElementById('count-pending').textContent = formatNumber(stats.status_counts.PENDING || 0);
+            document.getElementById('count-in-progress').textContent = formatNumber(stats.status_counts.IN_PROGRESS || 0);
+            document.getElementById('count-completed').textContent = formatNumber(stats.status_counts.COMPLETED || 0);
+            document.getElementById('count-cancelled').textContent = formatNumber(stats.status_counts.CANCELLED || 0);
+            document.getElementById('count-tsq').textContent = formatNumber(stats.status_counts.IN_TSQ || 0);
 
+            // Update change indicators
+            if (stats.recent_change) {
+                const pendingChange = stats.recent_change.PENDING || 0;
+                const completedChange = stats.recent_change.COMPLETED || 0;
+
+                const pendingEl = document.getElementById('change-pending');
+                const completedEl = document.getElementById('change-completed');
+
+                if (pendingChange !== 0) {
+                    pendingEl.textContent = formatChange(pendingChange);
+                    pendingEl.className = pendingChange > 0 ? 'text-orange-500' : 'text-green-500';
+                }
+                if (completedChange !== 0) {
+                    completedEl.textContent = formatChange(completedChange);
+                    completedEl.className = 'text-green-500';
+                }
+            }
+
+            // Update processing rate
             if (stats.processing_rate) {
                 document.getElementById('rate-per-minute').textContent = stats.processing_rate.per_minute || 0;
                 document.getElementById('rate-avg-time').textContent = (stats.processing_rate.avg_time_ms || 0) + 'ms';
+                document.getElementById('rate-p50').textContent = (stats.processing_rate.p50_ms || 0) + 'ms';
+                document.getElementById('rate-p95').textContent = (stats.processing_rate.p95_ms || 0) + 'ms';
+                document.getElementById('rate-p99').textContent = (stats.processing_rate.p99_ms || 0) + 'ms';
             }
+
+            // Show/hide TSQ alert
+            const tsqCount = stats.status_counts.IN_TSQ || 0;
+            const tsqAlert = document.getElementById('tsq-alert');
+            if (tsqCount > 0) {
+                tsqAlert.classList.remove('hidden');
+                document.getElementById('tsq-alert-count').textContent = tsqCount;
+            } else {
+                tsqAlert.classList.add('hidden');
+            }
+
+            // Update last updated time
+            document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+        }
+    }
+
+    async function loadRecentActivity() {
+        const data = await api.get('/stats/recent-activity?limit=10');
+        if (data && data.events) {
+            const feed = document.getElementById('activity-feed');
+            if (data.events.length === 0) {
+                feed.innerHTML = '<div class="text-sm text-gray-500 dark:text-gray-400 text-center py-4">No recent activity</div>';
+                return;
+            }
+
+            feed.innerHTML = data.events.map(event => {
+                const style = eventStyles[event.event_type] || defaultStyle;
+                return `
+                    <a href="/audit?command_id=${event.command_id}" class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition">
+                        <div class="w-8 h-8 rounded-full ${style.bg} flex items-center justify-center flex-shrink-0">
+                            <svg class="w-4 h-4 ${style.color}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="${style.icon}" />
+                            </svg>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-sm text-gray-900 dark:text-white truncate">${event.summary}</div>
+                            <div class="text-xs text-gray-500 dark:text-gray-400">${formatTime(event.timestamp)}</div>
+                        </div>
+                    </a>
+                `;
+            }).join('');
         }
     }
 
@@ -111,6 +307,7 @@
         if (config) {
             document.getElementById('config-visibility').textContent = config.worker.visibility_timeout + 's';
             document.getElementById('config-max-attempts').textContent = config.retry.max_attempts;
+            document.getElementById('config-concurrency').textContent = config.worker.concurrency;
             document.getElementById('config-backoff').textContent =
                 `${config.retry.base_delay_ms/1000}s-${config.retry.max_delay_ms/1000}s (${config.retry.backoff_multiplier}x)`;
         }
@@ -118,9 +315,13 @@
 
     // Initial load
     loadStats();
+    loadRecentActivity();
     loadConfig();
 
-    // Refresh every 5 seconds
-    setInterval(loadStats, 5000);
+    // Refresh stats and activity every 5 seconds
+    setInterval(() => {
+        loadStats();
+        loadRecentActivity();
+    }, 5000);
 </script>
 {% endblock %}
