@@ -16,7 +16,9 @@ from commandbus.models import (
     CommandStatus,
     HandlerContext,
     ReplyOutcome,
+    TroubleshootingItem,
 )
+from commandbus.ops.troubleshooting import TroubleshootingQueue
 from commandbus.pgmq.client import PgmqClient, PgmqMessage
 from commandbus.policies import DEFAULT_RETRY_POLICY, RetryPolicy
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
@@ -46,6 +48,8 @@ __all__ = [
     "RetryPolicy",
     "SendResult",
     "TransientCommandError",
+    "TroubleshootingItem",
+    "TroubleshootingQueue",
     "Worker",
 ]
 

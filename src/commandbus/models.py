@@ -148,3 +148,38 @@ class Reply:
     data: dict[str, Any] | None = None
     error_code: str | None = None
     error_message: str | None = None
+
+
+@dataclass
+class TroubleshootingItem:
+    """A command in the troubleshooting queue awaiting operator action.
+
+    Attributes:
+        domain: The domain this command belongs to
+        command_id: Unique identifier
+        command_type: Type of command
+        attempts: Number of processing attempts made
+        max_attempts: Maximum allowed attempts
+        last_error_type: Type of last error (TRANSIENT/PERMANENT)
+        last_error_code: Application error code
+        last_error_msg: Error message
+        correlation_id: Correlation ID for tracing
+        reply_to: Reply queue
+        payload: Original command payload from PGMQ archive
+        created_at: When the command was created
+        updated_at: When the command was last updated
+    """
+
+    domain: str
+    command_id: UUID
+    command_type: str
+    attempts: int
+    max_attempts: int
+    last_error_type: str | None
+    last_error_code: str | None
+    last_error_msg: str | None
+    correlation_id: UUID | None
+    reply_to: str | None
+    payload: dict[str, Any] | None
+    created_at: datetime
+    updated_at: datetime
