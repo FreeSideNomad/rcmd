@@ -1,4 +1,4 @@
-.PHONY: help install install-dev lint format typecheck test test-unit test-integration test-e2e coverage docker-up docker-down clean
+.PHONY: help install install-dev lint format typecheck test test-unit test-integration test-e2e coverage docker-up docker-down clean ready
 
 # Default target
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  make format         Format code (ruff format)"
 	@echo "  make typecheck      Run type checker (mypy)"
 	@echo "  make check          Run all quality checks"
+	@echo "  make ready          Run all checks before commit (format + lint + typecheck + test)"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test           Run all tests"
@@ -59,6 +60,11 @@ typecheck:
 
 check: lint typecheck
 	@echo "All checks passed!"
+
+# Run all checks before commit - use this before every git commit
+ready: format lint typecheck test-coverage
+	@echo ""
+	@echo "✅ All checks passed! Ready to commit."
 
 # =============================================================================
 # Testing
