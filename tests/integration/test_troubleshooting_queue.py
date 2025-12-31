@@ -874,3 +874,263 @@ class TestOperatorCancelIntegration:
 
         items = await tsq.list_troubleshooting(domain)
         assert len(items) == 0
+
+
+class TestOperatorCompleteIntegration:
+    """Integration tests for operator_complete()."""
+
+    @pytest.mark.asyncio
+    async def test_operator_complete_raises_command_not_found(
+        self, tsq: TroubleshootingQueue
+    ) -> None:
+        """Test operator_complete raises CommandNotFoundError for missing command."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        with pytest.raises(CommandNotFoundError) as exc_info:
+            await tsq.operator_complete(domain, command_id)
+
+        assert exc_info.value.domain == domain
+        assert exc_info.value.command_id == str(command_id)
+
+    @pytest.mark.asyncio
+    async def test_operator_complete_raises_invalid_operation_not_in_tsq(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test operator_complete raises InvalidOperationError when command not in TSQ."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            return {"status": "ok"}
+
+        # Send command - it will be in PENDING status
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={"test": "data"},
+        )
+
+        with pytest.raises(InvalidOperationError) as exc_info:
+            await tsq.operator_complete(domain, command_id)
+
+        assert "not in troubleshooting queue" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_operator_complete_sets_status_to_completed(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test operator_complete sets command status to COMPLETED."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Send and fail the command to put it in TSQ
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={},
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Complete the command
+        await tsq.operator_complete(domain, command_id)
+
+        # Verify command is now COMPLETED
+        command_repo = PostgresCommandRepository(pool)
+        metadata = await command_repo.get(domain, command_id)
+        assert metadata is not None
+        assert metadata.status == CommandStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_operator_complete_sends_reply(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test operator_complete sends SUCCESS reply to reply queue."""
+        command_id = uuid4()
+        correlation_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+        reply_queue = f"{domain}__replies"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Create reply queue
+        pgmq = PgmqClient(pool)
+        await pgmq.create_queue(reply_queue)
+
+        # Send command with reply_to
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={},
+            correlation_id=correlation_id,
+            reply_to=reply_queue,
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Complete the command
+        await tsq.operator_complete(domain, command_id)
+
+        # Read the reply from the queue
+        replies = await pgmq.read(reply_queue, visibility_timeout=30, batch_size=1)
+
+        assert len(replies) == 1
+        reply = replies[0].message
+        assert reply["command_id"] == str(command_id)
+        assert reply["correlation_id"] == str(correlation_id)
+        assert reply["outcome"] == "SUCCESS"
+        assert reply["result"] is None
+
+    @pytest.mark.asyncio
+    async def test_operator_complete_sends_reply_with_result_data(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test operator_complete sends SUCCESS reply with result_data."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+        reply_queue = f"{domain}__replies"
+        result_data = {"transaction_id": "txn_123", "amount": 100}
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Create reply queue
+        pgmq = PgmqClient(pool)
+        await pgmq.create_queue(reply_queue)
+
+        # Send command with reply_to
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={},
+            reply_to=reply_queue,
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Complete the command with result_data
+        await tsq.operator_complete(domain, command_id, result_data=result_data)
+
+        # Read the reply from the queue
+        replies = await pgmq.read(reply_queue, visibility_timeout=30, batch_size=1)
+
+        assert len(replies) == 1
+        reply = replies[0].message
+        assert reply["outcome"] == "SUCCESS"
+        assert reply["result"] == result_data
+
+    @pytest.mark.asyncio
+    async def test_operator_complete_records_audit_event(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test operator_complete records OPERATOR_COMPLETE audit event."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Send and fail the command
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={},
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Complete with operator identity
+        await tsq.operator_complete(domain, command_id, operator="admin_user")
+
+        # Verify audit event was recorded
+        audit_logger = PostgresAuditLogger(pool)
+        events = await audit_logger.get_events(command_id, domain)
+
+        complete_events = [e for e in events if e["event_type"] == "OPERATOR_COMPLETE"]
+        assert len(complete_events) == 1
+        assert complete_events[0]["details"]["operator"] == "admin_user"
+
+    @pytest.mark.asyncio
+    async def test_operator_complete_removes_from_tsq_list(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test completed command no longer appears in troubleshooting list."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Send and fail the command
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={},
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Verify in TSQ
+        count_before = await tsq.count_troubleshooting(domain)
+        assert count_before == 1
+
+        # Complete the command
+        await tsq.operator_complete(domain, command_id)
+
+        # Verify no longer in TSQ
+        count_after = await tsq.count_troubleshooting(domain)
+        assert count_after == 0
+
+        items = await tsq.list_troubleshooting(domain)
+        assert len(items) == 0

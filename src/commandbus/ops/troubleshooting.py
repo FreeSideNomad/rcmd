@@ -349,3 +349,82 @@ class TroubleshootingQueue:
         logger.info(
             f"Operator cancel for {domain}.{command_id}: reason={reason}, operator={operator}"
         )
+
+    async def operator_complete(
+        self,
+        domain: str,
+        command_id: UUID,
+        result_data: dict[str, Any] | None = None,
+        operator: str | None = None,
+    ) -> None:
+        """Manually complete a command in the troubleshooting queue.
+
+        Sets status to COMPLETED, sends a SUCCESS reply to the reply queue
+        (if configured) with optional result data, and records an audit event.
+
+        Args:
+            domain: The domain of the command
+            command_id: The command ID to complete
+            result_data: Optional result data to include in the reply
+            operator: Optional operator identity for audit trail
+
+        Raises:
+            CommandNotFoundError: If the command does not exist
+            InvalidOperationError: If the command is not in troubleshooting queue
+        """
+        # Create helper instances
+        command_repo = PostgresCommandRepository(self._pool)
+        pgmq = PgmqClient(self._pool)
+        audit_logger = PostgresAuditLogger(self._pool)
+
+        async with self._pool.connection() as conn:
+            # Get command metadata
+            metadata = await command_repo.get(domain, command_id, conn)
+            if metadata is None:
+                raise CommandNotFoundError(domain, str(command_id))
+
+            # Verify command is in troubleshooting queue
+            if metadata.status != CommandStatus.IN_TROUBLESHOOTING_QUEUE:
+                raise InvalidOperationError(
+                    f"Command {command_id} is not in troubleshooting queue "
+                    f"(status: {metadata.status.value})"
+                )
+
+            # All operations in same transaction
+            async with conn.transaction():
+                # Update command status to COMPLETED
+                await conn.execute(
+                    """
+                    UPDATE command_bus_command
+                    SET status = %s, updated_at = NOW()
+                    WHERE domain = %s AND command_id = %s
+                    """,
+                    (CommandStatus.COMPLETED.value, domain, command_id),
+                )
+
+                # Send reply if reply_to is configured
+                if metadata.reply_to:
+                    reply_message = {
+                        "command_id": str(command_id),
+                        "correlation_id": str(metadata.correlation_id)
+                        if metadata.correlation_id
+                        else None,
+                        "outcome": ReplyOutcome.SUCCESS.value,
+                        "result": result_data,
+                    }
+                    await pgmq.send(metadata.reply_to, reply_message, conn=conn)
+
+                # Record audit event
+                await audit_logger.log(
+                    domain=domain,
+                    command_id=command_id,
+                    event_type=AuditEventType.OPERATOR_COMPLETE,
+                    details={
+                        "operator": operator,
+                        "has_result_data": result_data is not None,
+                        "reply_to": metadata.reply_to,
+                    },
+                    conn=conn,
+                )
+
+        logger.info(f"Operator complete for {domain}.{command_id}: operator={operator}")
