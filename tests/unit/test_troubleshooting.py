@@ -704,3 +704,338 @@ class TestTroubleshootingQueueOperatorRetry:
             mock_pgmq.send.assert_called_once()
             sent_payload = mock_pgmq.send.call_args[0][1]
             assert sent_payload == {"command_id": "test", "data": {"amount": 100}}
+
+
+class TestTroubleshootingQueueOperatorCancel:
+    """Tests for TroubleshootingQueue.operator_cancel()."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with cursor and transaction support."""
+        pool = MagicMock()
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=None)
+
+        @asynccontextmanager
+        async def mock_cursor():
+            yield cursor
+
+        conn.cursor = mock_cursor
+        conn.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield
+
+        conn.transaction = mock_transaction
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        pool.connection = mock_connection
+        pool._mock_cursor = cursor
+        pool._mock_conn = conn
+        return pool
+
+    @pytest.fixture
+    def tsq(self, mock_pool: MagicMock) -> TroubleshootingQueue:
+        """Create a TroubleshootingQueue with mocked pool."""
+        return TroubleshootingQueue(mock_pool)
+
+    @pytest.mark.asyncio
+    async def test_raises_command_not_found_when_missing(self, tsq: TroubleshootingQueue) -> None:
+        """Test raises CommandNotFoundError when command doesn't exist."""
+        command_id = uuid4()
+
+        with patch("commandbus.ops.troubleshooting.PostgresCommandRepository") as mock_repo_class:
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(return_value=None)
+            mock_repo_class.return_value = mock_repo
+
+            with pytest.raises(CommandNotFoundError) as exc_info:
+                await tsq.operator_cancel("payments", command_id, "Invalid account")
+
+            assert exc_info.value.domain == "payments"
+            assert exc_info.value.command_id == str(command_id)
+
+    @pytest.mark.asyncio
+    async def test_raises_invalid_operation_when_not_in_tsq(
+        self, tsq: TroubleshootingQueue
+    ) -> None:
+        """Test raises InvalidOperationError when command not in TSQ."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.PENDING,  # Not in TSQ
+            attempts=0,
+            max_attempts=3,
+            msg_id=1,
+            correlation_id=None,
+            reply_to=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        with patch("commandbus.ops.troubleshooting.PostgresCommandRepository") as mock_repo_class:
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(return_value=metadata)
+            mock_repo_class.return_value = mock_repo
+
+            with pytest.raises(InvalidOperationError) as exc_info:
+                await tsq.operator_cancel("payments", command_id, "Invalid account")
+
+            assert "not in troubleshooting queue" in str(exc_info.value)
+            assert "PENDING" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_cancel_sets_status_to_canceled(
+        self, tsq: TroubleshootingQueue, mock_pool: MagicMock
+    ) -> None:
+        """Test cancel sets command status to CANCELED."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+            attempts=3,
+            max_attempts=3,
+            msg_id=1,
+            correlation_id=None,
+            reply_to=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        with (
+            patch("commandbus.ops.troubleshooting.PostgresCommandRepository") as mock_repo_class,
+            patch("commandbus.ops.troubleshooting.PgmqClient") as mock_pgmq_class,
+            patch("commandbus.ops.troubleshooting.PostgresAuditLogger") as mock_audit_class,
+        ):
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(return_value=metadata)
+            mock_repo_class.return_value = mock_repo
+
+            mock_pgmq = MagicMock()
+            mock_pgmq.send = AsyncMock(return_value=42)
+            mock_pgmq_class.return_value = mock_pgmq
+
+            mock_audit = MagicMock()
+            mock_audit.log = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            await tsq.operator_cancel("payments", command_id, "Invalid account")
+
+            # Verify UPDATE was called on the connection
+            mock_pool._mock_conn.execute.assert_called()
+            call_args = mock_pool._mock_conn.execute.call_args
+            query = call_args[0][0]
+            params = call_args[0][1]
+
+            assert "UPDATE command_bus_command" in query
+            assert "status = %s" in query
+            assert CommandStatus.CANCELED.value in params
+
+    @pytest.mark.asyncio
+    async def test_cancel_sends_reply_when_reply_to_configured(
+        self, tsq: TroubleshootingQueue, mock_pool: MagicMock
+    ) -> None:
+        """Test cancel sends CANCELED reply when reply_to is configured."""
+        command_id = uuid4()
+        correlation_id = uuid4()
+        now = datetime.now(UTC)
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+            attempts=3,
+            max_attempts=3,
+            msg_id=1,
+            correlation_id=correlation_id,
+            reply_to="payments__replies",
+            created_at=now,
+            updated_at=now,
+        )
+
+        with (
+            patch("commandbus.ops.troubleshooting.PostgresCommandRepository") as mock_repo_class,
+            patch("commandbus.ops.troubleshooting.PgmqClient") as mock_pgmq_class,
+            patch("commandbus.ops.troubleshooting.PostgresAuditLogger") as mock_audit_class,
+        ):
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(return_value=metadata)
+            mock_repo_class.return_value = mock_repo
+
+            mock_pgmq = MagicMock()
+            mock_pgmq.send = AsyncMock(return_value=42)
+            mock_pgmq_class.return_value = mock_pgmq
+
+            mock_audit = MagicMock()
+            mock_audit.log = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            await tsq.operator_cancel("payments", command_id, "Invalid account")
+
+            # Verify reply was sent
+            mock_pgmq.send.assert_called_once()
+            queue_name = mock_pgmq.send.call_args[0][0]
+            reply_message = mock_pgmq.send.call_args[0][1]
+
+            assert queue_name == "payments__replies"
+            assert reply_message["command_id"] == str(command_id)
+            assert reply_message["correlation_id"] == str(correlation_id)
+            assert reply_message["outcome"] == "CANCELED"
+            assert reply_message["reason"] == "Invalid account"
+
+    @pytest.mark.asyncio
+    async def test_cancel_does_not_send_reply_when_no_reply_to(
+        self, tsq: TroubleshootingQueue, mock_pool: MagicMock
+    ) -> None:
+        """Test cancel does not send reply when reply_to is not configured."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+            attempts=3,
+            max_attempts=3,
+            msg_id=1,
+            correlation_id=None,
+            reply_to=None,  # No reply queue
+            created_at=now,
+            updated_at=now,
+        )
+
+        with (
+            patch("commandbus.ops.troubleshooting.PostgresCommandRepository") as mock_repo_class,
+            patch("commandbus.ops.troubleshooting.PgmqClient") as mock_pgmq_class,
+            patch("commandbus.ops.troubleshooting.PostgresAuditLogger") as mock_audit_class,
+        ):
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(return_value=metadata)
+            mock_repo_class.return_value = mock_repo
+
+            mock_pgmq = MagicMock()
+            mock_pgmq.send = AsyncMock(return_value=42)
+            mock_pgmq_class.return_value = mock_pgmq
+
+            mock_audit = MagicMock()
+            mock_audit.log = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            await tsq.operator_cancel("payments", command_id, "Invalid account")
+
+            # Verify no reply was sent
+            mock_pgmq.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancel_records_audit_event(
+        self, tsq: TroubleshootingQueue, mock_pool: MagicMock
+    ) -> None:
+        """Test cancel records OPERATOR_CANCEL audit event."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+            attempts=3,
+            max_attempts=3,
+            msg_id=1,
+            correlation_id=None,
+            reply_to="payments__replies",
+            created_at=now,
+            updated_at=now,
+        )
+
+        with (
+            patch("commandbus.ops.troubleshooting.PostgresCommandRepository") as mock_repo_class,
+            patch("commandbus.ops.troubleshooting.PgmqClient") as mock_pgmq_class,
+            patch("commandbus.ops.troubleshooting.PostgresAuditLogger") as mock_audit_class,
+        ):
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(return_value=metadata)
+            mock_repo_class.return_value = mock_repo
+
+            mock_pgmq = MagicMock()
+            mock_pgmq.send = AsyncMock(return_value=42)
+            mock_pgmq_class.return_value = mock_pgmq
+
+            mock_audit = MagicMock()
+            mock_audit.log = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            await tsq.operator_cancel(
+                "payments", command_id, "Invalid account", operator="admin_user"
+            )
+
+            mock_audit.log.assert_called_once()
+            call_kwargs = mock_audit.log.call_args[1]
+            assert call_kwargs["domain"] == "payments"
+            assert call_kwargs["command_id"] == command_id
+            assert call_kwargs["event_type"].value == "OPERATOR_CANCEL"
+            assert call_kwargs["details"]["operator"] == "admin_user"
+            assert call_kwargs["details"]["reason"] == "Invalid account"
+            assert call_kwargs["details"]["reply_to"] == "payments__replies"
+
+    @pytest.mark.asyncio
+    async def test_cancel_includes_reason_in_audit(
+        self, tsq: TroubleshootingQueue, mock_pool: MagicMock
+    ) -> None:
+        """Test cancel includes reason in audit event details."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+            attempts=3,
+            max_attempts=3,
+            msg_id=1,
+            correlation_id=None,
+            reply_to=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        with (
+            patch("commandbus.ops.troubleshooting.PostgresCommandRepository") as mock_repo_class,
+            patch("commandbus.ops.troubleshooting.PgmqClient") as mock_pgmq_class,
+            patch("commandbus.ops.troubleshooting.PostgresAuditLogger") as mock_audit_class,
+        ):
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(return_value=metadata)
+            mock_repo_class.return_value = mock_repo
+
+            mock_pgmq = MagicMock()
+            mock_pgmq_class.return_value = mock_pgmq
+
+            mock_audit = MagicMock()
+            mock_audit.log = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            await tsq.operator_cancel(
+                "payments", command_id, "Duplicate request - already processed"
+            )
+
+            call_kwargs = mock_audit.log.call_args[1]
+            assert call_kwargs["details"]["reason"] == "Duplicate request - already processed"
