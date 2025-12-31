@@ -52,6 +52,10 @@ test = [
     "pytest-cov>=6.0.0",
     "testcontainers[postgres]>=4.0.0",
 ]
+e2e = [
+    "flask>=3.1.0",
+    "python-dotenv>=1.0.1",
+]
 
 [project.urls]
 Homepage = "https://github.com/your-org/commandbus"
