@@ -22,10 +22,10 @@ def database_url() -> str:
 @pytest.fixture
 async def pool(database_url: str) -> AsyncConnectionPool:
     """Create a connection pool for testing."""
-    pool = AsyncConnectionPool(conninfo=database_url, min_size=1, max_size=5)
-    await pool.open()
-    yield pool
-    await pool.close()
+    async with AsyncConnectionPool(
+        conninfo=database_url, min_size=1, max_size=5, open=False
+    ) as pool:
+        yield pool
 
 
 @pytest.fixture
