@@ -311,8 +311,8 @@ class Worker:
         """Record a command failure and schedule retry if applicable.
 
         For transient errors, applies backoff and leaves the message to expire.
-        For permanent errors, this method does NOT handle them - use a separate
-        method for permanent failure handling.
+        If retries are exhausted, moves the command to the troubleshooting queue.
+        For permanent errors, this method does NOT handle them - use fail_permanent().
 
         Args:
             received: The received command that failed
@@ -339,6 +339,11 @@ class Worker:
             error_code = type(error).__name__
             error_msg = str(error)
 
+        # Check if retries are exhausted for transient errors
+        if is_transient and not self._retry_policy.should_retry(attempt):
+            await self._fail_exhausted(received, error_type, error_code, error_msg)
+            return
+
         # Update error information in metadata
         await self._command_repo.update_error(domain, command_id, error_type, error_code, error_msg)
 
@@ -358,7 +363,7 @@ class Worker:
         )
 
         # Apply backoff by extending visibility timeout
-        if is_transient and self._retry_policy.should_retry(attempt):
+        if is_transient:
             backoff = self._retry_policy.get_backoff(attempt)
             await self._pgmq.set_vt(self._queue_name, received.msg_id, backoff)
             logger.info(
@@ -429,6 +434,72 @@ class Worker:
             f"Permanent failure for {domain}.{command.command_type} "
             f"(command_id={command_id}), moved to troubleshooting queue: "
             f"[{error.code}] {error.error_message}"
+        )
+
+    async def _fail_exhausted(
+        self,
+        received: ReceivedCommand,
+        error_type: str,
+        error_code: str,
+        error_msg: str,
+    ) -> None:
+        """Handle retry exhaustion by moving command to troubleshooting queue.
+
+        Called when a transient error occurs but max_attempts has been reached.
+        Archives the message, updates status to IN_TROUBLESHOOTING_QUEUE,
+        stores error details, and records an audit event with reason "EXHAUSTED".
+
+        Args:
+            received: The received command that exhausted retries
+            error_type: Type of the error (e.g., "TRANSIENT")
+            error_code: Error code from the exception
+            error_msg: Error message from the exception
+        """
+        command = received.command
+        command_id = command.command_id
+        domain = command.domain
+        attempt = received.context.attempt
+
+        async with self._pool.connection() as conn, conn.transaction():
+            # Archive message (not delete - keeps history)
+            await self._pgmq.archive(self._queue_name, received.msg_id, conn)
+
+            # Update status to IN_TROUBLESHOOTING_QUEUE
+            await self._command_repo.update_status(
+                domain, command_id, CommandStatus.IN_TROUBLESHOOTING_QUEUE, conn
+            )
+
+            # Update error information
+            await self._command_repo.update_error(
+                domain,
+                command_id,
+                error_type,
+                error_code,
+                error_msg,
+                conn,
+            )
+
+            # Record audit event with EXHAUSTED reason
+            await self._audit_logger.log(
+                domain=domain,
+                command_id=command_id,
+                event_type=AuditEventType.MOVED_TO_TSQ,
+                details={
+                    "msg_id": received.msg_id,
+                    "attempt": attempt,
+                    "max_attempts": received.metadata.max_attempts,
+                    "reason": "EXHAUSTED",
+                    "error_type": error_type,
+                    "error_code": error_code,
+                    "error_msg": error_msg,
+                },
+                conn=conn,
+            )
+
+        logger.warning(
+            f"Retry exhausted for {domain}.{command.command_type} "
+            f"(command_id={command_id}, attempt={attempt}/{received.metadata.max_attempts}), "
+            f"moved to troubleshooting queue: [{error_code}] {error_msg}"
         )
 
     @property

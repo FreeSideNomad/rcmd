@@ -1034,10 +1034,10 @@ class TestWorkerFail:
             mock_set_vt.assert_called_once_with("payments__commands", 42, 60)
 
     @pytest.mark.asyncio
-    async def test_fail_does_not_set_vt_at_max_attempts(
+    async def test_fail_calls_exhausted_at_max_attempts(
         self, worker: Worker, received_command: ReceivedCommand
     ) -> None:
-        """Test that fail does not set VT at max attempts."""
+        """Test that fail calls _fail_exhausted at max attempts."""
         # Modify to max attempts
         context = HandlerContext(
             command=received_command.command,
@@ -1055,13 +1055,15 @@ class TestWorkerFail:
         error = TransientCommandError("TIMEOUT", "Connection timeout")
 
         with (
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+            patch.object(worker, "_fail_exhausted", new_callable=AsyncMock) as mock_fail_exhausted,
             patch.object(worker._pgmq, "set_vt", new_callable=AsyncMock) as mock_set_vt,
         ):
             await worker.fail(received, error)
 
-            # At max attempts, should not set VT (no more retries)
+            # At max attempts, should call _fail_exhausted instead of set_vt
+            mock_fail_exhausted.assert_called_once_with(
+                received, "TRANSIENT", "TIMEOUT", "Connection timeout"
+            )
             mock_set_vt.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1444,3 +1446,218 @@ class TestWorkerFailPermanent:
             # Audit should record attempt number
             call_kwargs = mock_audit.call_args[1]
             assert call_kwargs["details"]["attempt"] == 1
+
+
+class TestWorkerFailExhausted:
+    """Tests for Worker._fail_exhausted() retry exhaustion handling."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with transaction support."""
+        pool = MagicMock()
+        conn = MagicMock()
+        transaction = MagicMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield transaction
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+        return pool
+
+    @pytest.fixture
+    def worker(self, mock_pool: MagicMock) -> Worker:
+        """Create a worker with mocked pool."""
+        return Worker(
+            mock_pool,
+            domain="payments",
+            retry_policy=RetryPolicy(max_attempts=3, backoff_schedule=[10, 60, 300]),
+        )
+
+    @pytest.fixture
+    def exhausted_command(self) -> ReceivedCommand:
+        """Create a received command at max attempts (exhausted)."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        command = Command(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=command_id,
+            data={"account_id": "123", "amount": 100},
+            created_at=now,
+        )
+
+        context = HandlerContext(
+            command=command,
+            attempt=3,  # max_attempts reached
+            max_attempts=3,
+            msg_id=42,
+        )
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_PROGRESS,
+            attempts=3,
+            max_attempts=3,
+            created_at=now,
+            updated_at=now,
+        )
+
+        return ReceivedCommand(
+            command=command,
+            context=context,
+            msg_id=42,
+            metadata=metadata,
+        )
+
+    @pytest.mark.asyncio
+    async def test_fail_exhausted_archives_message(
+        self, worker: Worker, exhausted_command: ReceivedCommand
+    ) -> None:
+        """Test that _fail_exhausted archives the message."""
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker._fail_exhausted(
+                exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
+            )
+
+            mock_archive.assert_called_once()
+            call_args = mock_archive.call_args
+            assert call_args[0][0] == "payments__commands"
+            assert call_args[0][1] == 42
+
+    @pytest.mark.asyncio
+    async def test_fail_exhausted_sets_tsq_status(
+        self, worker: Worker, exhausted_command: ReceivedCommand
+    ) -> None:
+        """Test that _fail_exhausted sets status to IN_TROUBLESHOOTING_QUEUE."""
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "update_status", new_callable=AsyncMock
+            ) as mock_update_status,
+            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker._fail_exhausted(
+                exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
+            )
+
+            mock_update_status.assert_called_once()
+            call_args = mock_update_status.call_args
+            assert call_args[0][0] == "payments"
+            assert call_args[0][1] == exhausted_command.command.command_id
+            assert call_args[0][2] == CommandStatus.IN_TROUBLESHOOTING_QUEUE
+
+    @pytest.mark.asyncio
+    async def test_fail_exhausted_stores_error_details(
+        self, worker: Worker, exhausted_command: ReceivedCommand
+    ) -> None:
+        """Test that _fail_exhausted stores error details in metadata."""
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "update_error", new_callable=AsyncMock
+            ) as mock_update_error,
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker._fail_exhausted(
+                exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
+            )
+
+            mock_update_error.assert_called_once()
+            call_args = mock_update_error.call_args
+            assert call_args[0][0] == "payments"
+            assert call_args[0][1] == exhausted_command.command.command_id
+            assert call_args[0][2] == "TRANSIENT"
+            assert call_args[0][3] == "TIMEOUT"
+            assert call_args[0][4] == "Connection timeout"
+
+    @pytest.mark.asyncio
+    async def test_fail_exhausted_records_moved_to_tsq_audit_event(
+        self, worker: Worker, exhausted_command: ReceivedCommand
+    ) -> None:
+        """Test that _fail_exhausted records MOVED_TO_TSQ audit event with EXHAUSTED reason."""
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+        ):
+            await worker._fail_exhausted(
+                exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
+            )
+
+            mock_audit.assert_called_once()
+            call_kwargs = mock_audit.call_args[1]
+            assert call_kwargs["domain"] == "payments"
+            assert call_kwargs["command_id"] == exhausted_command.command.command_id
+            assert call_kwargs["event_type"] == AuditEventType.MOVED_TO_TSQ
+            assert call_kwargs["details"]["reason"] == "EXHAUSTED"
+            assert call_kwargs["details"]["attempt"] == 3
+            assert call_kwargs["details"]["max_attempts"] == 3
+            assert call_kwargs["details"]["error_type"] == "TRANSIENT"
+            assert call_kwargs["details"]["error_code"] == "TIMEOUT"
+
+    @pytest.mark.asyncio
+    async def test_fail_exhausted_with_unknown_exception(
+        self, worker: Worker, exhausted_command: ReceivedCommand
+    ) -> None:
+        """Test that _fail_exhausted handles unknown exceptions as transient."""
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "update_error", new_callable=AsyncMock
+            ) as mock_update_error,
+            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            await worker._fail_exhausted(
+                exhausted_command, "TRANSIENT", "RuntimeError", "Unexpected error"
+            )
+
+            mock_update_error.assert_called_once()
+            call_args = mock_update_error.call_args
+            assert call_args[0][2] == "TRANSIENT"
+            assert call_args[0][3] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_fail_triggers_exhausted_for_transient_at_max(
+        self, worker: Worker, exhausted_command: ReceivedCommand
+    ) -> None:
+        """Test that fail() triggers _fail_exhausted for transient errors at max attempts."""
+        error = TransientCommandError("TIMEOUT", "Connection timeout")
+
+        with patch.object(worker, "_fail_exhausted", new_callable=AsyncMock) as mock_exhausted:
+            await worker.fail(exhausted_command, error)
+
+            mock_exhausted.assert_called_once_with(
+                exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
+            )
+
+    @pytest.mark.asyncio
+    async def test_fail_triggers_exhausted_for_unknown_at_max(
+        self, worker: Worker, exhausted_command: ReceivedCommand
+    ) -> None:
+        """Test that fail() triggers _fail_exhausted for unknown exceptions at max attempts."""
+        error = RuntimeError("Unexpected database error")
+
+        with patch.object(worker, "_fail_exhausted", new_callable=AsyncMock) as mock_exhausted:
+            await worker.fail(exhausted_command, error)
+
+            mock_exhausted.assert_called_once_with(
+                exhausted_command, "TRANSIENT", "RuntimeError", "Unexpected database error"
+            )
