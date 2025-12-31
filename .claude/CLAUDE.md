@@ -319,12 +319,29 @@ gh run watch
 
 ## Verification Checklist
 
-Before submitting changes:
+**BEFORE EVERY COMMIT - Run this command:**
 
-1. `make lint` passes
-2. `make typecheck` passes
-3. `make test` passes
-4. Coverage >= 80%
-5. Issue exists and is referenced in commit
-6. PR created (not pushed to main directly)
-7. GitHub Actions passes (or escalated after 10 attempts)
+```bash
+make ready
+```
+
+This single command runs: format → lint → typecheck → test-coverage
+
+If `make ready` fails, fix the issues before committing.
+
+**AFTER EVERY PUSH - Check GitHub Actions:**
+
+```bash
+gh run list --limit 3   # Check status
+gh run watch            # Or watch in real-time
+```
+
+If CI fails, run `gh run view <id> --log-failed` to see the error, fix it, and push again.
+
+### Full Checklist
+
+1. ✅ `make ready` passes (runs format, lint, typecheck, tests with 80% coverage)
+2. ✅ Issue exists and is referenced in commit
+3. ✅ PR created (not pushed to main directly)
+4. ✅ GitHub Actions passes (check with `gh run list` after push)
+5. ✅ Wait for human review before merge

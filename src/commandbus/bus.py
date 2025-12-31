@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from commandbus.exceptions import DuplicateCommandError
-from commandbus.models import CommandMetadata, CommandStatus
+from commandbus.models import AuditEvent, CommandMetadata, CommandStatus
 from commandbus.pgmq.client import PgmqClient
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
@@ -244,3 +244,24 @@ class CommandBus:
             True if command exists
         """
         return await self._command_repo.exists(domain, command_id)
+
+    async def get_audit_trail(
+        self,
+        command_id: UUID,
+        domain: str | None = None,
+    ) -> list[AuditEvent]:
+        """Get the audit trail for a command.
+
+        Returns all audit events for a command in chronological order.
+        Events include: SENT, RECEIVED, COMPLETED, FAILED, RETRY_SCHEDULED,
+        RETRY_EXHAUSTED, MOVED_TO_TSQ, OPERATOR_RETRY, OPERATOR_CANCEL,
+        OPERATOR_COMPLETE.
+
+        Args:
+            command_id: The command ID
+            domain: Optional domain filter
+
+        Returns:
+            List of AuditEvent in chronological order (empty if not found)
+        """
+        return await self._audit_logger.get_events(command_id, domain)

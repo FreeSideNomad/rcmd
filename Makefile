@@ -62,7 +62,14 @@ check: lint typecheck
 	@echo "All checks passed!"
 
 # Run all checks before commit - use this before every git commit
+# Includes integration tests if Docker postgres is running
 ready: format lint typecheck test-coverage
+	@if docker compose ps postgres 2>/dev/null | grep -q "Up"; then \
+		echo "Docker postgres is running, running integration tests..."; \
+		uv run pytest tests/integration -v -m integration || exit 1; \
+	else \
+		echo "⚠️  Docker postgres not running, skipping integration tests (run 'make docker-up' to enable)"; \
+	fi
 	@echo ""
 	@echo "✅ All checks passed! Ready to commit."
 
