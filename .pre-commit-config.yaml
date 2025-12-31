@@ -1,4 +1,4 @@
-lets # Pre-commit hooks for Command Bus
+# Pre-commit hooks for Command Bus
 # Install: make install-dev (runs pre-commit install)
 # Run manually: make pre-commit
 
@@ -43,7 +43,6 @@ repos:
     rev: v1.5.0
     hooks:
       - id: detect-secrets
-        args: [--baseline, .secrets.baseline]
         exclude: package.lock.json
 
   # Validate pyproject.toml
@@ -57,7 +56,7 @@ repos:
     hooks:
       - id: coverage-check
         name: coverage-check
-        entry: bash -c 'pytest --cov=src/commandbus --cov-branch --cov-fail-under=80 tests/unit/ -q --no-header || (echo "ERROR: Coverage below 80%. Add tests before committing." && exit 1)'
+        entry: "bash -c 'uv run pytest --cov=src/commandbus --cov-branch --cov-fail-under=80 tests/unit/ -q --no-header || (echo ERROR: Coverage below 80%. Add tests before committing. && exit 1)'"
         language: system
         pass_filenames: false
         always_run: true
