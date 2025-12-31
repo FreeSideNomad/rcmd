@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -21,7 +23,12 @@ from commandbus.repositories.command import PostgresCommandRepository
 if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
+    from commandbus.handler import HandlerRegistry
+
 logger = logging.getLogger(__name__)
+
+# Channel name for PGMQ notifications
+PGMQ_NOTIFY_CHANNEL = "pgmq_notify"
 
 
 def _make_queue_name(domain: str, suffix: str = "commands") -> str:
@@ -55,18 +62,21 @@ class Worker:
     Example:
         pool = AsyncConnectionPool(conninfo)
         await pool.open()
-        worker = Worker(pool, domain="payments")
+        registry = HandlerRegistry()
 
-        commands = await worker.receive(batch_size=10)
-        for cmd in commands:
-            # Process command...
-            await worker.complete(cmd)
+        @registry.handler("payments", "DebitAccount")
+        async def handle_debit(command, context):
+            return {"processed": True}
+
+        worker = Worker(pool, domain="payments", registry=registry)
+        await worker.run(concurrency=5)  # Process up to 5 commands concurrently
     """
 
     def __init__(
         self,
         pool: AsyncConnectionPool[Any],
         domain: str,
+        registry: HandlerRegistry | None = None,
         visibility_timeout: int = 30,
     ) -> None:
         """Initialize the worker.
@@ -74,15 +84,20 @@ class Worker:
         Args:
             pool: psycopg async connection pool
             domain: The domain to process commands for
+            registry: Handler registry for dispatching commands
             visibility_timeout: Default visibility timeout in seconds
         """
         self._pool = pool
         self._domain = domain
+        self._registry = registry
         self._visibility_timeout = visibility_timeout
         self._queue_name = _make_queue_name(domain)
         self._pgmq = PgmqClient(pool)
         self._command_repo = PostgresCommandRepository(pool)
         self._audit_logger = PostgresAuditLogger(pool)
+        self._running = False
+        self._stop_event: asyncio.Event | None = None
+        self._in_flight: set[asyncio.Task[None]] = set()
 
     @property
     def domain(self) -> str:
@@ -281,3 +296,176 @@ class Worker:
             )
 
         logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
+
+    @property
+    def is_running(self) -> bool:
+        """Check if the worker is currently running."""
+        return self._running
+
+    @property
+    def in_flight_count(self) -> int:
+        """Get the number of commands currently being processed."""
+        return len(self._in_flight)
+
+    async def run(
+        self,
+        concurrency: int = 1,
+        poll_interval: float = 1.0,
+        use_notify: bool = True,
+    ) -> None:
+        """Run the worker continuously, processing commands.
+
+        The worker will poll for commands and process them concurrently
+        up to the specified concurrency limit. When use_notify is True,
+        the worker listens for pg_notify notifications to wake up
+        immediately when new commands arrive.
+
+        Args:
+            concurrency: Maximum number of commands to process concurrently
+            poll_interval: Seconds between polls (fallback when notify misses)
+            use_notify: Use pg_notify for immediate wake-up
+
+        Raises:
+            RuntimeError: If no handler registry is configured
+        """
+        if self._registry is None:
+            raise RuntimeError("Cannot run worker without a handler registry")
+
+        self._running = True
+        self._stop_event = asyncio.Event()
+        semaphore = asyncio.Semaphore(concurrency)
+
+        logger.info(
+            f"Starting worker for {self._domain} "
+            f"(concurrency={concurrency}, poll_interval={poll_interval}s, use_notify={use_notify})"
+        )
+
+        try:
+            if use_notify:
+                await self._run_with_notify(semaphore, poll_interval)
+            else:
+                await self._run_with_polling(semaphore, poll_interval)
+        except asyncio.CancelledError:
+            logger.info("Worker received cancellation signal")
+        finally:
+            await self._wait_for_in_flight()
+            self._running = False
+            logger.info(f"Worker for {self._domain} stopped")
+
+    async def stop(self, timeout: float | None = None) -> None:
+        """Stop the worker gracefully.
+
+        Signals the worker to stop receiving new commands and waits for
+        in-flight commands to complete (or timeout).
+
+        Args:
+            timeout: Maximum seconds to wait for in-flight commands.
+                     If None, waits indefinitely.
+        """
+        if not self._running or self._stop_event is None:
+            return
+
+        logger.info(f"Stopping worker for {self._domain}...")
+        self._stop_event.set()
+
+        if self._in_flight:
+            logger.info(f"Waiting for {len(self._in_flight)} in-flight commands...")
+            try:
+                await asyncio.wait_for(
+                    self._wait_for_in_flight(),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                logger.warning(
+                    f"Timeout waiting for in-flight commands, "
+                    f"{len(self._in_flight)} commands may be redelivered"
+                )
+
+    async def _wait_for_in_flight(self) -> None:
+        """Wait for all in-flight tasks to complete."""
+        if self._in_flight:
+            await asyncio.gather(*self._in_flight, return_exceptions=True)
+
+    async def _run_with_notify(
+        self,
+        semaphore: asyncio.Semaphore,
+        poll_interval: float,
+    ) -> None:
+        """Run the worker using pg_notify for wake-up with poll fallback."""
+        assert self._stop_event is not None
+
+        async with self._pool.connection() as listen_conn:
+            # Subscribe to notifications for this queue
+            channel = f"{PGMQ_NOTIFY_CHANNEL}_{self._queue_name}"
+            await listen_conn.execute(f"LISTEN {channel}")
+            logger.debug(f"Listening on channel {channel}")
+
+            # Initial poll to process any pending commands
+            await self._process_batch(semaphore)
+
+            while not self._stop_event.is_set():
+                try:
+                    # Wait for notification with timeout (poll fallback)
+                    gen = listen_conn.notifies(timeout=poll_interval)
+                    async for _ in gen:
+                        if self._stop_event.is_set():
+                            return
+                        # Got notification, process batch
+                        await self._process_batch(semaphore)
+                        break  # Exit inner loop to check stop event
+                except TimeoutError:
+                    pass  # Timeout is expected, poll fallback
+
+                # Poll on timeout or after notification
+                if not self._stop_event.is_set():
+                    await self._process_batch(semaphore)
+
+    async def _run_with_polling(
+        self,
+        semaphore: asyncio.Semaphore,
+        poll_interval: float,
+    ) -> None:
+        """Run the worker using simple polling."""
+        assert self._stop_event is not None
+
+        while not self._stop_event.is_set():
+            await self._process_batch(semaphore)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=poll_interval,
+                )
+
+    async def _process_batch(self, semaphore: asyncio.Semaphore) -> None:
+        """Receive and process a batch of commands."""
+        # Calculate how many slots are available
+        available_slots = semaphore._value
+
+        if available_slots == 0:
+            return
+
+        commands = await self.receive(batch_size=available_slots)
+
+        for cmd in commands:
+            task = asyncio.create_task(self._process_command(cmd, semaphore))
+            self._in_flight.add(task)
+            task.add_done_callback(self._in_flight.discard)
+
+    async def _process_command(
+        self,
+        received: ReceivedCommand,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        """Process a single command with semaphore control."""
+        assert self._registry is not None
+
+        async with semaphore:
+            try:
+                result = await self._registry.dispatch(
+                    received.command,
+                    received.context,
+                )
+                await self.complete(received, result=result)
+            except Exception:
+                logger.exception(f"Error processing command {received.command.command_id}")
+                # Message will reappear after visibility timeout for retry

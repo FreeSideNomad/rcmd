@@ -1,5 +1,7 @@
 """Integration tests for Worker receive functionality (S004)."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 from uuid import uuid4
@@ -8,7 +10,9 @@ import pytest
 from psycopg_pool import AsyncConnectionPool
 
 from commandbus.bus import CommandBus
-from commandbus.models import CommandStatus
+from commandbus.handler import HandlerRegistry
+from commandbus.models import Command as Cmd
+from commandbus.models import CommandStatus, HandlerContext
 from commandbus.worker import Worker
 
 
@@ -403,3 +407,198 @@ async def test_complete_is_atomic(
         assert row[0] == 1
 
     # 3. Message is gone from queue (already verified it doesn't reappear)
+
+
+@pytest.fixture
+def handler_registry() -> HandlerRegistry:
+    """Create a handler registry for testing."""
+    return HandlerRegistry()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_worker_run_processes_commands(
+    command_bus: CommandBus,
+    pool: AsyncConnectionPool,
+    handler_registry: HandlerRegistry,
+    cleanup_db: None,
+) -> None:
+    """Test that worker.run() processes commands with handlers."""
+    command_id = uuid4()
+    processed_commands: list[uuid4] = []
+
+    @handler_registry.handler("payments", "DebitAccount")
+    async def handle_debit(command: Cmd, context: HandlerContext) -> dict:
+        processed_commands.append(command.command_id)
+        return {"processed": True}
+
+    await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=command_id,
+        data={"account_id": "123", "amount": 100},
+    )
+
+    worker = Worker(pool, domain="payments", registry=handler_registry, visibility_timeout=5)
+
+    # Run worker in background and stop after processing
+    async def run_and_stop() -> None:
+        await asyncio.sleep(0.5)  # Let worker process
+        await worker.stop()
+
+    await asyncio.gather(
+        worker.run(concurrency=1, poll_interval=0.1, use_notify=False),
+        run_and_stop(),
+    )
+
+    assert command_id in processed_commands
+
+    # Verify command is completed
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            (command_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == CommandStatus.COMPLETED.value
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_worker_concurrent_processing(
+    command_bus: CommandBus,
+    pool: AsyncConnectionPool,
+    handler_registry: HandlerRegistry,
+    cleanup_db: None,
+) -> None:
+    """Test that worker processes multiple commands concurrently."""
+    command_ids = [uuid4() for _ in range(3)]
+    processing_times: dict[uuid4, float] = {}
+    start_time = asyncio.get_event_loop().time()
+
+    @handler_registry.handler("payments", "DebitAccount")
+    async def handle_debit(command: Cmd, context: HandlerContext) -> dict:
+        processing_times[command.command_id] = asyncio.get_event_loop().time() - start_time
+        await asyncio.sleep(0.2)  # Simulate processing time
+        return {"processed": True}
+
+    # Send 3 commands
+    for cmd_id in command_ids:
+        await command_bus.send(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=cmd_id,
+            data={"account_id": "123"},
+        )
+
+    worker = Worker(pool, domain="payments", registry=handler_registry, visibility_timeout=5)
+
+    async def run_and_stop() -> None:
+        await asyncio.sleep(1.0)  # Let worker process all
+        await worker.stop()
+
+    await asyncio.gather(
+        worker.run(concurrency=3, poll_interval=0.1, use_notify=False),
+        run_and_stop(),
+    )
+
+    # All commands should be processed
+    assert len(processing_times) == 3
+
+    # With concurrency=3, all commands should start processing around the same time
+    times = list(processing_times.values())
+    # The difference between first and last start time should be small
+    assert max(times) - min(times) < 0.3  # All started within 0.3s
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_worker_graceful_shutdown(
+    command_bus: CommandBus,
+    pool: AsyncConnectionPool,
+    handler_registry: HandlerRegistry,
+    cleanup_db: None,
+) -> None:
+    """Test that worker waits for in-flight commands on shutdown."""
+    command_id = uuid4()
+    handler_started = asyncio.Event()
+    handler_completed = asyncio.Event()
+
+    @handler_registry.handler("payments", "DebitAccount")
+    async def handle_debit(command: Cmd, context: HandlerContext) -> dict:
+        handler_started.set()
+        await asyncio.sleep(0.3)  # Simulate processing
+        handler_completed.set()
+        return {"processed": True}
+
+    await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=command_id,
+        data={"account_id": "123"},
+    )
+
+    worker = Worker(pool, domain="payments", registry=handler_registry, visibility_timeout=5)
+
+    async def stop_during_processing() -> None:
+        await handler_started.wait()  # Wait until handler starts
+        await worker.stop()  # Request stop while processing
+
+    await asyncio.gather(
+        worker.run(concurrency=1, poll_interval=0.1, use_notify=False),
+        stop_during_processing(),
+    )
+
+    # Handler should have completed despite shutdown request
+    assert handler_completed.is_set()
+
+    # Command should be completed
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            (command_id,),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == CommandStatus.COMPLETED.value
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_worker_poll_fallback(
+    command_bus: CommandBus,
+    pool: AsyncConnectionPool,
+    handler_registry: HandlerRegistry,
+    cleanup_db: None,
+) -> None:
+    """Test that worker polls for commands at regular intervals."""
+    command_id = uuid4()
+    processed_commands: list[uuid4] = []
+
+    @handler_registry.handler("payments", "DebitAccount")
+    async def handle_debit(command: Cmd, context: HandlerContext) -> dict:
+        processed_commands.append(command.command_id)
+        return {"processed": True}
+
+    # Send command
+    await command_bus.send(
+        domain="payments",
+        command_type="DebitAccount",
+        command_id=command_id,
+        data={"account_id": "123"},
+    )
+
+    worker = Worker(pool, domain="payments", registry=handler_registry, visibility_timeout=5)
+
+    async def run_and_stop() -> None:
+        await asyncio.sleep(0.3)  # Poll interval is 0.1, should process
+        await worker.stop()
+
+    # Use polling only (no notify)
+    await asyncio.gather(
+        worker.run(concurrency=1, poll_interval=0.1, use_notify=False),
+        run_and_stop(),
+    )
+
+    assert command_id in processed_commands
