@@ -1,0 +1,143 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Send Command - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Send Test Command</h1>
+    <p class="text-gray-500 dark:text-gray-400">Create test commands with configurable behaviors</p>
+</div>
+
+<!-- Current Configuration -->
+<div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 dark:bg-blue-900 dark:border-blue-700">
+    <div class="flex items-center">
+        <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+        </svg>
+        <span class="text-blue-800 dark:text-blue-300 font-medium">Current Configuration (editable in Settings)</span>
+    </div>
+    <div class="mt-2 text-sm text-blue-700 dark:text-blue-400 flex flex-wrap gap-4">
+        <span>Visibility Timeout: <strong id="config-visibility">30s</strong></span>
+        <span>Max Attempts: <strong id="config-max-attempts">3</strong></span>
+        <span>Backoff: <strong id="config-backoff">1s-60s (2x multiplier)</strong></span>
+    </div>
+</div>
+
+<!-- Command Form -->
+<div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+    <form id="command-form" class="space-y-6">
+        <!-- Behavior Type -->
+        <div>
+            <label for="behavior-type" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Behavior Type</label>
+            <select id="behavior-type" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <option value="success">Success</option>
+                <option value="fail_permanent">Fail Permanent</option>
+                <option value="fail_transient">Fail Transient</option>
+                <option value="fail_transient_then_succeed">Fail Transient Then Succeed</option>
+                <option value="timeout">Timeout</option>
+            </select>
+        </div>
+
+        <!-- Failure Settings (shown conditionally) -->
+        <div id="failure-settings" class="hidden space-y-4 p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h3 class="text-sm font-medium text-gray-900 dark:text-white">Failure Settings</h3>
+
+            <div id="transient-failures-group" class="hidden">
+                <label for="transient-failures" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Transient Failures Before Success</label>
+                <input type="number" id="transient-failures" min="1" max="10" value="2" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+            </div>
+
+            <div>
+                <label for="error-code" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Error Code</label>
+                <input type="text" id="error-code" placeholder="e.g., INVALID_ACCOUNT" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+            </div>
+
+            <div>
+                <label for="error-message" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Error Message</label>
+                <input type="text" id="error-message" placeholder="e.g., Account not found" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+            </div>
+        </div>
+
+        <!-- Execution Settings -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label for="execution-time" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Execution Time (ms)</label>
+                <input type="number" id="execution-time" min="0" max="120000" value="0" placeholder="0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">How long the command handler takes to execute</p>
+            </div>
+
+            <div>
+                <label for="max-attempts" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Max Attempts (Override)</label>
+                <input type="number" id="max-attempts" min="1" max="10" placeholder="Use default" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty to use default from settings</p>
+            </div>
+        </div>
+
+        <!-- Custom Payload -->
+        <div>
+            <label for="payload" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Custom Payload (JSON)</label>
+            <textarea id="payload" rows="3" placeholder='{"key": "value"}' class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono"></textarea>
+        </div>
+
+        <!-- Submit Buttons -->
+        <div class="flex gap-3">
+            <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+                Send Command
+            </button>
+        </div>
+    </form>
+
+    <!-- Result Message -->
+    <div id="result-message" class="hidden mt-4 p-4 rounded-lg"></div>
+</div>
+
+<!-- Bulk Generation (placeholder for S025) -->
+<div class="bg-white rounded-lg shadow p-6 mt-6 dark:bg-gray-800">
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Bulk Generation</h2>
+    <p class="text-gray-500 dark:text-gray-400 text-sm">Bulk command generation will be available in a future update (S025).</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '{{ url_for("static", filename="src/api.js") }}';
+
+    const api = new ApiClient();
+    const behaviorType = document.getElementById('behavior-type');
+    const failureSettings = document.getElementById('failure-settings');
+    const transientFailuresGroup = document.getElementById('transient-failures-group');
+
+    // Show/hide failure settings based on behavior type
+    behaviorType.addEventListener('change', () => {
+        const type = behaviorType.value;
+        const showFailure = ['fail_permanent', 'fail_transient', 'fail_transient_then_succeed'].includes(type);
+        const showTransient = type === 'fail_transient_then_succeed';
+
+        failureSettings.classList.toggle('hidden', !showFailure);
+        transientFailuresGroup.classList.toggle('hidden', !showTransient);
+    });
+
+    // Load config
+    async function loadConfig() {
+        const config = await api.get('/config');
+        if (config) {
+            document.getElementById('config-visibility').textContent = config.worker.visibility_timeout + 's';
+            document.getElementById('config-max-attempts').textContent = config.retry.max_attempts;
+            document.getElementById('config-backoff').textContent =
+                `${config.retry.base_delay_ms/1000}s-${config.retry.max_delay_ms/1000}s (${config.retry.backoff_multiplier}x multiplier)`;
+        }
+    }
+
+    loadConfig();
+
+    // Form submission (placeholder - will be implemented in S018)
+    document.getElementById('command-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const resultDiv = document.getElementById('result-message');
+        resultDiv.className = 'mt-4 p-4 rounded-lg bg-yellow-50 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300';
+        resultDiv.textContent = 'Command sending will be implemented in S018.';
+        resultDiv.classList.remove('hidden');
+    });
+</script>
+{% endblock %}

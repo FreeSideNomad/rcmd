@@ -102,6 +102,9 @@ ignore = [
     "ARG",      # Unused arguments in tests (fixtures)
     "PLR2004",  # Magic values in tests are OK
 ]
+"tests/e2e/app/__init__.py" = [
+    "PLC0415",  # Flask app factory pattern requires imports inside function
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["commandbus"]

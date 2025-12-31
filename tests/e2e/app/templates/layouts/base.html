@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Command Bus E2E{% endblock %}</title>
+    <link href="{{ url_for('static', filename='dist/output.css') }}" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.2.1/flowbite.min.css" rel="stylesheet" />
+</head>
+<body class="bg-gray-50 dark:bg-gray-900">
+
+    {% include 'includes/navbar.html' %}
+
+    {% include 'includes/sidebar.html' %}
+
+    <div class="p-4 sm:ml-64 mt-14">
+        <div class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.2.1/flowbite.min.js"></script>
+    <script type="module" src="{{ url_for('static', filename='src/api.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

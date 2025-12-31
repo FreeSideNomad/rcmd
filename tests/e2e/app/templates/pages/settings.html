@@ -1,0 +1,148 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Settings - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
+    <p class="text-gray-500 dark:text-gray-400">Configure worker and retry parameters</p>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <!-- Worker Configuration -->
+    <div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Worker Configuration</h2>
+        <form id="worker-form" class="space-y-4">
+            <div>
+                <label for="visibility-timeout" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Visibility Timeout (seconds)</label>
+                <input type="number" id="visibility-timeout" min="5" max="300" value="30" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">How long before unacknowledged message is redelivered</p>
+            </div>
+
+            <div>
+                <label for="concurrency" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Concurrency</label>
+                <input type="number" id="concurrency" min="1" max="32" value="4" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Number of concurrent command processors</p>
+            </div>
+
+            <div>
+                <label for="poll-interval" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Poll Interval (seconds)</label>
+                <input type="number" id="poll-interval" min="0.1" max="10" step="0.1" value="1.0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">How often to poll queue for new messages</p>
+            </div>
+
+            <div>
+                <label for="batch-size" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Batch Size</label>
+                <input type="number" id="batch-size" min="1" max="100" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Number of messages to fetch per poll</p>
+            </div>
+
+            <button type="submit" class="w-full px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+                Save Worker Settings
+            </button>
+        </form>
+    </div>
+
+    <!-- Retry Configuration -->
+    <div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Retry Configuration</h2>
+        <form id="retry-form" class="space-y-4">
+            <div>
+                <label for="max-attempts" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Max Attempts</label>
+                <input type="number" id="max-attempts" min="1" max="10" value="3" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Maximum retry attempts before moving to TSQ</p>
+            </div>
+
+            <div>
+                <label for="base-delay" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Base Delay (ms)</label>
+                <input type="number" id="base-delay" min="100" max="60000" value="1000" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Base delay for exponential backoff</p>
+            </div>
+
+            <div>
+                <label for="max-delay" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Max Delay (ms)</label>
+                <input type="number" id="max-delay" min="1000" max="300000" value="60000" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Maximum delay between retries</p>
+            </div>
+
+            <div>
+                <label for="backoff-multiplier" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Backoff Multiplier</label>
+                <input type="number" id="backoff-multiplier" min="1" max="5" step="0.1" value="2.0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Multiplier for exponential backoff</p>
+            </div>
+
+            <button type="submit" class="w-full px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+                Save Retry Settings
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- Success/Error Message -->
+<div id="settings-message" class="hidden mt-4 p-4 rounded-lg"></div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '{{ url_for("static", filename="src/api.js") }}';
+
+    const api = new ApiClient();
+
+    async function loadConfig() {
+        const config = await api.get('/config');
+        if (config) {
+            // Worker settings
+            document.getElementById('visibility-timeout').value = config.worker.visibility_timeout;
+            document.getElementById('concurrency').value = config.worker.concurrency;
+            document.getElementById('poll-interval').value = config.worker.poll_interval;
+            document.getElementById('batch-size').value = config.worker.batch_size;
+
+            // Retry settings
+            document.getElementById('max-attempts').value = config.retry.max_attempts;
+            document.getElementById('base-delay').value = config.retry.base_delay_ms;
+            document.getElementById('max-delay').value = config.retry.max_delay_ms;
+            document.getElementById('backoff-multiplier').value = config.retry.backoff_multiplier;
+        }
+    }
+
+    function showMessage(text, isError = false) {
+        const div = document.getElementById('settings-message');
+        div.textContent = text;
+        div.className = `mt-4 p-4 rounded-lg ${isError
+            ? 'bg-red-50 text-red-800 dark:bg-red-900 dark:text-red-300'
+            : 'bg-green-50 text-green-800 dark:bg-green-900 dark:text-green-300'}`;
+        div.classList.remove('hidden');
+        setTimeout(() => div.classList.add('hidden'), 3000);
+    }
+
+    document.getElementById('worker-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const data = {
+            worker: {
+                visibility_timeout: parseInt(document.getElementById('visibility-timeout').value),
+                concurrency: parseInt(document.getElementById('concurrency').value),
+                poll_interval: parseFloat(document.getElementById('poll-interval').value),
+                batch_size: parseInt(document.getElementById('batch-size').value),
+            }
+        };
+        const result = await api.put('/config', data);
+        showMessage(result ? 'Worker settings saved!' : 'Failed to save', !result);
+    });
+
+    document.getElementById('retry-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const data = {
+            retry: {
+                max_attempts: parseInt(document.getElementById('max-attempts').value),
+                base_delay_ms: parseInt(document.getElementById('base-delay').value),
+                max_delay_ms: parseInt(document.getElementById('max-delay').value),
+                backoff_multiplier: parseFloat(document.getElementById('backoff-multiplier').value),
+            }
+        };
+        const result = await api.put('/config', data);
+        showMessage(result ? 'Retry settings saved!' : 'Failed to save', !result);
+    });
+
+    loadConfig();
+</script>
+{% endblock %}

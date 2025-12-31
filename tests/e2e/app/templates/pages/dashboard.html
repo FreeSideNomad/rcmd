@@ -1,0 +1,126 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Dashboard - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
+    <p class="text-gray-500 dark:text-gray-400">Overview of command processing status</p>
+</div>
+
+<!-- Status Cards -->
+<div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Pending</div>
+        <div class="text-2xl font-bold text-blue-600" id="count-pending">0</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">In Progress</div>
+        <div class="text-2xl font-bold text-yellow-500" id="count-in-progress">0</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Completed</div>
+        <div class="text-2xl font-bold text-green-600" id="count-completed">0</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Cancelled</div>
+        <div class="text-2xl font-bold text-gray-500" id="count-cancelled">0</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm font-medium text-gray-500 dark:text-gray-400">In TSQ</div>
+        <div class="text-2xl font-bold text-red-600" id="count-tsq">0</div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="bg-white rounded-lg shadow p-4 mb-6 dark:bg-gray-800">
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Quick Actions</h2>
+    <div class="flex flex-wrap gap-3">
+        <a href="/send-command" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+            Send Test Command
+        </a>
+        <a href="/commands" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600">
+            View All Commands
+        </a>
+        <a href="/tsq" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600">
+            View TSQ
+        </a>
+    </div>
+</div>
+
+<!-- Processing Rate -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Processing Rate</h2>
+        <div class="space-y-2">
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Commands/min</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="rate-per-minute">0</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Avg Processing Time</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="rate-avg-time">0ms</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Current Configuration</h2>
+        <div class="space-y-2 text-sm">
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Visibility Timeout</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="config-visibility">30s</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Max Attempts</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="config-max-attempts">3</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Backoff</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="config-backoff">1s-60s (2x)</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '{{ url_for("static", filename="src/api.js") }}';
+
+    const api = new ApiClient();
+
+    async function loadStats() {
+        const stats = await api.get('/stats/overview');
+        if (stats) {
+            document.getElementById('count-pending').textContent = stats.status_counts.PENDING || 0;
+            document.getElementById('count-in-progress').textContent = stats.status_counts.IN_PROGRESS || 0;
+            document.getElementById('count-completed').textContent = stats.status_counts.COMPLETED || 0;
+            document.getElementById('count-cancelled').textContent = stats.status_counts.CANCELLED || 0;
+            document.getElementById('count-tsq').textContent = stats.status_counts.IN_TSQ || 0;
+
+            if (stats.processing_rate) {
+                document.getElementById('rate-per-minute').textContent = stats.processing_rate.per_minute || 0;
+                document.getElementById('rate-avg-time').textContent = (stats.processing_rate.avg_time_ms || 0) + 'ms';
+            }
+        }
+    }
+
+    async function loadConfig() {
+        const config = await api.get('/config');
+        if (config) {
+            document.getElementById('config-visibility').textContent = config.worker.visibility_timeout + 's';
+            document.getElementById('config-max-attempts').textContent = config.retry.max_attempts;
+            document.getElementById('config-backoff').textContent =
+                `${config.retry.base_delay_ms/1000}s-${config.retry.max_delay_ms/1000}s (${config.retry.backoff_multiplier}x)`;
+        }
+    }
+
+    // Initial load
+    loadStats();
+    loadConfig();
+
+    // Refresh every 5 seconds
+    setInterval(loadStats, 5000);
+</script>
+{% endblock %}
