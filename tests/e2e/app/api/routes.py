@@ -368,3 +368,199 @@ def _generate_mock_tsq_commands(
         commands.append(cmd)
 
     return commands
+
+
+# =============================================================================
+# Audit Trail Endpoints
+# =============================================================================
+
+
+@api_bp.route("/audit/<command_id>", methods=["GET"])
+def get_audit_trail(command_id: str):
+    """Get audit trail for a specific command.
+
+    Returns chronological list of events for the command.
+    """
+    event_type = request.args.get("event_type")
+
+    # Generate mock audit events for demo
+    events = _generate_mock_audit_events(command_id, event_type)
+
+    # Calculate total duration
+    if events:
+        first_ts = datetime.fromisoformat(events[0]["timestamp"].replace("Z", "+00:00"))
+        last_ts = datetime.fromisoformat(events[-1]["timestamp"].replace("Z", "+00:00"))
+        total_duration_ms = int((last_ts - first_ts).total_seconds() * 1000)
+    else:
+        total_duration_ms = 0
+
+    return jsonify(
+        {
+            "command_id": command_id,
+            "events": events,
+            "total_duration_ms": total_duration_ms,
+        }
+    )
+
+
+@api_bp.route("/audit/search", methods=["GET"])
+def search_audit_events():
+    """Search audit events across commands.
+
+    Query Parameters:
+    - event_type: Filter by event type
+    - domain: Filter by domain
+    - start_date: ISO datetime
+    - end_date: ISO datetime
+    - limit: Page size (default 50)
+    - offset: Pagination offset
+    """
+    event_type = request.args.get("event_type")
+    domain = request.args.get("domain")
+    # Date filters captured for future DB implementation
+    _ = request.args.get("start_date")
+    _ = request.args.get("end_date")
+    limit = min(int(request.args.get("limit", 50)), 200)
+    offset = int(request.args.get("offset", 0))
+
+    # Generate mock events for demo
+    events = _generate_mock_search_events(
+        event_type=event_type, domain=domain, limit=limit, offset=offset
+    )
+
+    return jsonify(
+        {
+            "events": events,
+            "total": 150,  # Mock total
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+def _generate_mock_audit_events(
+    command_id: str,
+    event_type_filter: str | None = None,
+) -> list[dict]:
+    """Generate mock audit events for a command."""
+    # Create a realistic command lifecycle
+    base_time = datetime.now(UTC) - timedelta(hours=1)
+
+    all_events = [
+        {
+            "id": 1,
+            "event_type": "SENT",
+            "timestamp": base_time.isoformat().replace("+00:00", "Z"),
+            "details": {
+                "msg_id": random.randint(10000, 99999),
+                "domain": "e2e",
+                "command_type": "TestCommand",
+                "correlation_id": str(uuid.uuid4()),
+            },
+        },
+        {
+            "id": 2,
+            "event_type": "STARTED",
+            "timestamp": (base_time + timedelta(milliseconds=50))
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "details": {
+                "worker_id": "worker-1",
+                "attempt": 1,
+            },
+        },
+        {
+            "id": 3,
+            "event_type": "FAILED",
+            "timestamp": (base_time + timedelta(milliseconds=300))
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "details": {
+                "error_type": "TRANSIENT",
+                "error_code": "CONNECTION_TIMEOUT",
+                "error_message": "Connection timeout after 200ms",
+                "attempt": 1,
+                "max_attempts": 3,
+            },
+        },
+        {
+            "id": 4,
+            "event_type": "STARTED",
+            "timestamp": (base_time + timedelta(milliseconds=1300))
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "details": {
+                "worker_id": "worker-1",
+                "attempt": 2,
+            },
+        },
+        {
+            "id": 5,
+            "event_type": "COMPLETED",
+            "timestamp": (base_time + timedelta(milliseconds=1400))
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "details": {
+                "attempt": 2,
+                "result": {"status": "success", "data": {"processed": True}},
+            },
+        },
+    ]
+
+    # Filter by event type if specified
+    if event_type_filter:
+        all_events = [e for e in all_events if e["event_type"] == event_type_filter]
+
+    return all_events
+
+
+def _generate_mock_search_events(
+    event_type: str | None = None,
+    domain: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Generate mock search events for demo purposes."""
+    event_types = ["SENT", "STARTED", "COMPLETED", "FAILED", "MOVED_TO_TSQ"]
+    if event_type:
+        event_types = [event_type]
+
+    events = []
+    base_time = datetime.now(UTC)
+
+    for i in range(limit):
+        evt_type = random.choice(event_types)
+        created = base_time - timedelta(minutes=offset + i * 2)
+
+        evt = {
+            "id": offset + i + 1,
+            "command_id": str(uuid.uuid4()),
+            "event_type": evt_type,
+            "timestamp": created.isoformat().replace("+00:00", "Z"),
+            "domain": domain or "e2e",
+            "command_type": "TestCommand",
+            "details": _get_event_details(evt_type),
+        }
+        events.append(evt)
+
+    return events
+
+
+def _get_event_details(event_type: str) -> dict:
+    """Get mock details for an event type."""
+    details_map = {
+        "SENT": {"msg_id": random.randint(10000, 99999), "correlation_id": str(uuid.uuid4())},
+        "STARTED": {"worker_id": f"worker-{random.randint(1, 4)}", "attempt": 1},
+        "COMPLETED": {"attempt": random.randint(1, 3), "result": {"status": "success"}},
+        "FAILED": {
+            "error_type": random.choice(["TRANSIENT", "PERMANENT"]),
+            "error_code": random.choice(["TIMEOUT", "INVALID_DATA", "CONNECTION_ERROR"]),
+            "attempt": random.randint(1, 3),
+        },
+        "MOVED_TO_TSQ": {
+            "reason": "max_attempts_exceeded",
+            "attempts": 3,
+            "last_error": "CONNECTION_ERROR",
+        },
+    }
+    return details_map.get(event_type, {})
