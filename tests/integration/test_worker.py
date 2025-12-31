@@ -43,12 +43,18 @@ async def worker(pool: AsyncConnectionPool) -> Worker:
 
 @pytest.fixture
 async def cleanup_db(pool: AsyncConnectionPool):
-    """Clean up test data after each test."""
-    yield
+    """Clean up test data before and after each test."""
+    # Cleanup before test
     async with pool.connection() as conn:
         await conn.execute("DELETE FROM command_bus_audit")
         await conn.execute("DELETE FROM command_bus_command")
         # Clean up PGMQ queues
+        await conn.execute("DELETE FROM pgmq.q_payments__commands")
+    yield
+    # Cleanup after test
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM command_bus_audit")
+        await conn.execute("DELETE FROM command_bus_command")
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
 
 
