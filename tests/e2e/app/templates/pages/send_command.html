@@ -79,9 +79,9 @@
             <textarea id="payload" rows="3" placeholder='{"key": "value"}' class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono"></textarea>
         </div>
 
-        <!-- Submit Buttons -->
+        <!-- Submit Button -->
         <div class="flex gap-3">
-            <button type="submit" class="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+            <button type="submit" id="send-single-btn" class="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
                 Send Command
             </button>
         </div>
@@ -91,10 +91,36 @@
     <div id="result-message" class="hidden mt-4 p-4 rounded-lg"></div>
 </div>
 
-<!-- Bulk Generation (placeholder for S025) -->
+<!-- Bulk Generation -->
 <div class="bg-white rounded-lg shadow p-6 mt-6 dark:bg-gray-800">
     <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Bulk Generation</h2>
-    <p class="text-gray-500 dark:text-gray-400 text-sm">Bulk command generation will be available in a future update (S025).</p>
+    <form id="bulk-form" class="space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label for="bulk-count" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Count</label>
+                <input type="number" id="bulk-count" min="1" max="1000" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            </div>
+            <div>
+                <label for="bulk-behavior" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Behavior</label>
+                <select id="bulk-behavior" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                    <option value="success">Success</option>
+                    <option value="fail_permanent">Fail Permanent</option>
+                    <option value="fail_transient">Fail Transient</option>
+                    <option value="timeout">Timeout</option>
+                </select>
+            </div>
+            <div>
+                <label for="bulk-execution-time" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Execution Time (ms)</label>
+                <input type="number" id="bulk-execution-time" min="0" max="120000" value="50" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            </div>
+        </div>
+        <div>
+            <button type="submit" id="generate-bulk-btn" class="px-5 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 dark:focus:ring-green-800">
+                Generate Bulk Commands
+            </button>
+        </div>
+    </form>
+    <div id="bulk-result-message" class="hidden mt-4 p-4 rounded-lg"></div>
 </div>
 {% endblock %}
 
@@ -130,14 +156,106 @@
 
     loadConfig();
 
-    // Form submission (placeholder - will be implemented in S018)
+    // Show result message
+    function showResult(elementId, success, message) {
+        const resultDiv = document.getElementById(elementId);
+        if (success) {
+            resultDiv.className = 'mt-4 p-4 rounded-lg bg-green-50 text-green-800 dark:bg-green-900 dark:text-green-300';
+        } else {
+            resultDiv.className = 'mt-4 p-4 rounded-lg bg-red-50 text-red-800 dark:bg-red-900 dark:text-red-300';
+        }
+        resultDiv.innerHTML = message;
+        resultDiv.classList.remove('hidden');
+    }
+
+    // Single command form submission
     document.getElementById('command-form').addEventListener('submit', async (e) => {
         e.preventDefault();
 
-        const resultDiv = document.getElementById('result-message');
-        resultDiv.className = 'mt-4 p-4 rounded-lg bg-yellow-50 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300';
-        resultDiv.textContent = 'Command sending will be implemented in S018.';
-        resultDiv.classList.remove('hidden');
+        const type = document.getElementById('behavior-type').value;
+        const executionTime = parseInt(document.getElementById('execution-time').value) || 0;
+        const maxAttempts = document.getElementById('max-attempts').value;
+        const payloadText = document.getElementById('payload').value.trim();
+
+        // Build behavior object
+        const behavior = { type };
+        if (executionTime > 0) {
+            behavior.execution_time_ms = executionTime;
+        }
+
+        // Add failure-specific settings
+        if (['fail_permanent', 'fail_transient', 'fail_transient_then_succeed'].includes(type)) {
+            const errorCode = document.getElementById('error-code').value.trim();
+            const errorMessage = document.getElementById('error-message').value.trim();
+            if (errorCode) behavior.error_code = errorCode;
+            if (errorMessage) behavior.error_message = errorMessage;
+        }
+
+        if (type === 'fail_transient_then_succeed') {
+            behavior.transient_failures = parseInt(document.getElementById('transient-failures').value) || 2;
+        }
+
+        // Build request
+        const requestData = { behavior };
+
+        if (maxAttempts) {
+            requestData.max_attempts = parseInt(maxAttempts);
+        }
+
+        // Parse custom payload if provided
+        if (payloadText) {
+            try {
+                requestData.payload = JSON.parse(payloadText);
+            } catch (err) {
+                showResult('result-message', false, `Invalid JSON payload: ${err.message}`);
+                return;
+            }
+        }
+
+        try {
+            const result = await api.post('/commands', requestData);
+            if (result) {
+                showResult('result-message', true, `
+                    <div class="font-medium">Command created successfully!</div>
+                    <div class="mt-2 text-sm">
+                        <div>Command ID: <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">${result.command_id}</code></div>
+                        <div>Status: <span class="font-medium">${result.status}</span></div>
+                    </div>
+                `);
+            }
+        } catch (err) {
+            showResult('result-message', false, `Error: ${err.message}`);
+        }
+    });
+
+    // Bulk command form submission
+    document.getElementById('bulk-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const count = parseInt(document.getElementById('bulk-count').value) || 10;
+        const type = document.getElementById('bulk-behavior').value;
+        const executionTime = parseInt(document.getElementById('bulk-execution-time').value) || 0;
+
+        const behavior = { type };
+        if (executionTime > 0) {
+            behavior.execution_time_ms = executionTime;
+        }
+
+        try {
+            const result = await api.post('/commands/bulk', { count, behavior });
+            if (result) {
+                showResult('bulk-result-message', true, `
+                    <div class="font-medium">${result.created} commands created successfully!</div>
+                    <div class="mt-2 text-sm">
+                        First 5 IDs: ${result.command_ids.slice(0, 5).map(id =>
+                            `<code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">${id.substring(0, 8)}...</code>`
+                        ).join(', ')}
+                    </div>
+                `);
+            }
+        } catch (err) {
+            showResult('bulk-result-message', false, `Error: ${err.message}`);
+        }
     });
 </script>
 {% endblock %}
