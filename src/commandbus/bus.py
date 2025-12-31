@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from commandbus.exceptions import DuplicateCommandError
 from commandbus.models import CommandMetadata, CommandStatus
@@ -118,6 +119,7 @@ class CommandBus:
         """
         queue_name = _make_queue_name(domain)
         effective_max_attempts = max_attempts or self._default_max_attempts
+        effective_correlation_id = correlation_id if correlation_id is not None else uuid4()
 
         async with self._pool.connection() as conn, conn.transaction():
             # Check for duplicate command
@@ -130,7 +132,7 @@ class CommandBus:
                 command_type=command_type,
                 command_id=command_id,
                 data=data,
-                correlation_id=correlation_id,
+                correlation_id=effective_correlation_id,
                 reply_to=reply_to,
             )
 
@@ -147,7 +149,7 @@ class CommandBus:
                 attempts=0,
                 max_attempts=effective_max_attempts,
                 msg_id=msg_id,
-                correlation_id=correlation_id,
+                correlation_id=effective_correlation_id,
                 reply_to=reply_to,
                 created_at=now,
                 updated_at=now,
@@ -163,7 +165,7 @@ class CommandBus:
                 event_type=AuditEventType.SENT,
                 details={
                     "command_type": command_type,
-                    "correlation_id": str(correlation_id) if correlation_id else None,
+                    "correlation_id": str(effective_correlation_id),
                     "reply_to": reply_to,
                     "msg_id": msg_id,
                 },
@@ -182,7 +184,7 @@ class CommandBus:
         command_type: str,
         command_id: UUID,
         data: dict[str, Any],
-        correlation_id: UUID | None,
+        correlation_id: UUID,
         reply_to: str | None,
     ) -> dict[str, Any]:
         """Build the message payload for PGMQ.
@@ -192,7 +194,7 @@ class CommandBus:
             command_type: Type of command
             command_id: Command ID
             data: Command payload
-            correlation_id: Correlation ID
+            correlation_id: Correlation ID (always present, auto-generated if not provided)
             reply_to: Reply queue
 
         Returns:
@@ -202,11 +204,9 @@ class CommandBus:
             "domain": domain,
             "command_type": command_type,
             "command_id": str(command_id),
+            "correlation_id": str(correlation_id),
             "data": data,
         }
-
-        if correlation_id is not None:
-            message["correlation_id"] = str(correlation_id)
 
         if reply_to is not None:
             message["reply_to"] = reply_to
