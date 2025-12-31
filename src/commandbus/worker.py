@@ -280,7 +280,4 @@ class Worker:
                 conn=conn,
             )
 
-        logger.info(
-            f"Completed command {domain}.{command.command_type} "
-            f"(command_id={command_id})"
-        )
+        logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
