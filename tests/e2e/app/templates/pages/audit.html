@@ -5,30 +5,365 @@
 {% block content %}
 <div class="mb-4">
     <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Audit Trail</h1>
-    <p class="text-gray-500 dark:text-gray-400">View command event history</p>
+    <p class="text-gray-500 dark:text-gray-400">View command event history and timeline</p>
 </div>
 
 <!-- Search -->
 <div class="bg-white rounded-lg shadow p-4 mb-6 dark:bg-gray-800">
-    <div class="flex gap-4">
-        <div class="flex-1">
+    <form id="search-form" class="flex flex-wrap gap-4">
+        <div class="flex-1 min-w-[300px]">
             <label for="command-id" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Command ID</label>
             <input type="text" id="command-id" placeholder="Enter command UUID" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
         </div>
+        <div class="w-48">
+            <label for="event-filter" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Event Type</label>
+            <select id="event-filter" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <option value="">All Events</option>
+                <option value="SENT">SENT</option>
+                <option value="STARTED">STARTED</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="FAILED">FAILED</option>
+                <option value="MOVED_TO_TSQ">MOVED_TO_TSQ</option>
+                <option value="OPERATOR_RETRY">OPERATOR_RETRY</option>
+                <option value="OPERATOR_CANCEL">OPERATOR_CANCEL</option>
+                <option value="OPERATOR_COMPLETE">OPERATOR_COMPLETE</option>
+            </select>
+        </div>
         <div class="flex items-end">
-            <button class="px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+            <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:focus:ring-blue-800">
                 Search
             </button>
+        </div>
+    </form>
+</div>
+
+<!-- Command Info (shown after search) -->
+<div id="command-info" class="hidden bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 dark:bg-blue-900 dark:border-blue-700">
+    <div class="flex items-center justify-between">
+        <div>
+            <span class="text-blue-800 dark:text-blue-300 font-medium">Command ID:</span>
+            <code id="info-command-id" class="ml-2 bg-blue-100 dark:bg-blue-800 px-2 py-1 rounded text-sm"></code>
+        </div>
+        <div class="flex gap-4 text-sm text-blue-700 dark:text-blue-400">
+            <span>Events: <strong id="info-event-count">0</strong></span>
+            <span>Duration: <strong id="info-duration">0ms</strong></span>
         </div>
     </div>
 </div>
 
-<!-- Audit Trail (placeholder) -->
-<div class="bg-white rounded-lg shadow dark:bg-gray-800">
-    <div class="p-4">
-        <p class="text-gray-500 dark:text-gray-400 text-center py-8">
-            Audit Trail view will be implemented in S021.
-        </p>
+<!-- Timeline Container -->
+<div id="timeline-container" class="bg-white rounded-lg shadow dark:bg-gray-800">
+    <div id="timeline-placeholder" class="p-8 text-center">
+        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+        </svg>
+        <h3 class="mt-2 text-sm font-medium text-gray-900 dark:text-white">No audit trail loaded</h3>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Enter a command ID above to view its event history.</p>
+    </div>
+
+    <!-- Timeline (hidden initially) -->
+    <div id="timeline" class="hidden p-6">
+        <div class="relative">
+            <!-- Timeline Line -->
+            <div class="absolute left-4 top-0 bottom-0 w-0.5 bg-gray-200 dark:bg-gray-700"></div>
+
+            <!-- Events will be inserted here -->
+            <div id="events-list" class="space-y-6 ml-12"></div>
+        </div>
+    </div>
+
+    <!-- Loading State -->
+    <div id="timeline-loading" class="hidden p-8 text-center">
+        <svg class="animate-spin mx-auto h-8 w-8 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">Loading audit trail...</p>
+    </div>
+
+    <!-- No Results State -->
+    <div id="timeline-empty" class="hidden p-8 text-center">
+        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <h3 class="mt-2 text-sm font-medium text-gray-900 dark:text-white">No events found</h3>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">No audit events match your search criteria.</p>
     </div>
 </div>
+
+<!-- Event Detail Modal -->
+<div id="event-modal" tabindex="-1" aria-hidden="true" class="hidden overflow-y-auto overflow-x-hidden fixed top-0 right-0 left-0 z-50 justify-center items-center w-full md:inset-0 h-[calc(100%-1rem)] max-h-full">
+    <div class="fixed inset-0 bg-black bg-opacity-50"></div>
+    <div class="relative p-4 w-full max-w-2xl max-h-full mx-auto mt-20">
+        <div class="relative bg-white rounded-lg shadow dark:bg-gray-700">
+            <div class="flex items-center justify-between p-4 border-b dark:border-gray-600">
+                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">
+                    Event Details
+                </h3>
+                <button type="button" id="close-modal-btn" class="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm w-8 h-8 ml-auto inline-flex justify-center items-center dark:hover:bg-gray-600 dark:hover:text-white">
+                    <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 14 14">
+                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 6 6m0 0 6 6M7 7l6-6M7 7l-6 6"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-6">
+                <div class="mb-4">
+                    <span id="modal-event-type" class="px-3 py-1 text-sm font-medium rounded-full"></span>
+                    <span id="modal-timestamp" class="ml-2 text-sm text-gray-500 dark:text-gray-400"></span>
+                </div>
+                <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
+                    <pre id="modal-details" class="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap overflow-x-auto"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '{{ url_for("static", filename="src/api.js") }}';
+
+    const api = new ApiClient();
+
+    // Event type styling
+    const eventStyles = {
+        'SENT': { bg: 'bg-blue-100 dark:bg-blue-900', text: 'text-blue-800 dark:text-blue-300', icon: 'M13 10V3L4 14h7v7l9-11h-7z', iconBg: 'bg-blue-500' },
+        'STARTED': { bg: 'bg-yellow-100 dark:bg-yellow-900', text: 'text-yellow-800 dark:text-yellow-300', icon: 'M5 3l14 9-14 9V3z', iconBg: 'bg-yellow-500' },
+        'COMPLETED': { bg: 'bg-green-100 dark:bg-green-900', text: 'text-green-800 dark:text-green-300', icon: 'M5 13l4 4L19 7', iconBg: 'bg-green-500' },
+        'FAILED': { bg: 'bg-orange-100 dark:bg-orange-900', text: 'text-orange-800 dark:text-orange-300', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z', iconBg: 'bg-orange-500' },
+        'MOVED_TO_TSQ': { bg: 'bg-red-100 dark:bg-red-900', text: 'text-red-800 dark:text-red-300', icon: 'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636', iconBg: 'bg-red-500' },
+        'OPERATOR_RETRY': { bg: 'bg-purple-100 dark:bg-purple-900', text: 'text-purple-800 dark:text-purple-300', icon: 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15', iconBg: 'bg-purple-500' },
+        'OPERATOR_CANCEL': { bg: 'bg-gray-100 dark:bg-gray-900', text: 'text-gray-800 dark:text-gray-300', icon: 'M6 18L18 6M6 6l12 12', iconBg: 'bg-gray-500' },
+        'OPERATOR_COMPLETE': { bg: 'bg-cyan-100 dark:bg-cyan-900', text: 'text-cyan-800 dark:text-cyan-300', icon: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z', iconBg: 'bg-cyan-500' },
+    };
+
+    const defaultStyle = { bg: 'bg-gray-100 dark:bg-gray-900', text: 'text-gray-800 dark:text-gray-300', icon: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z', iconBg: 'bg-gray-500' };
+
+    // DOM elements
+    const searchForm = document.getElementById('search-form');
+    const commandIdInput = document.getElementById('command-id');
+    const eventFilter = document.getElementById('event-filter');
+    const commandInfo = document.getElementById('command-info');
+    const timelinePlaceholder = document.getElementById('timeline-placeholder');
+    const timeline = document.getElementById('timeline');
+    const timelineLoading = document.getElementById('timeline-loading');
+    const timelineEmpty = document.getElementById('timeline-empty');
+    const eventsList = document.getElementById('events-list');
+    const eventModal = document.getElementById('event-modal');
+    const closeModalBtn = document.getElementById('close-modal-btn');
+
+    // Format timestamp
+    function formatTimestamp(isoString) {
+        const date = new Date(isoString);
+        return date.toLocaleString();
+    }
+
+    // Format duration between events
+    function formatDuration(ms) {
+        if (ms < 1000) return `${ms}ms`;
+        if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+        return `${(ms / 60000).toFixed(1)}m`;
+    }
+
+    // Calculate time difference between two ISO timestamps
+    function getTimeDiff(ts1, ts2) {
+        const d1 = new Date(ts1);
+        const d2 = new Date(ts2);
+        return d2 - d1;
+    }
+
+    // Create event HTML
+    function createEventHTML(event, prevEvent) {
+        const style = eventStyles[event.event_type] || defaultStyle;
+        const timeDiff = prevEvent ? getTimeDiff(prevEvent.timestamp, event.timestamp) : 0;
+
+        return `
+            <div class="relative event-item" data-event='${JSON.stringify(event)}'>
+                <!-- Timeline Dot -->
+                <div class="absolute -left-12 mt-1.5 w-8 h-8 rounded-full ${style.iconBg} flex items-center justify-center">
+                    <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="${style.icon}" />
+                    </svg>
+                </div>
+
+                ${prevEvent ? `
+                <div class="absolute -left-8 -top-4 text-xs text-gray-400 dark:text-gray-500 font-mono">
+                    ${timeDiff >= 1000 ? `<span class="${timeDiff > 5000 ? 'text-orange-500' : ''}">+${formatDuration(timeDiff)}</span>` : ''}
+                </div>
+                ` : ''}
+
+                <!-- Event Card -->
+                <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                    <div class="flex items-start justify-between">
+                        <div>
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${style.bg} ${style.text}">
+                                ${event.event_type}
+                            </span>
+                            <span class="ml-2 text-sm text-gray-500 dark:text-gray-400">${formatTimestamp(event.timestamp)}</span>
+                        </div>
+                        <button class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="mt-2 text-sm text-gray-700 dark:text-gray-300">
+                        ${getEventSummary(event)}
+                    </div>
+                    ${event.details.error_message ? `
+                    <div class="mt-2 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded p-2">
+                        ${event.details.error_message}
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    // Get event summary text
+    function getEventSummary(event) {
+        const d = event.details;
+        switch (event.event_type) {
+            case 'SENT':
+                return `Command sent to queue (msg_id: ${d.msg_id})`;
+            case 'STARTED':
+                return `Worker ${d.worker_id} picked up command (attempt ${d.attempt})`;
+            case 'COMPLETED':
+                return `Command completed successfully on attempt ${d.attempt}`;
+            case 'FAILED':
+                return `${d.error_type} error: ${d.error_code} (attempt ${d.attempt}/${d.max_attempts || '?'})`;
+            case 'MOVED_TO_TSQ':
+                return `Moved to troubleshooting queue: ${d.reason}`;
+            case 'OPERATOR_RETRY':
+                return `Retried by operator ${d.operator || 'unknown'}`;
+            case 'OPERATOR_CANCEL':
+                return `Cancelled by operator ${d.operator || 'unknown'}`;
+            case 'OPERATOR_COMPLETE':
+                return `Manually completed by operator ${d.operator || 'unknown'}`;
+            default:
+                return JSON.stringify(d).slice(0, 100);
+        }
+    }
+
+    // Show states
+    function showState(state) {
+        timelinePlaceholder.classList.add('hidden');
+        timeline.classList.add('hidden');
+        timelineLoading.classList.add('hidden');
+        timelineEmpty.classList.add('hidden');
+
+        switch (state) {
+            case 'placeholder':
+                timelinePlaceholder.classList.remove('hidden');
+                commandInfo.classList.add('hidden');
+                break;
+            case 'loading':
+                timelineLoading.classList.remove('hidden');
+                break;
+            case 'empty':
+                timelineEmpty.classList.remove('hidden');
+                break;
+            case 'timeline':
+                timeline.classList.remove('hidden');
+                break;
+        }
+    }
+
+    // Load audit trail
+    async function loadAuditTrail(commandId, eventType) {
+        if (!commandId.trim()) {
+            showState('placeholder');
+            return;
+        }
+
+        showState('loading');
+
+        try {
+            let url = `/audit/${commandId}`;
+            if (eventType) {
+                url += `?event_type=${eventType}`;
+            }
+
+            const data = await api.get(url);
+
+            if (!data || !data.events || data.events.length === 0) {
+                showState('empty');
+                return;
+            }
+
+            // Update command info
+            document.getElementById('info-command-id').textContent = commandId;
+            document.getElementById('info-event-count').textContent = data.events.length;
+            document.getElementById('info-duration').textContent = formatDuration(data.total_duration_ms);
+            commandInfo.classList.remove('hidden');
+
+            // Render timeline
+            eventsList.innerHTML = '';
+            data.events.forEach((event, index) => {
+                const prevEvent = index > 0 ? data.events[index - 1] : null;
+                eventsList.innerHTML += createEventHTML(event, prevEvent);
+            });
+
+            // Add click handlers
+            document.querySelectorAll('.event-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const event = JSON.parse(item.dataset.event);
+                    showEventModal(event);
+                });
+            });
+
+            showState('timeline');
+        } catch (error) {
+            console.error('Error loading audit trail:', error);
+            showState('empty');
+        }
+    }
+
+    // Show event modal
+    function showEventModal(event) {
+        const style = eventStyles[event.event_type] || defaultStyle;
+
+        document.getElementById('modal-event-type').textContent = event.event_type;
+        document.getElementById('modal-event-type').className = `px-3 py-1 text-sm font-medium rounded-full ${style.bg} ${style.text}`;
+        document.getElementById('modal-timestamp').textContent = formatTimestamp(event.timestamp);
+        document.getElementById('modal-details').textContent = JSON.stringify(event.details, null, 2);
+
+        eventModal.classList.remove('hidden');
+        eventModal.classList.add('flex');
+    }
+
+    // Close modal
+    function closeModal() {
+        eventModal.classList.add('hidden');
+        eventModal.classList.remove('flex');
+    }
+
+    // Event listeners
+    searchForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        loadAuditTrail(commandIdInput.value, eventFilter.value);
+    });
+
+    eventFilter.addEventListener('change', () => {
+        if (commandIdInput.value.trim()) {
+            loadAuditTrail(commandIdInput.value, eventFilter.value);
+        }
+    });
+
+    closeModalBtn.addEventListener('click', closeModal);
+    eventModal.addEventListener('click', (e) => {
+        if (e.target === eventModal || e.target.classList.contains('bg-opacity-50')) {
+            closeModal();
+        }
+    });
+
+    // Check for command_id in URL params
+    const urlParams = new URLSearchParams(window.location.search);
+    const commandIdParam = urlParams.get('command_id');
+    if (commandIdParam) {
+        commandIdInput.value = commandIdParam;
+        loadAuditTrail(commandIdParam, '');
+    }
+</script>
 {% endblock %}
