@@ -20,8 +20,8 @@ CREATE TABLE IF NOT EXISTS command_bus_command (
     last_error_msg    TEXT NULL,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    reply_queue       TEXT NOT NULL,
-    correlation_id    UUID NOT NULL
+    reply_queue       TEXT NOT NULL DEFAULT '',
+    correlation_id    UUID NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_command_bus_command_domain_cmdid
@@ -60,6 +60,8 @@ SELECT pgmq.create('test__commands');
 SELECT pgmq.create('test__replies');
 SELECT pgmq.create('payments__commands');
 SELECT pgmq.create('payments__replies');
+SELECT pgmq.create('reports__commands');
+SELECT pgmq.create('reports__replies');
 
 -- Grant permissions (for non-superuser access if needed)
 -- GRANT ALL ON ALL TABLES IN SCHEMA public TO your_app_user;

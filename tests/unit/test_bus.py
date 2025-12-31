@@ -182,6 +182,44 @@ class TestCommandBusSend:
             assert str(command_id) in exc_info.value.command_id
 
     @pytest.mark.asyncio
+    async def test_send_same_id_different_domain_allowed(self, command_bus: CommandBus) -> None:
+        """Test that same command_id is allowed in different domains."""
+        command_id = uuid4()
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists", new_callable=AsyncMock
+            ) as mock_exists,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_pgmq_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            # exists() checks per-domain, so same ID in different domain returns False
+            mock_exists.return_value = False
+            mock_pgmq_send.return_value = 42
+
+            # Send to first domain
+            result1 = await command_bus.send(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=command_id,
+                data={"account_id": "123"},
+            )
+
+            # Send same command_id to different domain - should succeed
+            result2 = await command_bus.send(
+                domain="reports",
+                command_type="GenerateReport",
+                command_id=command_id,
+                data={"report_type": "summary"},
+            )
+
+            assert result1.command_id == command_id
+            assert result2.command_id == command_id
+            # Both should have different msg_ids from PGMQ
+            assert mock_pgmq_send.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_send_stores_pending_status(self, command_bus: CommandBus) -> None:
         """Test that command is stored with PENDING status."""
         command_id = uuid4()
