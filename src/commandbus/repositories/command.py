@@ -301,6 +301,54 @@ class PostgresCommandRepository:
             row = await cur.fetchone()
             return int(row[0]) if row else 0
 
+    async def update_error(
+        self,
+        domain: str,
+        command_id: UUID,
+        error_type: str,
+        error_code: str,
+        error_msg: str,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> None:
+        """Update the last error information for a command.
+
+        Args:
+            domain: The domain
+            command_id: The command ID
+            error_type: Type of error (e.g., 'TRANSIENT', 'PERMANENT')
+            error_code: Error code
+            error_msg: Error message
+            conn: Optional connection (for transaction support)
+        """
+        if conn is not None:
+            await self._update_error(conn, domain, command_id, error_type, error_code, error_msg)
+        else:
+            async with self._pool.connection() as acquired_conn:
+                await self._update_error(
+                    acquired_conn, domain, command_id, error_type, error_code, error_msg
+                )
+
+    async def _update_error(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_id: UUID,
+        error_type: str,
+        error_code: str,
+        error_msg: str,
+    ) -> None:
+        """Update error info using an existing connection."""
+        await conn.execute(
+            """
+            UPDATE command_bus_command
+            SET last_error_type = %s, last_error_code = %s, last_error_msg = %s,
+                updated_at = NOW()
+            WHERE domain = %s AND command_id = %s
+            """,
+            (error_type, error_code, error_msg, domain, command_id),
+        )
+        logger.debug(f"Updated error for {domain}.{command_id}: [{error_code}] {error_msg}")
+
     async def exists(
         self,
         domain: str,
