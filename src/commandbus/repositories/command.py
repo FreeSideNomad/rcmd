@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from commandbus.models import CommandMetadata, CommandStatus
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from uuid import UUID
 
     from psycopg import AsyncConnection
@@ -54,6 +55,19 @@ class CommandRepository(Protocol):
         conn: AsyncConnection[Any] | None = None,
     ) -> bool:
         """Check if a command exists."""
+        ...
+
+    async def query(
+        self,
+        status: CommandStatus | None = None,
+        domain: str | None = None,
+        command_type: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CommandMetadata]:
+        """Query commands with filters."""
         ...
 
 
@@ -390,3 +404,106 @@ class PostgresCommandRepository:
             )
             row = await cur.fetchone()
             return bool(row[0]) if row else False
+
+    async def query(
+        self,
+        status: CommandStatus | None = None,
+        domain: str | None = None,
+        command_type: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CommandMetadata]:
+        """Query commands with filters.
+
+        Args:
+            status: Filter by status
+            domain: Filter by domain
+            command_type: Filter by command type
+            created_after: Filter by created_at >= this datetime
+            created_before: Filter by created_at <= this datetime
+            limit: Maximum number of results (default 100)
+            offset: Number of results to skip (default 0)
+
+        Returns:
+            List of CommandMetadata matching the filters, ordered by created_at DESC
+        """
+        async with self._pool.connection() as conn:
+            return await self._query(
+                conn, status, domain, command_type, created_after, created_before, limit, offset
+            )
+
+    async def _query(
+        self,
+        conn: AsyncConnection[Any],
+        status: CommandStatus | None,
+        domain: str | None,
+        command_type: str | None,
+        created_after: datetime | None,
+        created_before: datetime | None,
+        limit: int,
+        offset: int,
+    ) -> list[CommandMetadata]:
+        """Query using an existing connection."""
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if status is not None:
+            conditions.append("status = %s")
+            params.append(status.value)
+
+        if domain is not None:
+            conditions.append("domain = %s")
+            params.append(domain)
+
+        if command_type is not None:
+            conditions.append("command_type = %s")
+            params.append(command_type)
+
+        if created_after is not None:
+            conditions.append("created_at >= %s")
+            params.append(created_after)
+
+        if created_before is not None:
+            conditions.append("created_at <= %s")
+            params.append(created_before)
+
+        where_clause = " AND ".join(conditions) if conditions else "TRUE"
+        params.extend([limit, offset])
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT domain, command_id, command_type, status, attempts,
+                       max_attempts, msg_id, correlation_id, reply_queue,
+                       last_error_type, last_error_code, last_error_msg,
+                       created_at, updated_at
+                FROM command_bus_command
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            CommandMetadata(
+                domain=row[0],
+                command_id=row[1],
+                command_type=row[2],
+                status=CommandStatus(row[3]),
+                attempts=row[4],
+                max_attempts=row[5],
+                msg_id=row[6],
+                correlation_id=row[7],
+                reply_to=row[8] if row[8] else None,
+                last_error_type=row[9],
+                last_error_code=row[10],
+                last_error_msg=row[11],
+                created_at=row[12],
+                updated_at=row[13],
+            )
+            for row in rows
+        ]

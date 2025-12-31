@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from commandbus.exceptions import DuplicateCommandError
 from commandbus.models import AuditEvent, CommandMetadata, CommandStatus
@@ -15,8 +15,6 @@ from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -265,3 +263,51 @@ class CommandBus:
             List of AuditEvent in chronological order (empty if not found)
         """
         return await self._audit_logger.get_events(command_id, domain)
+
+    async def query_commands(
+        self,
+        status: CommandStatus | None = None,
+        domain: str | None = None,
+        command_type: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CommandMetadata]:
+        """Query commands with filters.
+
+        Returns commands matching the specified filters, ordered by created_at
+        descending (most recent first).
+
+        Args:
+            status: Filter by command status
+            domain: Filter by domain
+            command_type: Filter by command type
+            created_after: Filter by created_at >= this datetime
+            created_before: Filter by created_at <= this datetime
+            limit: Maximum number of results (default 100)
+            offset: Number of results to skip for pagination (default 0)
+
+        Returns:
+            List of CommandMetadata matching the filters
+
+        Example:
+            # Get all pending commands in payments domain
+            pending = await bus.query_commands(
+                status=CommandStatus.PENDING,
+                domain="payments",
+            )
+
+            # Paginate through results
+            page1 = await bus.query_commands(limit=50, offset=0)
+            page2 = await bus.query_commands(limit=50, offset=50)
+        """
+        return await self._command_repo.query(
+            status=status,
+            domain=domain,
+            command_type=command_type,
+            created_after=created_after,
+            created_before=created_before,
+            limit=limit,
+            offset=offset,
+        )

@@ -453,3 +453,215 @@ class TestPostgresAuditLoggerGetEvents:
         assert events[1].audit_id == 2
         assert events[1].event_type == "RECEIVED"
         assert events[1].details is None
+
+
+class TestPostgresCommandRepositoryQuery:
+    """Tests for PostgresCommandRepository.query()."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool."""
+        pool = MagicMock()
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        now = datetime.now(UTC)
+        command_id = uuid4()
+        correlation_id = uuid4()
+
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(
+            return_value=[
+                (
+                    "payments",  # domain
+                    command_id,  # command_id
+                    "DebitAccount",  # command_type
+                    "PENDING",  # status
+                    0,  # attempts
+                    3,  # max_attempts
+                    1,  # msg_id
+                    correlation_id,  # correlation_id
+                    "",  # reply_queue
+                    None,  # last_error_type
+                    None,  # last_error_code
+                    None,  # last_error_msg
+                    now,  # created_at
+                    now,  # updated_at
+                ),
+            ]
+        )
+
+        @asynccontextmanager
+        async def mock_cursor():
+            yield cursor
+
+        conn.cursor = mock_cursor
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        pool.connection = mock_connection
+        pool._mock_cursor = cursor
+        pool._command_id = command_id
+        return pool
+
+    @pytest.fixture
+    def repo(self, mock_pool: MagicMock) -> PostgresCommandRepository:
+        """Create a repository with mocked pool."""
+        return PostgresCommandRepository(mock_pool)
+
+    @pytest.mark.asyncio
+    async def test_query_returns_command_metadata(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query returns list of CommandMetadata."""
+        result = await repo.query()
+
+        assert len(result) == 1
+        assert result[0].domain == "payments"
+        assert result[0].command_type == "DebitAccount"
+        assert result[0].status == CommandStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_query_with_status_filter(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query with status filter."""
+        await repo.query(status=CommandStatus.PENDING)
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        params = call_args[0][1]
+
+        assert "status = %s" in sql
+        assert "PENDING" in params
+
+    @pytest.mark.asyncio
+    async def test_query_with_domain_filter(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query with domain filter."""
+        await repo.query(domain="payments")
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        params = call_args[0][1]
+
+        assert "domain = %s" in sql
+        assert "payments" in params
+
+    @pytest.mark.asyncio
+    async def test_query_with_command_type_filter(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query with command_type filter."""
+        await repo.query(command_type="DebitAccount")
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        params = call_args[0][1]
+
+        assert "command_type = %s" in sql
+        assert "DebitAccount" in params
+
+    @pytest.mark.asyncio
+    async def test_query_with_date_filters(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query with date range filters."""
+        now = datetime.now(UTC)
+        created_after = now
+        created_before = now
+
+        await repo.query(created_after=created_after, created_before=created_before)
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        params = call_args[0][1]
+
+        assert "created_at >= %s" in sql
+        assert "created_at <= %s" in sql
+        assert created_after in params
+        assert created_before in params
+
+    @pytest.mark.asyncio
+    async def test_query_with_pagination(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query with pagination."""
+        await repo.query(limit=50, offset=100)
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        params = call_args[0][1]
+
+        assert "LIMIT %s OFFSET %s" in sql
+        assert 50 in params
+        assert 100 in params
+
+    @pytest.mark.asyncio
+    async def test_query_orders_by_created_at_desc(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query orders by created_at descending."""
+        await repo.query()
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+
+        assert "ORDER BY created_at DESC" in sql
+
+    @pytest.mark.asyncio
+    async def test_query_combined_filters(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query with multiple combined filters."""
+        await repo.query(
+            status=CommandStatus.PENDING,
+            domain="payments",
+            command_type="DebitAccount",
+        )
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+        params = call_args[0][1]
+
+        assert "status = %s" in sql
+        assert "domain = %s" in sql
+        assert "command_type = %s" in sql
+        assert " AND " in sql
+        assert "PENDING" in params
+        assert "payments" in params
+        assert "DebitAccount" in params
+
+    @pytest.mark.asyncio
+    async def test_query_empty_result(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query returns empty list when no matches."""
+        mock_pool._mock_cursor.fetchall = AsyncMock(return_value=[])
+
+        result = await repo.query()
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_query_no_filters_uses_true(
+        self, repo: PostgresCommandRepository, mock_pool: MagicMock
+    ) -> None:
+        """Test query with no filters uses TRUE in WHERE clause."""
+        await repo.query()
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        sql = call_args[0][0]
+
+        assert "WHERE TRUE" in sql
