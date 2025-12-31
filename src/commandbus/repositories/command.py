@@ -259,6 +259,48 @@ class PostgresCommandRepository:
             (msg_id, domain, command_id),
         )
 
+    async def increment_attempts(
+        self,
+        domain: str,
+        command_id: UUID,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> int:
+        """Increment attempts counter and return new value.
+
+        Args:
+            domain: The domain
+            command_id: The command ID
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            New attempts value after increment
+        """
+        if conn is not None:
+            return await self._increment_attempts(conn, domain, command_id)
+
+        async with self._pool.connection() as acquired_conn:
+            return await self._increment_attempts(acquired_conn, domain, command_id)
+
+    async def _increment_attempts(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_id: UUID,
+    ) -> int:
+        """Increment attempts using an existing connection."""
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE command_bus_command
+                SET attempts = attempts + 1, updated_at = NOW()
+                WHERE domain = %s AND command_id = %s
+                RETURNING attempts
+                """,
+                (domain, command_id),
+            )
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
     async def exists(
         self,
         domain: str,
