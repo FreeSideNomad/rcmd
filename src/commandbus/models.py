@@ -183,3 +183,24 @@ class TroubleshootingItem:
     payload: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class AuditEvent:
+    """An audit event in a command's lifecycle.
+
+    Attributes:
+        audit_id: Unique identifier for this audit event
+        domain: The domain of the command
+        command_id: The command ID
+        event_type: Type of event (SENT, RECEIVED, FAILED, etc.)
+        timestamp: When the event occurred
+        details: Optional additional details (error info, etc.)
+    """
+
+    audit_id: int
+    domain: str
+    command_id: UUID
+    event_type: str
+    timestamp: datetime
+    details: dict[str, Any] | None = None

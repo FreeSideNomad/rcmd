@@ -13,6 +13,7 @@ from commandbus.exceptions import (
 )
 from commandbus.handler import HandlerRegistry
 from commandbus.models import (
+    AuditEvent,
     Command,
     CommandMetadata,
     CommandStatus,
@@ -29,6 +30,7 @@ from commandbus.worker import ReceivedCommand, Worker
 
 __all__ = [
     "DEFAULT_RETRY_POLICY",
+    "AuditEvent",
     "AuditEventType",
     "Command",
     "CommandBus",

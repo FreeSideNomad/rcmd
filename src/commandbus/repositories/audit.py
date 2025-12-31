@@ -7,6 +7,8 @@ import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
+from commandbus.models import AuditEvent
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -103,7 +105,7 @@ class PostgresAuditLogger:
         self,
         command_id: UUID,
         domain: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[AuditEvent]:
         """Get audit events for a command.
 
         Args:
@@ -111,7 +113,7 @@ class PostgresAuditLogger:
             domain: Optional domain filter
 
         Returns:
-            List of audit events
+            List of audit events ordered by timestamp ascending
         """
         async with self._pool.connection() as conn:
             async with conn.cursor() as cur:
@@ -138,13 +140,13 @@ class PostgresAuditLogger:
                 rows = await cur.fetchall()
 
             return [
-                {
-                    "audit_id": row[0],
-                    "domain": row[1],
-                    "command_id": row[2],
-                    "event_type": row[3],
-                    "ts": row[4],
-                    "details": json.loads(row[5]) if row[5] else None,
-                }
+                AuditEvent(
+                    audit_id=row[0],
+                    domain=row[1],
+                    command_id=row[2],
+                    event_type=row[3],
+                    timestamp=row[4],
+                    details=row[5] if row[5] else None,
+                )
                 for row in rows
             ]

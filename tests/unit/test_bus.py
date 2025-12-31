@@ -1,6 +1,7 @@
 """Unit tests for CommandBus send functionality."""
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ import pytest
 
 from commandbus.bus import CommandBus, SendResult, _make_queue_name
 from commandbus.exceptions import DuplicateCommandError
-from commandbus.models import CommandStatus
+from commandbus.models import AuditEvent, CommandStatus
 from commandbus.repositories.audit import AuditEventType
 
 
@@ -518,3 +519,118 @@ class TestCommandBusCommandExists:
 
             assert result is True
             mock_exists.assert_called_once_with("payments", command_id)
+
+
+class TestCommandBusGetAuditTrail:
+    """Tests for CommandBus.get_audit_trail()."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool."""
+        return MagicMock()
+
+    @pytest.fixture
+    def command_bus(self, mock_pool: MagicMock) -> CommandBus:
+        """Create a CommandBus with mocked dependencies."""
+        return CommandBus(mock_pool)
+
+    @pytest.mark.asyncio
+    async def test_get_audit_trail_delegates_to_logger(self, command_bus: CommandBus) -> None:
+        """Test that get_audit_trail delegates to audit logger."""
+        command_id = uuid4()
+
+        mock_events = [
+            AuditEvent(
+                audit_id=1,
+                domain="payments",
+                command_id=command_id,
+                event_type="SENT",
+                timestamp=datetime.now(UTC),
+                details={"msg_id": 42},
+            ),
+        ]
+
+        with patch.object(
+            command_bus._audit_logger, "get_events", new_callable=AsyncMock
+        ) as mock_get_events:
+            mock_get_events.return_value = mock_events
+
+            result = await command_bus.get_audit_trail(command_id)
+
+            assert result == mock_events
+            mock_get_events.assert_called_once_with(command_id, None)
+
+    @pytest.mark.asyncio
+    async def test_get_audit_trail_with_domain(self, command_bus: CommandBus) -> None:
+        """Test get_audit_trail with domain filter."""
+        command_id = uuid4()
+
+        with patch.object(
+            command_bus._audit_logger, "get_events", new_callable=AsyncMock
+        ) as mock_get_events:
+            mock_get_events.return_value = []
+
+            await command_bus.get_audit_trail(command_id, domain="payments")
+
+            mock_get_events.assert_called_once_with(command_id, "payments")
+
+    @pytest.mark.asyncio
+    async def test_get_audit_trail_returns_empty_for_unknown(self, command_bus: CommandBus) -> None:
+        """Test get_audit_trail returns empty list for unknown command."""
+        command_id = uuid4()
+
+        with patch.object(
+            command_bus._audit_logger, "get_events", new_callable=AsyncMock
+        ) as mock_get_events:
+            mock_get_events.return_value = []
+
+            result = await command_bus.get_audit_trail(command_id)
+
+            assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_audit_trail_returns_chronological_order(
+        self, command_bus: CommandBus
+    ) -> None:
+        """Test get_audit_trail returns events in chronological order."""
+        command_id = uuid4()
+
+        now = datetime.now(UTC)
+        mock_events = [
+            AuditEvent(
+                audit_id=1,
+                domain="payments",
+                command_id=command_id,
+                event_type="SENT",
+                timestamp=now,
+                details=None,
+            ),
+            AuditEvent(
+                audit_id=2,
+                domain="payments",
+                command_id=command_id,
+                event_type="RECEIVED",
+                timestamp=now + timedelta(seconds=1),
+                details=None,
+            ),
+            AuditEvent(
+                audit_id=3,
+                domain="payments",
+                command_id=command_id,
+                event_type="COMPLETED",
+                timestamp=now + timedelta(seconds=2),
+                details=None,
+            ),
+        ]
+
+        with patch.object(
+            command_bus._audit_logger, "get_events", new_callable=AsyncMock
+        ) as mock_get_events:
+            mock_get_events.return_value = mock_events
+
+            result = await command_bus.get_audit_trail(command_id)
+
+            assert len(result) == 3
+            assert result[0].event_type == "SENT"
+            assert result[1].event_type == "RECEIVED"
+            assert result[2].event_type == "COMPLETED"

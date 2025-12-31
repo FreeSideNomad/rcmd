@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from commandbus.models import CommandMetadata, CommandStatus
+from commandbus.models import AuditEvent, CommandMetadata, CommandStatus
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
 
@@ -351,7 +351,7 @@ class TestPostgresAuditLoggerGetEvents:
         cursor.execute = AsyncMock()
         cursor.fetchall = AsyncMock(
             return_value=[
-                (1, "payments", command_id, "SENT", now, '{"key": "value"}'),
+                (1, "payments", command_id, "SENT", now, {"key": "value"}),
             ]
         )
 
@@ -381,8 +381,9 @@ class TestPostgresAuditLoggerGetEvents:
         events = await logger.get_events(mock_pool._command_id)
 
         assert len(events) == 1
-        assert events[0]["event_type"] == "SENT"
-        assert events[0]["details"] == {"key": "value"}
+        assert isinstance(events[0], AuditEvent)
+        assert events[0].event_type == "SENT"
+        assert events[0].details == {"key": "value"}
 
     @pytest.mark.asyncio
     async def test_get_events_with_domain(
@@ -392,6 +393,7 @@ class TestPostgresAuditLoggerGetEvents:
         events = await logger.get_events(mock_pool._command_id, domain="payments")
 
         assert len(events) == 1
+        assert isinstance(events[0], AuditEvent)
 
     @pytest.mark.asyncio
     async def test_get_events_empty(
@@ -419,4 +421,35 @@ class TestPostgresAuditLoggerGetEvents:
 
         events = await logger.get_events(command_id)
 
-        assert events[0]["details"] is None
+        assert events[0].details is None
+
+    @pytest.mark.asyncio
+    async def test_get_events_returns_audit_event_objects(
+        self, logger: PostgresAuditLogger, mock_pool: MagicMock
+    ) -> None:
+        """Test that get_events returns AuditEvent objects with correct attributes."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+        mock_pool._mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                (1, "payments", command_id, "SENT", now, {"msg_id": 42}),
+                (2, "payments", command_id, "RECEIVED", now, None),
+            ]
+        )
+
+        events = await logger.get_events(command_id)
+
+        assert len(events) == 2
+
+        # Check first event
+        assert events[0].audit_id == 1
+        assert events[0].domain == "payments"
+        assert events[0].command_id == command_id
+        assert events[0].event_type == "SENT"
+        assert events[0].timestamp == now
+        assert events[0].details == {"msg_id": 42}
+
+        # Check second event
+        assert events[1].audit_id == 2
+        assert events[1].event_type == "RECEIVED"
+        assert events[1].details is None
