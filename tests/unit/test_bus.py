@@ -634,3 +634,125 @@ class TestCommandBusGetAuditTrail:
             assert result[0].event_type == "SENT"
             assert result[1].event_type == "RECEIVED"
             assert result[2].event_type == "COMPLETED"
+
+
+class TestCommandBusQueryCommands:
+    """Tests for CommandBus.query_commands()."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool."""
+        return MagicMock()
+
+    @pytest.fixture
+    def command_bus(self, mock_pool: MagicMock) -> CommandBus:
+        """Create a CommandBus with mocked dependencies."""
+        return CommandBus(mock_pool)
+
+    @pytest.mark.asyncio
+    async def test_query_commands_delegates_to_repo(self, command_bus: CommandBus) -> None:
+        """Test that query_commands delegates to repository."""
+        with patch.object(command_bus._command_repo, "query", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = []
+
+            result = await command_bus.query_commands()
+
+            assert result == []
+            mock_query.assert_called_once_with(
+                status=None,
+                domain=None,
+                command_type=None,
+                created_after=None,
+                created_before=None,
+                limit=100,
+                offset=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_query_commands_with_status_filter(self, command_bus: CommandBus) -> None:
+        """Test query_commands with status filter."""
+        with patch.object(command_bus._command_repo, "query", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = []
+
+            await command_bus.query_commands(status=CommandStatus.PENDING)
+
+            mock_query.assert_called_once()
+            call_kwargs = mock_query.call_args[1]
+            assert call_kwargs["status"] == CommandStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_query_commands_with_domain_filter(self, command_bus: CommandBus) -> None:
+        """Test query_commands with domain filter."""
+        with patch.object(command_bus._command_repo, "query", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = []
+
+            await command_bus.query_commands(domain="payments")
+
+            mock_query.assert_called_once()
+            call_kwargs = mock_query.call_args[1]
+            assert call_kwargs["domain"] == "payments"
+
+    @pytest.mark.asyncio
+    async def test_query_commands_with_command_type_filter(self, command_bus: CommandBus) -> None:
+        """Test query_commands with command_type filter."""
+        with patch.object(command_bus._command_repo, "query", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = []
+
+            await command_bus.query_commands(command_type="DebitAccount")
+
+            mock_query.assert_called_once()
+            call_kwargs = mock_query.call_args[1]
+            assert call_kwargs["command_type"] == "DebitAccount"
+
+    @pytest.mark.asyncio
+    async def test_query_commands_with_date_filters(self, command_bus: CommandBus) -> None:
+        """Test query_commands with date range filters."""
+        now = datetime.now(UTC)
+        created_after = now - timedelta(days=7)
+        created_before = now
+
+        with patch.object(command_bus._command_repo, "query", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = []
+
+            await command_bus.query_commands(
+                created_after=created_after,
+                created_before=created_before,
+            )
+
+            mock_query.assert_called_once()
+            call_kwargs = mock_query.call_args[1]
+            assert call_kwargs["created_after"] == created_after
+            assert call_kwargs["created_before"] == created_before
+
+    @pytest.mark.asyncio
+    async def test_query_commands_with_pagination(self, command_bus: CommandBus) -> None:
+        """Test query_commands with pagination."""
+        with patch.object(command_bus._command_repo, "query", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = []
+
+            await command_bus.query_commands(limit=50, offset=100)
+
+            mock_query.assert_called_once()
+            call_kwargs = mock_query.call_args[1]
+            assert call_kwargs["limit"] == 50
+            assert call_kwargs["offset"] == 100
+
+    @pytest.mark.asyncio
+    async def test_query_commands_with_combined_filters(self, command_bus: CommandBus) -> None:
+        """Test query_commands with multiple filters combined."""
+        with patch.object(command_bus._command_repo, "query", new_callable=AsyncMock) as mock_query:
+            mock_query.return_value = []
+
+            await command_bus.query_commands(
+                status=CommandStatus.PENDING,
+                domain="payments",
+                command_type="DebitAccount",
+                limit=50,
+            )
+
+            mock_query.assert_called_once()
+            call_kwargs = mock_query.call_args[1]
+            assert call_kwargs["status"] == CommandStatus.PENDING
+            assert call_kwargs["domain"] == "payments"
+            assert call_kwargs["command_type"] == "DebitAccount"
+            assert call_kwargs["limit"] == 50
