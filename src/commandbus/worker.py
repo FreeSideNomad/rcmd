@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from commandbus.models import (
     Command,
     CommandMetadata,
@@ -17,6 +18,7 @@ from commandbus.models import (
     ReplyOutcome,
 )
 from commandbus.pgmq.client import PgmqClient
+from commandbus.policies import DEFAULT_RETRY_POLICY, RetryPolicy
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
 
@@ -78,6 +80,7 @@ class Worker:
         domain: str,
         registry: HandlerRegistry | None = None,
         visibility_timeout: int = 30,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         """Initialize the worker.
 
@@ -86,11 +89,13 @@ class Worker:
             domain: The domain to process commands for
             registry: Handler registry for dispatching commands
             visibility_timeout: Default visibility timeout in seconds
+            retry_policy: Policy for retry behavior and backoff
         """
         self._pool = pool
         self._domain = domain
         self._registry = registry
         self._visibility_timeout = visibility_timeout
+        self._retry_policy = retry_policy or DEFAULT_RETRY_POLICY
         self._queue_name = _make_queue_name(domain)
         self._pgmq = PgmqClient(pool)
         self._command_repo = PostgresCommandRepository(pool)
@@ -297,6 +302,77 @@ class Worker:
 
         logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
 
+    async def fail(
+        self,
+        received: ReceivedCommand,
+        error: TransientCommandError | Exception,
+        is_transient: bool = True,
+    ) -> None:
+        """Record a command failure and schedule retry if applicable.
+
+        For transient errors, applies backoff and leaves the message to expire.
+        For permanent errors, this method does NOT handle them - use a separate
+        method for permanent failure handling.
+
+        Args:
+            received: The received command that failed
+            error: The error that occurred
+            is_transient: Whether this is a transient (retryable) error
+        """
+        command = received.command
+        command_id = command.command_id
+        domain = command.domain
+        attempt = received.context.attempt
+
+        # Extract error details
+        if isinstance(error, TransientCommandError):
+            error_type = "TRANSIENT"
+            error_code = error.code
+            error_msg = error.error_message
+        elif isinstance(error, PermanentCommandError):
+            error_type = "PERMANENT"
+            error_code = error.code
+            error_msg = error.error_message
+        else:
+            # Unknown exception treated as transient
+            error_type = "TRANSIENT"
+            error_code = type(error).__name__
+            error_msg = str(error)
+
+        # Update error information in metadata
+        await self._command_repo.update_error(domain, command_id, error_type, error_code, error_msg)
+
+        # Record audit event
+        await self._audit_logger.log(
+            domain=domain,
+            command_id=command_id,
+            event_type=AuditEventType.FAILED,
+            details={
+                "msg_id": received.msg_id,
+                "attempt": attempt,
+                "max_attempts": received.metadata.max_attempts,
+                "error_type": error_type,
+                "error_code": error_code,
+                "error_msg": error_msg,
+            },
+        )
+
+        # Apply backoff by extending visibility timeout
+        if is_transient and self._retry_policy.should_retry(attempt):
+            backoff = self._retry_policy.get_backoff(attempt)
+            await self._pgmq.set_vt(self._queue_name, received.msg_id, backoff)
+            logger.info(
+                f"Transient failure for {domain}.{command.command_type} "
+                f"(command_id={command_id}, attempt={attempt}, backoff={backoff}s): "
+                f"[{error_code}] {error_msg}"
+            )
+        else:
+            logger.warning(
+                f"Failure for {domain}.{command.command_type} "
+                f"(command_id={command_id}, attempt={attempt}): "
+                f"[{error_code}] {error_msg}"
+            )
+
     @property
     def is_running(self) -> bool:
         """Check if the worker is currently running."""
@@ -466,6 +542,13 @@ class Worker:
                     received.context,
                 )
                 await self.complete(received, result=result)
-            except Exception:
+            except TransientCommandError as e:
+                # Explicit transient error - apply backoff and retry
+                await self.fail(received, e, is_transient=True)
+            except PermanentCommandError as e:
+                # Permanent error - will be handled by S009
+                await self.fail(received, e, is_transient=False)
+            except Exception as e:
+                # Unknown exception treated as transient
                 logger.exception(f"Error processing command {received.command.command_id}")
-                # Message will reappear after visibility timeout for retry
+                await self.fail(received, e, is_transient=True)
