@@ -6,9 +6,15 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from commandbus.exceptions import CommandNotFoundError, InvalidOperationError
 from commandbus.models import CommandStatus, TroubleshootingItem
+from commandbus.pgmq.client import PgmqClient
+from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
+from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -168,3 +174,97 @@ class TroubleshootingQueue:
             await cur.execute(query, params)
             row = await cur.fetchone()
             return int(row[0]) if row else 0
+
+    async def operator_retry(
+        self,
+        domain: str,
+        command_id: UUID,
+        operator: str | None = None,
+    ) -> int:
+        """Retry a command from the troubleshooting queue.
+
+        Retrieves the original payload from the archive, re-enqueues it to PGMQ,
+        resets attempts to 0, sets status to PENDING, and records an audit event.
+
+        Args:
+            domain: The domain of the command
+            command_id: The command ID to retry
+            operator: Optional operator identity for audit trail
+
+        Returns:
+            New PGMQ message ID
+
+        Raises:
+            CommandNotFoundError: If the command does not exist
+            InvalidOperationError: If the command is not in troubleshooting queue
+        """
+        queue_name = _make_queue_name(domain)
+        archive_table = f"pgmq.a_{queue_name}"
+
+        # Create helper instances
+        command_repo = PostgresCommandRepository(self._pool)
+        pgmq = PgmqClient(self._pool)
+        audit_logger = PostgresAuditLogger(self._pool)
+
+        async with self._pool.connection() as conn:
+            # Get command metadata
+            metadata = await command_repo.get(domain, command_id, conn)
+            if metadata is None:
+                raise CommandNotFoundError(domain, str(command_id))
+
+            # Verify command is in troubleshooting queue
+            if metadata.status != CommandStatus.IN_TROUBLESHOOTING_QUEUE:
+                raise InvalidOperationError(
+                    f"Command {command_id} is not in troubleshooting queue "
+                    f"(status: {metadata.status.value})"
+                )
+
+            # Retrieve payload from archive
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT message FROM {archive_table} "
+                    "WHERE message->>'command_id' = %s "
+                    "ORDER BY msg_id DESC LIMIT 1",
+                    (str(command_id),),
+                )
+                row = await cur.fetchone()
+
+            if row is None:
+                raise InvalidOperationError(
+                    f"Payload not found in archive for command {command_id}"
+                )
+
+            payload = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+
+            # All operations in same transaction
+            async with conn.transaction():
+                # Send new PGMQ message
+                new_msg_id = await pgmq.send(queue_name, payload, conn=conn)
+
+                # Update command metadata: status=PENDING, attempts=0, msg_id=new
+                await conn.execute(
+                    """
+                    UPDATE command_bus_command
+                    SET status = %s, attempts = 0, msg_id = %s,
+                        last_error_type = NULL, last_error_code = NULL,
+                        last_error_msg = NULL, updated_at = NOW()
+                    WHERE domain = %s AND command_id = %s
+                    """,
+                    (CommandStatus.PENDING.value, new_msg_id, domain, command_id),
+                )
+
+                # Record audit event
+                await audit_logger.log(
+                    domain=domain,
+                    command_id=command_id,
+                    event_type=AuditEventType.OPERATOR_RETRY,
+                    details={"operator": operator, "new_msg_id": new_msg_id},
+                    conn=conn,
+                )
+
+        logger.info(
+            f"Operator retry for {domain}.{command_id}: "
+            f"new_msg_id={new_msg_id}, operator={operator}"
+        )
+
+        return new_msg_id
