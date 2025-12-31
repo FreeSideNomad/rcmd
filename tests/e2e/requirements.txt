@@ -1,0 +1,9 @@
+# E2E Demo Application Dependencies
+# Install with: pip install -r requirements.txt
+
+Flask>=3.1.0
+python-dotenv>=1.0.1
+psycopg[binary,pool]>=3.2.0
+
+# The commandbus library should be installed from the parent project
+# pip install -e ../..

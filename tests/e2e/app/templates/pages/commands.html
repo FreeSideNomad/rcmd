@@ -1,0 +1,41 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Commands - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Commands</h1>
+    <p class="text-gray-500 dark:text-gray-400">Browse and filter all commands</p>
+</div>
+
+<!-- Filters (placeholder) -->
+<div class="bg-white rounded-lg shadow p-4 mb-6 dark:bg-gray-800">
+    <div class="flex flex-wrap gap-4">
+        <div>
+            <label for="filter-status" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Status</label>
+            <select id="filter-status" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <option value="">All</option>
+                <option value="PENDING">Pending</option>
+                <option value="IN_PROGRESS">In Progress</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="CANCELLED">Cancelled</option>
+                <option value="IN_TSQ">In TSQ</option>
+            </select>
+        </div>
+        <div class="flex items-end">
+            <button class="px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+                Apply Filters
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Commands Table (placeholder) -->
+<div class="bg-white rounded-lg shadow dark:bg-gray-800">
+    <div class="p-4">
+        <p class="text-gray-500 dark:text-gray-400 text-center py-8">
+            Commands browser will be implemented in S019.
+        </p>
+    </div>
+</div>
+{% endblock %}

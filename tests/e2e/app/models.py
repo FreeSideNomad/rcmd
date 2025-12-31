@@ -1,0 +1,145 @@
+"""E2E Application Models."""
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+
+@dataclass
+class TestCommand:
+    """Test command with behavior specification."""
+
+    id: int | None
+    command_id: UUID
+    payload: dict[str, Any]
+    behavior: dict[str, Any]
+    created_at: datetime | None = None
+    processed_at: datetime | None = None
+    attempts: int = 0
+    result: dict[str, Any] | None = None
+
+    @classmethod
+    def from_row(cls, row: tuple) -> "TestCommand":
+        """Create from database row."""
+        return cls(
+            id=row[0],
+            command_id=row[1],
+            payload=row[2],
+            behavior=row[3],
+            created_at=row[4],
+            processed_at=row[5],
+            attempts=row[6],
+            result=row[7],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "id": self.id,
+            "command_id": str(self.command_id),
+            "payload": self.payload,
+            "behavior": self.behavior,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "processed_at": self.processed_at.isoformat() if self.processed_at else None,
+            "attempts": self.attempts,
+            "result": self.result,
+        }
+
+
+class TestCommandRepository:
+    """Repository for test commands."""
+
+    def __init__(self, pool: Any) -> None:
+        """Initialize repository."""
+        self.pool = pool
+
+    async def create(
+        self,
+        command_id: UUID,
+        behavior: dict[str, Any],
+        payload: dict[str, Any] | None = None,
+    ) -> TestCommand:
+        """Create a new test command."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO test_command (command_id, payload, behavior)
+                VALUES (%s, %s, %s)
+                RETURNING id, command_id, payload, behavior,
+                          created_at, processed_at, attempts, result
+                """,
+                (command_id, payload or {}, behavior),
+            )
+            row = await cur.fetchone()
+            return TestCommand.from_row(row)
+
+    async def get_by_command_id(self, command_id: UUID) -> TestCommand | None:
+        """Get test command by command_id."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, command_id, payload, behavior,
+                       created_at, processed_at, attempts, result
+                FROM test_command
+                WHERE command_id = %s
+                """,
+                (command_id,),
+            )
+            row = await cur.fetchone()
+            return TestCommand.from_row(row) if row else None
+
+    async def increment_attempts(self, command_id: UUID) -> int:
+        """Increment attempts and return new count."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                    UPDATE test_command
+                    SET attempts = attempts + 1
+                    WHERE command_id = %s
+                    RETURNING attempts
+                    """,
+                (command_id,),
+            )
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+    async def mark_processed(self, command_id: UUID, result: dict[str, Any] | None = None) -> None:
+        """Mark command as processed."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                    UPDATE test_command
+                    SET processed_at = NOW(), result = %s
+                    WHERE command_id = %s
+                    """,
+                (result, command_id),
+            )
+
+    async def update_behavior(self, command_id: UUID, behavior: dict[str, Any]) -> None:
+        """Update command behavior."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                    UPDATE test_command
+                    SET behavior = %s
+                    WHERE command_id = %s
+                    """,
+                (behavior, command_id),
+            )
+
+    async def list_all(self, limit: int = 100, offset: int = 0) -> list[TestCommand]:
+        """List all test commands."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, command_id, payload, behavior,
+                       created_at, processed_at, attempts, result
+                FROM test_command
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            )
+            rows = await cur.fetchall()
+            return [TestCommand.from_row(row) for row in rows]

@@ -98,3 +98,6 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+
+# E2E app - Tailwind CLI binary
+tests/e2e/tailwindcss
