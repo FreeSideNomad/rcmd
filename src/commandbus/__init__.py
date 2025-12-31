@@ -3,9 +3,11 @@
 from commandbus.bus import CommandBus, SendResult
 from commandbus.exceptions import (
     CommandBusError,
+    CommandNotFoundError,
     DuplicateCommandError,
     HandlerAlreadyRegisteredError,
     HandlerNotFoundError,
+    InvalidOperationError,
     PermanentCommandError,
     TransientCommandError,
 )
@@ -32,12 +34,14 @@ __all__ = [
     "CommandBus",
     "CommandBusError",
     "CommandMetadata",
+    "CommandNotFoundError",
     "CommandStatus",
     "DuplicateCommandError",
     "HandlerAlreadyRegisteredError",
     "HandlerContext",
     "HandlerNotFoundError",
     "HandlerRegistry",
+    "InvalidOperationError",
     "PermanentCommandError",
     "PgmqClient",
     "PgmqMessage",

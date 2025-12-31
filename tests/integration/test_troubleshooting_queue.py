@@ -9,9 +9,14 @@ from psycopg_pool import AsyncConnectionPool
 from commandbus import (
     Command,
     CommandBus,
+    CommandNotFoundError,
+    CommandStatus,
     HandlerContext,
     HandlerRegistry,
+    InvalidOperationError,
     PermanentCommandError,
+    PostgresAuditLogger,
+    PostgresCommandRepository,
     RetryPolicy,
     TransientCommandError,
     TroubleshootingQueue,
@@ -419,3 +424,237 @@ class TestCountTroubleshootingIntegration:
         assert type_a_count == 2
         assert type_b_count == 3
         assert total_count == 5
+
+
+class TestOperatorRetryIntegration:
+    """Integration tests for operator_retry()."""
+
+    @pytest.mark.asyncio
+    async def test_operator_retry_raises_command_not_found(self, tsq: TroubleshootingQueue) -> None:
+        """Test operator_retry raises CommandNotFoundError for missing command."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        with pytest.raises(CommandNotFoundError) as exc_info:
+            await tsq.operator_retry(domain, command_id)
+
+        assert exc_info.value.domain == domain
+        assert exc_info.value.command_id == str(command_id)
+
+    @pytest.mark.asyncio
+    async def test_operator_retry_raises_invalid_operation_not_in_tsq(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test operator_retry raises InvalidOperationError when command not in TSQ."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            return {"status": "ok"}
+
+        # Send command - it will be in PENDING status
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={"test": "data"},
+        )
+
+        with pytest.raises(InvalidOperationError) as exc_info:
+            await tsq.operator_retry(domain, command_id)
+
+        assert "not in troubleshooting queue" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_operator_retry_success(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test successful operator_retry re-enqueues the command."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+        original_data = {"account_id": "ACC-123", "amount": 500}
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Send and fail the command to put it in TSQ
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data=original_data,
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Verify command is in TSQ
+        items = await tsq.list_troubleshooting(domain)
+        assert len(items) == 1
+        assert items[0].command_id == command_id
+
+        # Retry the command
+        new_msg_id = await tsq.operator_retry(domain, command_id, operator="admin")
+
+        assert new_msg_id > 0
+
+        # Verify command is now in PENDING status
+        command_repo = PostgresCommandRepository(pool)
+        metadata = await command_repo.get(domain, command_id)
+        assert metadata is not None
+        assert metadata.status == CommandStatus.PENDING
+        assert metadata.attempts == 0
+        assert metadata.msg_id == new_msg_id
+        assert metadata.last_error_type is None
+        assert metadata.last_error_code is None
+        assert metadata.last_error_msg is None
+
+    @pytest.mark.asyncio
+    async def test_operator_retry_records_audit_event(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test operator_retry records OPERATOR_RETRY audit event."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Send and fail the command
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={},
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Retry with operator identity
+        await tsq.operator_retry(domain, command_id, operator="admin_user")
+
+        # Verify audit event was recorded
+        audit_logger = PostgresAuditLogger(pool)
+        events = await audit_logger.get_events(command_id, domain)
+
+        operator_retry_events = [e for e in events if e["event_type"] == "OPERATOR_RETRY"]
+        assert len(operator_retry_events) == 1
+        assert operator_retry_events[0]["details"]["operator"] == "admin_user"
+
+    @pytest.mark.asyncio
+    async def test_operator_retry_command_can_be_processed_again(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test retried command can be received and processed by worker."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+        original_data = {"test_key": "test_value"}
+        processed_data: dict[str, str] = {}
+
+        call_count = 0
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise PermanentCommandError("INVALID", "Invalid")
+            # Second time - success
+            processed_data.update(command.data)
+            return {"status": "ok"}
+
+        # Send and fail the command
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data=original_data,
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Retry the command
+        await tsq.operator_retry(domain, command_id, operator="admin")
+
+        # Receive and process the retried command
+        received2 = await worker.receive()
+        assert len(received2) == 1
+        assert received2[0].command_id == command_id
+
+        # Process successfully this time
+        await worker.complete(received2[0], {"status": "ok"})
+
+        # Verify command was processed with original data
+        assert processed_data == original_data
+
+        # Verify command is now completed
+        command_repo = PostgresCommandRepository(pool)
+        metadata = await command_repo.get(domain, command_id)
+        assert metadata is not None
+        assert metadata.status == CommandStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_operator_retry_removes_from_tsq_list(
+        self,
+        pool: AsyncConnectionPool,
+        command_bus: CommandBus,
+        handler_registry: HandlerRegistry,
+        tsq: TroubleshootingQueue,
+    ) -> None:
+        """Test retried command no longer appears in troubleshooting list."""
+        command_id = uuid4()
+        domain = f"test_domain_{uuid4().hex[:8]}"
+
+        @handler_registry.handler(domain, "TestCommand")
+        async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
+            raise PermanentCommandError("INVALID", "Invalid")
+
+        # Send and fail the command
+        await command_bus.send(
+            domain=domain,
+            command_type="TestCommand",
+            command_id=command_id,
+            data={},
+        )
+
+        worker = Worker(pool, domain=domain, registry=handler_registry)
+        received = await worker.receive()
+        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+
+        # Verify in TSQ
+        count_before = await tsq.count_troubleshooting(domain)
+        assert count_before == 1
+
+        # Retry the command
+        await tsq.operator_retry(domain, command_id)
+
+        # Verify no longer in TSQ
+        count_after = await tsq.count_troubleshooting(domain)
+        assert count_after == 0
+
+        items = await tsq.list_troubleshooting(domain)
+        assert len(items) == 0

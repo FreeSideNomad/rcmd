@@ -62,3 +62,19 @@ class PermanentCommandError(CommandBusError):
         self.error_message = message
         self.details = details or {}
         super().__init__(f"[{code}] {message}")
+
+
+class CommandNotFoundError(CommandBusError):
+    """Raised when a command does not exist."""
+
+    def __init__(self, domain: str, command_id: str) -> None:
+        self.domain = domain
+        self.command_id = command_id
+        super().__init__(f"Command {command_id} not found in domain {domain}")
+
+
+class InvalidOperationError(CommandBusError):
+    """Raised when an operation is invalid for the current command state."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
