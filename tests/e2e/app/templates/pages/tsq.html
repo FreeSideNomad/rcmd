@@ -3,17 +3,433 @@
 {% block title %}Troubleshooting Queue - Command Bus E2E{% endblock %}
 
 {% block content %}
-<div class="mb-4">
-    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Troubleshooting Queue</h1>
-    <p class="text-gray-500 dark:text-gray-400">Manage commands that need attention</p>
-</div>
-
-<!-- TSQ Table (placeholder) -->
-<div class="bg-white rounded-lg shadow dark:bg-gray-800">
-    <div class="p-4">
-        <p class="text-gray-500 dark:text-gray-400 text-center py-8">
-            Troubleshooting Queue view will be implemented in S020.
-        </p>
+<div class="mb-4 flex justify-between items-center">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Troubleshooting Queue</h1>
+        <p class="text-gray-500 dark:text-gray-400">Manage commands that need attention</p>
+    </div>
+    <div class="flex gap-2">
+        <button id="bulk-retry-btn" disabled class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+            Retry Selected (<span id="selected-count">0</span>)
+        </button>
     </div>
 </div>
+
+<!-- Filters -->
+<div class="bg-white rounded-lg shadow p-4 mb-6 dark:bg-gray-800">
+    <div class="flex flex-wrap gap-4 items-end">
+        <div>
+            <label for="filter-domain" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Domain</label>
+            <input type="text" id="filter-domain" placeholder="Filter by domain" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-48 p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+        </div>
+        <button id="apply-filter" class="px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+            Apply
+        </button>
+        <button id="clear-filter" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 dark:text-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600">
+            Clear
+        </button>
+        <div class="ml-auto flex items-center gap-2">
+            <input type="checkbox" id="select-all" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+            <label for="select-all" class="text-sm text-gray-500 dark:text-gray-400">Select All</label>
+        </div>
+    </div>
+</div>
+
+<!-- TSQ Table -->
+<div class="bg-white rounded-lg shadow dark:bg-gray-800">
+    <div class="p-4 border-b dark:border-gray-700">
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+            <span id="total-count">0</span> commands in troubleshooting queue
+        </div>
+    </div>
+
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                    <th scope="col" class="px-4 py-3 w-10"></th>
+                    <th scope="col" class="px-4 py-3">Command ID</th>
+                    <th scope="col" class="px-4 py-3">Type</th>
+                    <th scope="col" class="px-4 py-3">Error</th>
+                    <th scope="col" class="px-4 py-3">Attempts</th>
+                    <th scope="col" class="px-4 py-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="tsq-table-body">
+                <tr>
+                    <td colspan="6" class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                        Loading...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Complete Modal -->
+<div id="complete-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+    <div class="flex items-center justify-center min-h-screen p-4">
+        <div class="fixed inset-0 bg-black bg-opacity-50" id="complete-modal-backdrop"></div>
+        <div class="relative bg-white rounded-lg shadow-xl max-w-lg w-full dark:bg-gray-800">
+            <div class="flex justify-between items-center p-4 border-b dark:border-gray-700">
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Complete Command Manually</h3>
+                <button id="close-complete-modal" class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-4 space-y-4">
+                <div>
+                    <label class="block mb-2 text-sm font-medium text-gray-500 dark:text-gray-400">Command ID</label>
+                    <p id="complete-command-id" class="text-sm text-gray-900 dark:text-white font-mono break-all"></p>
+                </div>
+                <div>
+                    <label for="result-data" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Result Data (optional JSON)</label>
+                    <textarea id="result-data" rows="3" placeholder='{"manually_resolved": true}' class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono"></textarea>
+                </div>
+                <div>
+                    <label for="operator-notes" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Operator Notes</label>
+                    <textarea id="operator-notes" rows="2" placeholder="Reason for manual completion..." class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white"></textarea>
+                </div>
+            </div>
+            <div class="p-4 border-t dark:border-gray-700 flex justify-end gap-2">
+                <button id="cancel-complete" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 dark:text-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600">
+                    Cancel
+                </button>
+                <button id="confirm-complete" class="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700">
+                    Complete
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Expanded Details Panel (rendered dynamically) -->
+<template id="details-template">
+    <tr class="details-row bg-gray-50 dark:bg-gray-900">
+        <td colspan="6" class="px-4 py-4">
+            <div class="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                    <span class="font-medium text-gray-500 dark:text-gray-400">Error Type:</span>
+                    <span class="ml-2 text-gray-900 dark:text-white error-type"></span>
+                </div>
+                <div>
+                    <span class="font-medium text-gray-500 dark:text-gray-400">Error Code:</span>
+                    <span class="ml-2 text-gray-900 dark:text-white font-mono error-code"></span>
+                </div>
+                <div class="col-span-2">
+                    <span class="font-medium text-gray-500 dark:text-gray-400">Error Message:</span>
+                    <span class="ml-2 text-gray-900 dark:text-white error-message"></span>
+                </div>
+                <div>
+                    <span class="font-medium text-gray-500 dark:text-gray-400">First Failure:</span>
+                    <span class="ml-2 text-gray-900 dark:text-white first-failure"></span>
+                </div>
+                <div>
+                    <span class="font-medium text-gray-500 dark:text-gray-400">Last Failure:</span>
+                    <span class="ml-2 text-gray-900 dark:text-white last-failure"></span>
+                </div>
+                <div class="col-span-2">
+                    <span class="font-medium text-gray-500 dark:text-gray-400">Original Behavior:</span>
+                    <pre class="mt-1 p-2 bg-gray-100 dark:bg-gray-800 rounded text-xs font-mono overflow-x-auto behavior"></pre>
+                </div>
+                <div class="col-span-2">
+                    <a href="#" class="audit-link text-blue-600 hover:underline dark:text-blue-400">View Audit Trail →</a>
+                </div>
+            </div>
+        </td>
+    </tr>
+</template>
+
+<!-- Toast Notification -->
+<div id="toast" class="hidden fixed bottom-4 right-4 z-50 flex items-center p-4 mb-4 text-gray-500 bg-white rounded-lg shadow dark:text-gray-400 dark:bg-gray-800">
+    <div id="toast-icon" class="inline-flex items-center justify-center flex-shrink-0 w-8 h-8 rounded-lg"></div>
+    <div id="toast-message" class="ml-3 text-sm font-normal"></div>
+    <button id="close-toast" class="ml-auto -mx-1.5 -my-1.5 bg-white text-gray-400 hover:text-gray-900 rounded-lg p-1.5 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-500 dark:hover:text-white dark:hover:bg-gray-700">
+        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+        </svg>
+    </button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '{{ url_for("static", filename="src/api.js") }}';
+
+    const api = new ApiClient();
+    let commands = [];
+    let selectedIds = new Set();
+    let completeCommandId = null;
+
+    // Format date
+    function formatDate(isoString) {
+        const date = new Date(isoString);
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
+
+    // Show toast notification
+    function showToast(message, type = 'success') {
+        const toast = document.getElementById('toast');
+        const icon = document.getElementById('toast-icon');
+        const msg = document.getElementById('toast-message');
+
+        msg.textContent = message;
+
+        if (type === 'success') {
+            icon.className = 'inline-flex items-center justify-center flex-shrink-0 w-8 h-8 text-green-500 bg-green-100 rounded-lg dark:bg-green-800 dark:text-green-200';
+            icon.innerHTML = '<svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>';
+        } else {
+            icon.className = 'inline-flex items-center justify-center flex-shrink-0 w-8 h-8 text-red-500 bg-red-100 rounded-lg dark:bg-red-800 dark:text-red-200';
+            icon.innerHTML = '<svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>';
+        }
+
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 5000);
+    }
+
+    // Update selection count
+    function updateSelectionCount() {
+        document.getElementById('selected-count').textContent = selectedIds.size;
+        document.getElementById('bulk-retry-btn').disabled = selectedIds.size === 0;
+    }
+
+    // Load TSQ commands
+    async function loadCommands() {
+        const domain = document.getElementById('filter-domain').value.trim();
+        const params = new URLSearchParams();
+        if (domain) params.set('domain', domain);
+
+        const result = await api.get(`/tsq?${params}`);
+        if (!result) return;
+
+        commands = result.commands;
+        document.getElementById('total-count').textContent = result.total;
+        renderCommands();
+    }
+
+    // Render commands table
+    function renderCommands() {
+        const tbody = document.getElementById('tsq-table-body');
+
+        if (commands.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                        No commands in the troubleshooting queue.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = commands.map(cmd => `
+            <tr class="bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700" data-command-id="${cmd.command_id}">
+                <td class="px-4 py-4">
+                    <input type="checkbox" class="cmd-checkbox w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" data-id="${cmd.command_id}" ${selectedIds.has(cmd.command_id) ? 'checked' : ''}>
+                </td>
+                <td class="px-4 py-4 font-mono text-xs">
+                    ${cmd.command_id.substring(0, 8)}...
+                </td>
+                <td class="px-4 py-4">
+                    ${cmd.command_type}
+                </td>
+                <td class="px-4 py-4">
+                    <span class="px-2 py-1 rounded text-xs font-medium ${cmd.last_error_type === 'PERMANENT' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300' : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300'}">
+                        ${cmd.last_error_code}
+                    </span>
+                </td>
+                <td class="px-4 py-4">
+                    ${cmd.attempts}/${cmd.max_attempts}
+                </td>
+                <td class="px-4 py-4">
+                    <div class="flex gap-2">
+                        <button class="retry-btn p-1.5 text-blue-600 hover:bg-blue-100 rounded dark:text-blue-400 dark:hover:bg-blue-900" title="Retry" data-id="${cmd.command_id}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        </button>
+                        <button class="complete-btn p-1.5 text-green-600 hover:bg-green-100 rounded dark:text-green-400 dark:hover:bg-green-900" title="Complete" data-id="${cmd.command_id}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        </button>
+                        <button class="cancel-btn p-1.5 text-red-600 hover:bg-red-100 rounded dark:text-red-400 dark:hover:bg-red-900" title="Cancel" data-id="${cmd.command_id}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                        <button class="expand-btn p-1.5 text-gray-600 hover:bg-gray-100 rounded dark:text-gray-400 dark:hover:bg-gray-700" title="Details" data-id="${cmd.command_id}">
+                            <svg class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+
+        // Add event listeners
+        tbody.querySelectorAll('.cmd-checkbox').forEach(cb => {
+            cb.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    selectedIds.add(e.target.dataset.id);
+                } else {
+                    selectedIds.delete(e.target.dataset.id);
+                }
+                updateSelectionCount();
+            });
+        });
+
+        tbody.querySelectorAll('.retry-btn').forEach(btn => {
+            btn.addEventListener('click', () => retryCommand(btn.dataset.id));
+        });
+
+        tbody.querySelectorAll('.complete-btn').forEach(btn => {
+            btn.addEventListener('click', () => openCompleteModal(btn.dataset.id));
+        });
+
+        tbody.querySelectorAll('.cancel-btn').forEach(btn => {
+            btn.addEventListener('click', () => cancelCommand(btn.dataset.id));
+        });
+
+        tbody.querySelectorAll('.expand-btn').forEach(btn => {
+            btn.addEventListener('click', () => toggleDetails(btn.dataset.id));
+        });
+    }
+
+    // Toggle details row
+    function toggleDetails(commandId) {
+        const row = document.querySelector(`tr[data-command-id="${commandId}"]`);
+        const existingDetails = row.nextElementSibling;
+
+        if (existingDetails && existingDetails.classList.contains('details-row')) {
+            existingDetails.remove();
+            return;
+        }
+
+        const cmd = commands.find(c => c.command_id === commandId);
+        if (!cmd) return;
+
+        const template = document.getElementById('details-template');
+        const details = template.content.cloneNode(true);
+
+        details.querySelector('.error-type').textContent = cmd.last_error_type;
+        details.querySelector('.error-code').textContent = cmd.last_error_code;
+        details.querySelector('.error-message').textContent = cmd.last_error_message;
+        details.querySelector('.first-failure').textContent = formatDate(cmd.first_failure_at);
+        details.querySelector('.last-failure').textContent = formatDate(cmd.last_failure_at);
+        details.querySelector('.behavior').textContent = JSON.stringify(cmd.behavior, null, 2);
+        details.querySelector('.audit-link').href = `/audit?command_id=${cmd.command_id}`;
+
+        row.after(details);
+    }
+
+    // Retry single command
+    async function retryCommand(commandId) {
+        const result = await api.post(`/tsq/${commandId}/retry`);
+        if (result) {
+            showToast(result.message);
+            await loadCommands();
+        }
+    }
+
+    // Cancel single command
+    async function cancelCommand(commandId) {
+        if (!confirm('Are you sure you want to cancel this command?')) return;
+
+        const result = await api.post(`/tsq/${commandId}/cancel`);
+        if (result) {
+            showToast(result.message);
+            await loadCommands();
+        }
+    }
+
+    // Open complete modal
+    function openCompleteModal(commandId) {
+        completeCommandId = commandId;
+        document.getElementById('complete-command-id').textContent = commandId;
+        document.getElementById('result-data').value = '';
+        document.getElementById('operator-notes').value = '';
+        document.getElementById('complete-modal').classList.remove('hidden');
+    }
+
+    // Close complete modal
+    function closeCompleteModal() {
+        document.getElementById('complete-modal').classList.add('hidden');
+        completeCommandId = null;
+    }
+
+    // Confirm complete
+    async function confirmComplete() {
+        if (!completeCommandId) return;
+
+        let resultData = null;
+        const resultText = document.getElementById('result-data').value.trim();
+        if (resultText) {
+            try {
+                resultData = JSON.parse(resultText);
+            } catch (e) {
+                showToast('Invalid JSON in result data', 'error');
+                return;
+            }
+        }
+
+        const operator = document.getElementById('operator-notes').value.trim() || 'operator';
+
+        const result = await api.post(`/tsq/${completeCommandId}/complete`, {
+            result_data: resultData,
+            operator: operator,
+        });
+
+        if (result) {
+            showToast(result.message);
+            closeCompleteModal();
+            await loadCommands();
+        }
+    }
+
+    // Bulk retry
+    async function bulkRetry() {
+        if (selectedIds.size === 0) return;
+
+        const result = await api.post('/tsq/bulk-retry', {
+            command_ids: Array.from(selectedIds),
+        });
+
+        if (result) {
+            showToast(result.message);
+            selectedIds.clear();
+            updateSelectionCount();
+            await loadCommands();
+        }
+    }
+
+    // Event listeners
+    document.getElementById('apply-filter').addEventListener('click', loadCommands);
+    document.getElementById('clear-filter').addEventListener('click', () => {
+        document.getElementById('filter-domain').value = '';
+        loadCommands();
+    });
+
+    document.getElementById('select-all').addEventListener('change', (e) => {
+        const checkboxes = document.querySelectorAll('.cmd-checkbox');
+        checkboxes.forEach(cb => {
+            cb.checked = e.target.checked;
+            if (e.target.checked) {
+                selectedIds.add(cb.dataset.id);
+            } else {
+                selectedIds.delete(cb.dataset.id);
+            }
+        });
+        updateSelectionCount();
+    });
+
+    document.getElementById('bulk-retry-btn').addEventListener('click', bulkRetry);
+
+    document.getElementById('close-complete-modal').addEventListener('click', closeCompleteModal);
+    document.getElementById('complete-modal-backdrop').addEventListener('click', closeCompleteModal);
+    document.getElementById('cancel-complete').addEventListener('click', closeCompleteModal);
+    document.getElementById('confirm-complete').addEventListener('click', confirmComplete);
+
+    document.getElementById('close-toast').addEventListener('click', () => {
+        document.getElementById('toast').classList.add('hidden');
+    });
+
+    // Initial load
+    loadCommands();
+</script>
 {% endblock %}

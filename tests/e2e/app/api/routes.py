@@ -239,3 +239,132 @@ def stats_overview():
             },
         }
     )
+
+
+# =============================================================================
+# Troubleshooting Queue (TSQ) Endpoints
+# =============================================================================
+
+
+@api_bp.route("/tsq", methods=["GET"])
+def list_tsq_commands():
+    """List commands in troubleshooting queue.
+
+    Query Parameters:
+    - domain: Filter by domain
+    - limit: Page size (default 20)
+    - offset: Pagination offset
+    """
+    domain = request.args.get("domain")
+    limit = min(int(request.args.get("limit", 20)), 100)
+    offset = int(request.args.get("offset", 0))
+
+    # Generate mock TSQ data
+    commands = _generate_mock_tsq_commands(domain=domain, limit=limit, offset=offset)
+
+    return jsonify(
+        {
+            "commands": commands,
+            "total": 15,  # Mock total
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+@api_bp.route("/tsq/<command_id>/retry", methods=["POST"])
+def retry_tsq_command(command_id: str):
+    """Retry a command from TSQ."""
+    return jsonify(
+        {
+            "command_id": command_id,
+            "status": "PENDING",
+            "message": "Command re-queued for processing",
+        }
+    )
+
+
+@api_bp.route("/tsq/<command_id>/cancel", methods=["POST"])
+def cancel_tsq_command(command_id: str):
+    """Cancel a command in TSQ."""
+    return jsonify(
+        {
+            "command_id": command_id,
+            "status": "CANCELLED",
+            "message": "Command cancelled",
+        }
+    )
+
+
+@api_bp.route("/tsq/<command_id>/complete", methods=["POST"])
+def complete_tsq_command(command_id: str):
+    """Manually complete a command in TSQ."""
+    data = request.get_json() or {}
+    result_data = data.get("result_data")
+    operator = data.get("operator", "unknown")
+
+    return jsonify(
+        {
+            "command_id": command_id,
+            "status": "COMPLETED",
+            "result_data": result_data,
+            "operator": operator,
+            "message": "Command manually completed",
+        }
+    )
+
+
+@api_bp.route("/tsq/bulk-retry", methods=["POST"])
+def bulk_retry_tsq_commands():
+    """Retry multiple commands from TSQ."""
+    data = request.get_json() or {}
+    command_ids = data.get("command_ids", [])
+
+    return jsonify(
+        {
+            "retried": len(command_ids),
+            "command_ids": command_ids,
+            "message": f"{len(command_ids)} commands re-queued for processing",
+        }
+    )
+
+
+def _generate_mock_tsq_commands(
+    domain: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[dict]:
+    """Generate mock TSQ commands for demo purposes."""
+    error_codes = ["INVALID_DATA", "ACCOUNT_NOT_FOUND", "TIMEOUT", "RATE_LIMITED"]
+    error_types = ["PERMANENT", "TRANSIENT"]
+
+    commands = []
+    base_time = datetime.now(UTC)
+
+    for i in range(min(limit, 15 - offset)):  # TSQ usually has fewer items
+        error_code = random.choice(error_codes)
+        error_type = random.choice(error_types)
+        created = base_time - timedelta(hours=offset + i * 2)
+
+        cmd = {
+            "command_id": str(uuid.uuid4()),
+            "domain": domain or "e2e",
+            "command_type": "TestCommand",
+            "status": "IN_TSQ",
+            "attempts": 3,
+            "max_attempts": 3,
+            "last_error_type": error_type,
+            "last_error_code": error_code,
+            "last_error_message": f"Error: {error_code.replace('_', ' ').lower()}",
+            "created_at": created.isoformat(),
+            "updated_at": (created + timedelta(minutes=30)).isoformat(),
+            "first_failure_at": created.isoformat(),
+            "last_failure_at": (created + timedelta(minutes=30)).isoformat(),
+            "behavior": {
+                "type": "fail_permanent",
+                "error_code": error_code,
+            },
+        }
+        commands.append(cmd)
+
+    return commands
