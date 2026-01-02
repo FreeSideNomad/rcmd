@@ -135,7 +135,7 @@
 
 {% block scripts %}
 <script type="module">
-    import { ApiClient } from '{{ url_for("static", filename="src/api.js") }}';
+    import { ApiClient } from '/static/src/api.js';
 
     const api = new ApiClient();
     let currentPage = 0;
