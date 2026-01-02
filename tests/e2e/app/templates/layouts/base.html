@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Command Bus E2E{% endblock %}</title>
-    <link href="{{ url_for('static', filename='dist/output.css') }}" rel="stylesheet">
+    <link href="/static/dist/output.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.2.1/flowbite.min.css" rel="stylesheet" />
 </head>
 <body class="bg-gray-50 dark:bg-gray-900">
@@ -20,7 +20,7 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.2.1/flowbite.min.js"></script>
-    <script type="module" src="{{ url_for('static', filename='src/api.js') }}"></script>
+    <script type="module" src="/static/src/api.js"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>
