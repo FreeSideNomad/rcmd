@@ -780,7 +780,7 @@ class TestWorkerRun:
 
     @pytest.mark.asyncio
     async def test_process_command_dispatches_and_completes(self, worker: Worker) -> None:
-        """Test that _process_command dispatches and completes."""
+        """Test that _process_command dispatches and completes within transaction."""
         command_id = uuid4()
         now = datetime.now(UTC)
 
@@ -804,12 +804,15 @@ class TestWorkerRun:
 
         semaphore = asyncio.Semaphore(1)
 
-        with patch.object(worker, "complete", new_callable=AsyncMock) as mock_complete:
+        # Now _process_command calls _complete_in_txn within transaction
+        with patch.object(worker, "_complete_in_txn", new_callable=AsyncMock) as mock_complete:
             await worker._process_command(received, semaphore)
 
             mock_complete.assert_called_once()
-            call_kwargs = mock_complete.call_args[1]
-            assert call_kwargs["result"] == {"processed": True}
+            # First positional arg is received, second is result, third is conn
+            args = mock_complete.call_args[0]
+            assert args[0] is received
+            assert args[1] == {"processed": True}  # result from handler
 
     @pytest.mark.asyncio
     async def test_process_command_handles_errors(
