@@ -7,7 +7,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from commandbus import HandlerRegistry, RetryPolicy, Worker
 
-from .config import Config, ConfigStore, RetryConfig, WorkerConfig
+from .config import Config, ConfigStore, RetryConfig
 from .handlers import TestCommandHandlers
 
 logger = logging.getLogger(__name__)
@@ -48,14 +48,16 @@ def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
     return registry
 
 
-async def create_worker(
+def create_worker(
     pool: AsyncConnectionPool,
-    config: WorkerConfig | None = None,
     retry_config: RetryConfig | None = None,
+    visibility_timeout: int = 30,
 ) -> Worker:
-    """Create a worker with configurable settings."""
-    if config is None:
-        config = WorkerConfig()
+    """Create a worker with configurable settings.
+
+    Note: concurrency and poll_interval are passed to worker.run(),
+    not to the constructor.
+    """
     if retry_config is None:
         retry_config = RetryConfig()
 
@@ -63,20 +65,15 @@ async def create_worker(
 
     retry_policy = RetryPolicy(
         max_attempts=retry_config.max_attempts,
-        base_delay_ms=retry_config.base_delay_ms,
-        max_delay_ms=retry_config.max_delay_ms,
-        multiplier=retry_config.backoff_multiplier,
+        backoff_schedule=retry_config.backoff_schedule,
     )
 
     return Worker(
         pool=pool,
         domain="e2e",
-        handler_registry=registry,
+        registry=registry,
         retry_policy=retry_policy,
-        concurrency=config.concurrency,
-        visibility_timeout=config.visibility_timeout,
-        poll_interval=config.poll_interval,
-        batch_size=config.batch_size,
+        visibility_timeout=visibility_timeout,
     )
 
 
@@ -91,19 +88,23 @@ async def run_worker() -> None:
 
     try:
         config_store = await get_config_store(pool)
-        worker = await create_worker(
+        worker = create_worker(
             pool,
-            config=config_store.worker,
             retry_config=config_store.retry,
+            visibility_timeout=config_store.worker.visibility_timeout,
         )
 
         logger.info(
-            "Starting E2E worker with concurrency=%d, visibility_timeout=%ds",
+            "Starting E2E worker with concurrency=%d, visibility_timeout=%ds, poll_interval=%.1fs",
             config_store.worker.concurrency,
             config_store.worker.visibility_timeout,
+            config_store.worker.poll_interval,
         )
 
-        await worker.run()
+        await worker.run(
+            concurrency=config_store.worker.concurrency,
+            poll_interval=config_store.worker.poll_interval,
+        )
     finally:
         await pool.close()
 

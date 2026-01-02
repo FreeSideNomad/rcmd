@@ -51,20 +51,21 @@ class WorkerConfig:
 
 @dataclass
 class RetryConfig:
-    """Retry configuration."""
+    """Retry configuration.
+
+    Uses backoff_schedule to match the commandbus RetryPolicy API.
+    Each value in backoff_schedule is the visibility timeout in seconds
+    for that retry attempt.
+    """
 
     max_attempts: int = 3
-    base_delay_ms: int = 1000
-    max_delay_ms: int = 60000
-    backoff_multiplier: float = 2.0
+    backoff_schedule: list[int] = field(default_factory=lambda: [10, 60, 300])
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "max_attempts": self.max_attempts,
-            "base_delay_ms": self.base_delay_ms,
-            "max_delay_ms": self.max_delay_ms,
-            "backoff_multiplier": self.backoff_multiplier,
+            "backoff_schedule": self.backoff_schedule,
         }
 
     @classmethod
@@ -72,9 +73,7 @@ class RetryConfig:
         """Create from dictionary."""
         return cls(
             max_attempts=data.get("max_attempts", 3),
-            base_delay_ms=data.get("base_delay_ms", 1000),
-            max_delay_ms=data.get("max_delay_ms", 60000),
-            backoff_multiplier=data.get("backoff_multiplier", 2.0),
+            backoff_schedule=data.get("backoff_schedule", [10, 60, 300]),
         )
 
 

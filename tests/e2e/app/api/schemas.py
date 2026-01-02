@@ -292,9 +292,7 @@ class RetryConfigSchema(BaseModel):
     """Retry configuration."""
 
     max_attempts: int = 3
-    base_delay_ms: int = 1000
-    max_delay_ms: int = 60000
-    backoff_multiplier: float = 2.0
+    backoff_schedule: list[int] = [10, 60, 300]
 
 
 class ConfigResponse(BaseModel):
