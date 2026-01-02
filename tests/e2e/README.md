@@ -1,6 +1,6 @@
 # E2E Testing & Demo Application
 
-A Flask-based demo application for testing and demonstrating the commandbus library.
+A FastAPI-based demo application for testing and demonstrating the commandbus library.
 
 ## Quick Start
 
