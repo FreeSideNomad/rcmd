@@ -11,7 +11,7 @@ from commandbus.exceptions import (
     PermanentCommandError,
     TransientCommandError,
 )
-from commandbus.handler import HandlerRegistry
+from commandbus.handler import HandlerMeta, HandlerRegistry, handler
 from commandbus.models import (
     AuditEvent,
     Command,
@@ -41,6 +41,7 @@ __all__ = [
     "DuplicateCommandError",
     "HandlerAlreadyRegisteredError",
     "HandlerContext",
+    "HandlerMeta",
     "HandlerNotFoundError",
     "HandlerRegistry",
     "InvalidOperationError",
@@ -57,6 +58,7 @@ __all__ = [
     "TroubleshootingItem",
     "TroubleshootingQueue",
     "Worker",
+    "handler",
 ]
 
 __version__ = "0.1.0"

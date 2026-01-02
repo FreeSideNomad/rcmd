@@ -2,7 +2,8 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeAlias
+from dataclasses import dataclass
+from typing import Any, TypeAlias, TypeVar
 
 from commandbus.exceptions import HandlerAlreadyRegisteredError, HandlerNotFoundError
 from commandbus.models import Command, HandlerContext
@@ -11,6 +12,67 @@ logger = logging.getLogger(__name__)
 
 # Type alias for handler functions
 HandlerFn: TypeAlias = Callable[[Command, HandlerContext], Awaitable[Any]]
+
+# Attribute name for storing handler metadata on decorated methods
+_HANDLER_ATTR = "_commandbus_handler_meta"
+
+# Generic type for decorated functions
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+@dataclass(frozen=True)
+class HandlerMeta:
+    """Metadata attached to decorated handler methods.
+
+    This is set on methods decorated with @handler() and used by
+    register_instance() to discover handlers on class instances.
+    """
+
+    domain: str
+    command_type: str
+
+
+def handler(domain: str, command_type: str) -> Callable[[F], F]:
+    """Decorator to mark a method as a command handler.
+
+    Use this decorator on class methods to mark them as command handlers.
+    The decorated methods can then be discovered and registered using
+    HandlerRegistry.register_instance().
+
+    Args:
+        domain: The domain (e.g., "payments")
+        command_type: The command type (e.g., "DebitAccount")
+
+    Returns:
+        Decorator that attaches handler metadata to the method
+
+    Example:
+        class PaymentHandlers:
+            @handler(domain="payments", command_type="DebitAccount")
+            async def handle_debit(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return {"status": "ok"}
+
+        # Later, register the instance
+        registry.register_instance(PaymentHandlers())
+    """
+
+    def decorator(fn: F) -> F:
+        setattr(fn, _HANDLER_ATTR, HandlerMeta(domain=domain, command_type=command_type))
+        return fn
+
+    return decorator
+
+
+def get_handler_meta(fn: Callable[..., Any]) -> HandlerMeta | None:
+    """Get handler metadata from a decorated function.
+
+    Args:
+        fn: A function that may have been decorated with @handler
+
+    Returns:
+        The HandlerMeta if the function was decorated, None otherwise
+    """
+    return getattr(fn, _HANDLER_ATTR, None)
 
 
 class HandlerRegistry:
@@ -161,3 +223,60 @@ class HandlerRegistry:
     def clear(self) -> None:
         """Remove all registered handlers. Useful for testing."""
         self._handlers.clear()
+
+    def register_instance(self, instance: object) -> list[tuple[str, str]]:
+        """Scan instance for @handler decorated methods and register them.
+
+        This method discovers all methods on the instance that are decorated
+        with the @handler decorator and registers them with this registry.
+        Private methods (names starting with '_') are skipped.
+
+        Args:
+            instance: An object instance with @handler decorated methods
+
+        Returns:
+            List of (domain, command_type) tuples that were registered
+
+        Raises:
+            HandlerAlreadyRegisteredError: If any handler is already registered.
+                Note: If this error is raised, some handlers from the instance
+                may have already been registered.
+
+        Example:
+            class PaymentHandlers:
+                def __init__(self, service):
+                    self._service = service
+
+                @handler(domain="payments", command_type="Debit")
+                async def handle_debit(self, cmd, ctx):
+                    return await self._service.debit(cmd.data["amount"])
+
+            registry = HandlerRegistry()
+            registry.register_instance(PaymentHandlers(my_service))
+        """
+        registered: list[tuple[str, str]] = []
+
+        for name in dir(instance):
+            # Skip private and dunder methods
+            if name.startswith("_"):
+                continue
+
+            method = getattr(instance, name)
+            if not callable(method):
+                continue
+
+            meta = getattr(method, _HANDLER_ATTR, None)
+            if meta is None:
+                continue
+
+            if not isinstance(meta, HandlerMeta):
+                continue
+
+            self.register(meta.domain, meta.command_type, method)
+            registered.append((meta.domain, meta.command_type))
+            logger.info(
+                f"Discovered handler {instance.__class__.__name__}.{name} "
+                f"for {meta.domain}.{meta.command_type}"
+            )
+
+        return registered
