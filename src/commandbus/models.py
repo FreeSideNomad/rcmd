@@ -3,8 +3,11 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from psycopg import AsyncConnection
 
 
 class CommandStatus(str, Enum):
@@ -79,6 +82,10 @@ class HandlerContext:
         max_attempts: Maximum attempts before exhaustion
         msg_id: PGMQ message ID
         visibility_extender: Utility to extend visibility timeout
+        conn: Database connection for transaction participation.
+              When provided, handler operations using this connection
+              will be atomic with command completion. The connection
+              is within an open transaction managed by the worker.
     """
 
     command: Command
@@ -86,6 +93,7 @@ class HandlerContext:
     max_attempts: int
     msg_id: int
     visibility_extender: VisibilityExtender | None = None
+    conn: "AsyncConnection[Any] | None" = None
 
     async def extend_visibility(self, seconds: int) -> None:
         """Extend the visibility timeout for long-running operations.
