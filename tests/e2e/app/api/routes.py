@@ -1,6 +1,7 @@
 """E2E API routes - JSON endpoints."""
 
 import random
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -55,9 +56,20 @@ def create_command():
 
 @api_bp.route("/commands/bulk", methods=["POST"])
 def create_bulk_commands():
-    """Create multiple test commands.
+    """Create multiple test commands for load testing.
 
     Request body:
+    {
+        "count": 10000,
+        "behavior_distribution": {
+            "success": 90,
+            "fail_transient_then_succeed": 5,
+            "fail_permanent": 5
+        },
+        "execution_time_ms": 10
+    }
+
+    Or simple format:
     {
         "count": 100,
         "behavior": {
@@ -66,21 +78,74 @@ def create_bulk_commands():
         }
     }
     """
+    start_time = time.time()
     data = request.get_json() or {}
 
-    count = min(data.get("count", 1), 1000)  # Cap at 1000
-    behavior = data.get("behavior", {"type": "success"})
+    count = min(data.get("count", 1), 10000)  # Cap at 10000 for load testing
+    execution_time_ms = data.get("execution_time_ms", 0)
 
-    command_ids = [str(uuid.uuid4()) for _ in range(count)]
+    # Support both simple behavior and distribution
+    behavior_distribution = data.get("behavior_distribution")
+    simple_behavior = data.get("behavior")
+
+    command_ids = []
+    behaviors_assigned = {"success": 0, "fail_transient_then_succeed": 0, "fail_permanent": 0}
+
+    generation_start = time.time()
+
+    for _ in range(count):
+        cmd_id = str(uuid.uuid4())
+        command_ids.append(cmd_id)
+
+        # Determine behavior for this command
+        if behavior_distribution:
+            # Use weighted distribution
+            behavior = _select_behavior_from_distribution(behavior_distribution, execution_time_ms)
+            behaviors_assigned[behavior["type"]] = behaviors_assigned.get(behavior["type"], 0) + 1
+        elif simple_behavior:
+            behavior = simple_behavior
+        else:
+            behavior = {"type": "success", "execution_time_ms": execution_time_ms}
+
+    generation_time_ms = int((time.time() - generation_start) * 1000)
+
+    # In production, this would queue the commands
+    queue_time_ms = int((time.time() - start_time) * 1000) - generation_time_ms
 
     return jsonify(
         {
             "created": count,
-            "command_ids": command_ids,
-            "behavior": behavior,
+            "command_ids": command_ids[:100],  # Return first 100 IDs only
+            "total_command_ids": count,
+            "generation_time_ms": generation_time_ms,
+            "queue_time_ms": queue_time_ms,
+            "behavior_distribution": behaviors_assigned if behavior_distribution else None,
             "message": "Commands created (database persistence coming in future iteration)",
         }
     ), 201
+
+
+def _select_behavior_from_distribution(distribution: dict, execution_time_ms: int = 0) -> dict:
+    """Select a behavior based on weighted distribution."""
+    total = sum(distribution.values())
+    if total == 0:
+        return {"type": "success", "execution_time_ms": execution_time_ms}
+
+    rand = random.randint(1, total)
+    cumulative = 0
+
+    for behavior_type, weight in distribution.items():
+        cumulative += weight
+        if rand <= cumulative:
+            behavior = {"type": behavior_type, "execution_time_ms": execution_time_ms}
+            if behavior_type == "fail_transient_then_succeed":
+                behavior["transient_failures"] = 2
+            elif behavior_type in ("fail_permanent", "fail_transient"):
+                behavior["error_code"] = "LOAD_TEST_ERROR"
+                behavior["error_message"] = "Load test simulated failure"
+            return behavior
+
+    return {"type": "success", "execution_time_ms": execution_time_ms}
 
 
 @api_bp.route("/commands", methods=["GET"])
@@ -256,6 +321,75 @@ def recent_activity():
     events = _generate_mock_recent_activity(limit)
 
     return jsonify({"events": events})
+
+
+@api_bp.route("/stats/throughput", methods=["GET"])
+def stats_throughput():
+    """Get processing throughput metrics for load testing.
+
+    Returns real-time metrics about command processing rate.
+    """
+    window_seconds = int(request.args.get("window", 60))
+
+    # Generate mock throughput data for demo
+    # In production, this would query actual metrics
+    commands_processed = random.randint(2000, 3000)
+    throughput_per_second = round(commands_processed / window_seconds, 1)
+
+    return jsonify(
+        {
+            "window_seconds": window_seconds,
+            "commands_processed": commands_processed,
+            "throughput_per_second": throughput_per_second,
+            "avg_processing_time_ms": random.randint(30, 80),
+            "p50_ms": random.randint(20, 50),
+            "p95_ms": random.randint(80, 150),
+            "p99_ms": random.randint(150, 300),
+            "active_workers": random.randint(2, 8),
+            "queue_depth": random.randint(50, 500),
+        }
+    )
+
+
+@api_bp.route("/stats/load-test", methods=["GET"])
+def stats_load_test():
+    """Get load test progress.
+
+    Returns progress of current load test if one is running.
+    """
+    # Generate mock load test progress for demo
+    # In production, this would track actual load test state
+    total_commands = int(request.args.get("total", 10000))
+    completed = random.randint(int(total_commands * 0.3), int(total_commands * 0.9))
+    failed = int(completed * 0.02)  # 2% failure rate
+    in_tsq = int(failed * 0.3)
+    pending = total_commands - completed
+
+    elapsed_seconds = random.randint(10, 60)
+    progress_percent = round((completed / total_commands) * 100, 1)
+
+    # Estimate remaining time based on throughput
+    if completed > 0:
+        rate = completed / elapsed_seconds
+        remaining = pending / rate if rate > 0 else 0
+    else:
+        remaining = 0
+
+    return jsonify(
+        {
+            "total_commands": total_commands,
+            "completed": completed,
+            "failed": failed,
+            "in_tsq": in_tsq,
+            "pending": pending,
+            "progress_percent": progress_percent,
+            "elapsed_seconds": elapsed_seconds,
+            "estimated_remaining_seconds": int(remaining),
+            "throughput_per_second": round(completed / elapsed_seconds, 1)
+            if elapsed_seconds > 0
+            else 0,
+        }
+    )
 
 
 # =============================================================================
