@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from commandbus.exceptions import HandlerAlreadyRegisteredError, HandlerNotFoundError
-from commandbus.handler import HandlerRegistry
+from commandbus.handler import _HANDLER_ATTR, HandlerMeta, HandlerRegistry, handler
 from commandbus.models import Command, HandlerContext
 
 
@@ -327,3 +327,122 @@ class TestNoHandlerLogsWarning:
             await registry.dispatch(command, context)
 
         assert "RefundPayment" in str(exc_info.value)
+
+
+class TestStandaloneHandlerDecorator:
+    """Tests for the standalone @handler decorator for class methods."""
+
+    def test_handler_decorator_sets_metadata(self) -> None:
+        """Test that @handler decorator attaches metadata to method."""
+
+        class MyHandlers:
+            @handler(domain="payments", command_type="DebitAccount")
+            async def handle_debit(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return {"status": "ok"}
+
+        meta = getattr(MyHandlers.handle_debit, _HANDLER_ATTR)
+        assert isinstance(meta, HandlerMeta)
+        assert meta.domain == "payments"
+        assert meta.command_type == "DebitAccount"
+
+    def test_multiple_handlers_in_class(self) -> None:
+        """Test that multiple methods can be decorated in same class."""
+
+        class PaymentHandlers:
+            @handler(domain="payments", command_type="Debit")
+            async def handle_debit(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+            @handler(domain="payments", command_type="Credit")
+            async def handle_credit(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        debit_meta = getattr(PaymentHandlers.handle_debit, _HANDLER_ATTR)
+        credit_meta = getattr(PaymentHandlers.handle_credit, _HANDLER_ATTR)
+
+        assert debit_meta.domain == "payments"
+        assert debit_meta.command_type == "Debit"
+        assert credit_meta.domain == "payments"
+        assert credit_meta.command_type == "Credit"
+
+    def test_handler_metadata_accessible(self) -> None:
+        """Test that handler metadata can be retrieved."""
+        from commandbus.handler import get_handler_meta
+
+        class MyHandlers:
+            @handler(domain="orders", command_type="PlaceOrder")
+            async def handle_order(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        meta = get_handler_meta(MyHandlers.handle_order)
+        assert meta is not None
+        assert meta.domain == "orders"
+        assert meta.command_type == "PlaceOrder"
+
+    def test_get_handler_meta_returns_none_for_undecorated(self) -> None:
+        """Test that get_handler_meta returns None for undecorated methods."""
+        from commandbus.handler import get_handler_meta
+
+        class MyHandlers:
+            async def regular_method(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        meta = get_handler_meta(MyHandlers.regular_method)
+        assert meta is None
+
+    def test_decorator_preserves_function_identity(self) -> None:
+        """Test that decorator preserves __name__ and __doc__."""
+
+        class MyHandlers:
+            @handler(domain="test", command_type="Test")
+            async def my_handler(self, cmd: Command, ctx: HandlerContext) -> None:
+                """My docstring."""
+                pass
+
+        assert MyHandlers.my_handler.__name__ == "my_handler"
+        assert MyHandlers.my_handler.__doc__ == "My docstring."
+
+    @pytest.mark.asyncio
+    async def test_decorated_method_is_callable(self) -> None:
+        """Test that decorated method can still be called."""
+
+        class MyHandlers:
+            @handler(domain="test", command_type="Test")
+            async def handle(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return {"called": True}
+
+        instance = MyHandlers()
+        result = await instance.handle(None, None)  # type: ignore[arg-type]
+        assert result == {"called": True}
+
+    def test_handler_meta_is_frozen(self) -> None:
+        """Test that HandlerMeta is immutable."""
+
+        class MyHandlers:
+            @handler(domain="payments", command_type="Debit")
+            async def handle(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        meta = getattr(MyHandlers.handle, _HANDLER_ATTR)
+
+        with pytest.raises(AttributeError):
+            meta.domain = "changed"  # type: ignore[misc]
+
+    def test_different_domains_same_command_type(self) -> None:
+        """Test handlers with same command type but different domains."""
+
+        class Handlers:
+            @handler(domain="payments", command_type="Process")
+            async def handle_payments(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+            @handler(domain="orders", command_type="Process")
+            async def handle_orders(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        payments_meta = getattr(Handlers.handle_payments, _HANDLER_ATTR)
+        orders_meta = getattr(Handlers.handle_orders, _HANDLER_ATTR)
+
+        assert payments_meta.domain == "payments"
+        assert orders_meta.domain == "orders"
+        assert payments_meta.command_type == orders_meta.command_type == "Process"

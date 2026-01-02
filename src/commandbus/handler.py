@@ -2,7 +2,8 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeAlias
+from dataclasses import dataclass
+from typing import Any, TypeAlias, TypeVar
 
 from commandbus.exceptions import HandlerAlreadyRegisteredError, HandlerNotFoundError
 from commandbus.models import Command, HandlerContext
@@ -11,6 +12,67 @@ logger = logging.getLogger(__name__)
 
 # Type alias for handler functions
 HandlerFn: TypeAlias = Callable[[Command, HandlerContext], Awaitable[Any]]
+
+# Attribute name for storing handler metadata on decorated methods
+_HANDLER_ATTR = "_commandbus_handler_meta"
+
+# Generic type for decorated functions
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+@dataclass(frozen=True)
+class HandlerMeta:
+    """Metadata attached to decorated handler methods.
+
+    This is set on methods decorated with @handler() and used by
+    register_instance() to discover handlers on class instances.
+    """
+
+    domain: str
+    command_type: str
+
+
+def handler(domain: str, command_type: str) -> Callable[[F], F]:
+    """Decorator to mark a method as a command handler.
+
+    Use this decorator on class methods to mark them as command handlers.
+    The decorated methods can then be discovered and registered using
+    HandlerRegistry.register_instance().
+
+    Args:
+        domain: The domain (e.g., "payments")
+        command_type: The command type (e.g., "DebitAccount")
+
+    Returns:
+        Decorator that attaches handler metadata to the method
+
+    Example:
+        class PaymentHandlers:
+            @handler(domain="payments", command_type="DebitAccount")
+            async def handle_debit(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return {"status": "ok"}
+
+        # Later, register the instance
+        registry.register_instance(PaymentHandlers())
+    """
+
+    def decorator(fn: F) -> F:
+        setattr(fn, _HANDLER_ATTR, HandlerMeta(domain=domain, command_type=command_type))
+        return fn
+
+    return decorator
+
+
+def get_handler_meta(fn: Callable[..., Any]) -> HandlerMeta | None:
+    """Get handler metadata from a decorated function.
+
+    Args:
+        fn: A function that may have been decorated with @handler
+
+    Returns:
+        The HandlerMeta if the function was decorated, None otherwise
+    """
+    return getattr(fn, _HANDLER_ATTR, None)
 
 
 class HandlerRegistry:
