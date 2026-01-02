@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E Demo Application Entry Point."""
+"""E2E Demo Application Entry Point - FastAPI with Uvicorn."""
 
 import sys
 from pathlib import Path
@@ -9,15 +9,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import os
 
-from app import create_app
+import uvicorn
+from app.main import create_app
 
 app = create_app()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5001"))
-    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    reload = os.environ.get("RELOAD", "1") == "1"
 
     print(f"Starting E2E Demo Application on http://localhost:{port}")
+    print("OpenAPI docs available at http://localhost:{port}/docs")
     print("Press Ctrl+C to stop")
 
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    uvicorn.run(
+        "run:app",
+        host="0.0.0.0",
+        port=port,
+        reload=reload,
+    )

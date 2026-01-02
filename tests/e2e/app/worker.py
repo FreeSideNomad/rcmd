@@ -1,23 +1,14 @@
-"""E2E Worker with behavior-based test command handler."""
+"""E2E Worker with @handler decorator pattern (F007)."""
 
 import asyncio
 import logging
-from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
-from commandbus import (
-    Command,
-    HandlerContext,
-    HandlerRegistry,
-    PermanentCommandError,
-    RetryPolicy,
-    TransientCommandError,
-    Worker,
-)
+from commandbus import HandlerRegistry, RetryPolicy, Worker
 
 from .config import Config, ConfigStore, RetryConfig, WorkerConfig
-from .models import TestCommandRepository
+from .handlers import TestCommandHandlers
 
 logger = logging.getLogger(__name__)
 
@@ -41,74 +32,18 @@ async def get_config_store(pool: AsyncConnectionPool) -> ConfigStore:
 
 
 def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
-    """Create handler registry with test command handler."""
+    """Create handler registry using F007 composition root pattern.
+
+    This uses:
+    - @handler decorator on class methods
+    - register_instance() for automatic handler discovery
+    """
+    # Create handler instance with dependencies
+    handlers = TestCommandHandlers(pool)
+
+    # Register all decorated handlers
     registry = HandlerRegistry()
-
-    @registry.handler("e2e", "TestCommand")
-    async def handle_test_command(cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
-        """Handle test command based on behavior specification."""
-        repo = TestCommandRepository(pool)
-
-        # Increment attempt count
-        attempt = await repo.increment_attempts(cmd.command_id)
-
-        # Get behavior from test_command table
-        test_cmd = await repo.get_by_command_id(cmd.command_id)
-        if not test_cmd:
-            raise PermanentCommandError(
-                code="TEST_COMMAND_NOT_FOUND",
-                message=f"Test command {cmd.command_id} not found in test_command table",
-            )
-
-        behavior = test_cmd.behavior
-        behavior_type = behavior.get("type", "success")
-
-        # Simulate execution time (applies to all behaviors)
-        execution_time_ms = behavior.get("execution_time_ms", 0)
-        if execution_time_ms > 0:
-            await asyncio.sleep(execution_time_ms / 1000)
-
-        # Execute based on behavior type
-        match behavior_type:
-            case "success":
-                result = {"status": "success", "attempt": attempt}
-                await repo.mark_processed(cmd.command_id, result)
-                return result
-
-            case "fail_permanent":
-                error_code = behavior.get("error_code", "PERMANENT_ERROR")
-                error_message = behavior.get("error_message", "Simulated permanent failure")
-                raise PermanentCommandError(code=error_code, message=error_message)
-
-            case "fail_transient":
-                error_code = behavior.get("error_code", "TRANSIENT_ERROR")
-                error_message = behavior.get("error_message", "Simulated transient failure")
-                raise TransientCommandError(code=error_code, message=error_message)
-
-            case "fail_transient_then_succeed":
-                transient_failures = behavior.get("transient_failures", 1)
-                if attempt <= transient_failures:
-                    raise TransientCommandError(
-                        code="TRANSIENT",
-                        message=f"Transient failure {attempt}/{transient_failures}",
-                    )
-                result = {"status": "success", "attempts": attempt}
-                await repo.mark_processed(cmd.command_id, result)
-                return result
-
-            case "timeout":
-                # For timeout behavior, execution_time_ms should be > visibility_timeout
-                # The handler will sleep and the message will time out and be redelivered
-                # Eventually it will succeed after the configured execution time
-                result = {"status": "success", "attempt": attempt, "simulated_timeout": True}
-                await repo.mark_processed(cmd.command_id, result)
-                return result
-
-            case _:
-                raise PermanentCommandError(
-                    code="UNKNOWN_BEHAVIOR",
-                    message=f"Unknown behavior type: {behavior_type}",
-                )
+    registry.register_instance(handlers)
 
     return registry
 

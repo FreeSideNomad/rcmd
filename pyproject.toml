@@ -53,7 +53,10 @@ test = [
     "testcontainers[postgres]>=4.0.0",
 ]
 e2e = [
-    "flask>=3.1.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "jinja2>=3.1.4",
+    "python-multipart>=0.0.9",
     "python-dotenv>=1.0.1",
 ]
 
@@ -106,8 +109,9 @@ ignore = [
     "ARG",      # Unused arguments in tests (fixtures)
     "PLR2004",  # Magic values in tests are OK
 ]
-"tests/e2e/app/__init__.py" = [
-    "PLC0415",  # Flask app factory pattern requires imports inside function
+"tests/e2e/app/**/*.py" = [
+    "TC001",    # FastAPI Depends() requires runtime imports
+    "PLC0415",  # FastAPI app factory pattern requires imports inside function
 ]
 
 [tool.ruff.lint.isort]
