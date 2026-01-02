@@ -1,4 +1,4 @@
-.PHONY: help install install-dev lint format typecheck test test-unit test-integration test-e2e coverage docker-up docker-down clean ready
+.PHONY: help install install-dev lint format typecheck test test-unit test-integration test-e2e coverage docker-up docker-down clean ready e2e-app e2e-setup
 
 # Default target
 help:
@@ -28,6 +28,10 @@ help:
 	@echo "  make docker-up      Start PostgreSQL + PGMQ containers"
 	@echo "  make docker-down    Stop and remove containers"
 	@echo "  make docker-logs    Show container logs"
+	@echo ""
+	@echo "E2E Demo:"
+	@echo "  make e2e-setup      Set up E2E database (run after docker-up)"
+	@echo "  make e2e-app        Start E2E demo application on http://localhost:5001"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean          Remove build artifacts and caches"
@@ -128,6 +132,25 @@ docker-logs:
 
 docker-psql:
 	docker compose exec postgres psql -U postgres -d commandbus
+
+# =============================================================================
+# E2E Demo Application
+# =============================================================================
+
+# Set up E2E database tables and queues (run after docker-up if using fresh DB)
+e2e-setup:
+	@echo "Setting up E2E demo database..."
+	@docker compose exec -T postgres psql -U postgres -d commandbus -c "SELECT pgmq.create('e2e__commands');" 2>/dev/null || true
+	@docker compose exec -T postgres psql -U postgres -d commandbus -c "SELECT pgmq.create('e2e__replies');" 2>/dev/null || true
+	@docker compose exec -T postgres psql -U postgres -d commandbus -c "CREATE TABLE IF NOT EXISTS e2e_config (key TEXT PRIMARY KEY, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());"
+	@docker compose exec -T postgres psql -U postgres -d commandbus -c "INSERT INTO e2e_config (key, value) VALUES ('worker', '{\"visibility_timeout\": 30, \"concurrency\": 4, \"poll_interval\": 1.0, \"batch_size\": 10}'::jsonb), ('retry', '{\"max_attempts\": 3, \"base_delay_ms\": 1000, \"max_delay_ms\": 60000, \"backoff_multiplier\": 2.0}'::jsonb) ON CONFLICT (key) DO NOTHING;"
+	@echo "E2E database setup complete!"
+
+# Start the E2E demo application
+e2e-app:
+	@echo "Starting E2E Demo Application..."
+	@echo "Open http://localhost:5001 in your browser"
+	cd tests/e2e && uv run python run.py
 
 # =============================================================================
 # Build & Release

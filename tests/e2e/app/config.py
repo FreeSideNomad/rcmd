@@ -15,7 +15,7 @@ class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-key-e2e-testing")
     DATABASE_URL = os.environ.get(
         "E2E_DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/commandbus_e2e",  # pragma: allowlist secret
+        "postgresql://postgres:postgres@localhost:5432/commandbus",  # pragma: allowlist secret
     )
     DEBUG = os.environ.get("FLASK_DEBUG", "1") == "1"
 

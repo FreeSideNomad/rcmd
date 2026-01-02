@@ -63,6 +63,23 @@ SELECT pgmq.create('payments__replies');
 SELECT pgmq.create('reports__commands');
 SELECT pgmq.create('reports__replies');
 
+-- Create E2E demo application queues
+SELECT pgmq.create('e2e__commands');
+SELECT pgmq.create('e2e__replies');
+
+-- E2E demo application configuration table
+CREATE TABLE IF NOT EXISTS e2e_config (
+    key           TEXT PRIMARY KEY,
+    value         JSONB NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Insert default E2E configuration
+INSERT INTO e2e_config (key, value) VALUES
+    ('worker', '{"visibility_timeout": 30, "concurrency": 4, "poll_interval": 1.0, "batch_size": 10}'::jsonb),
+    ('retry', '{"max_attempts": 3, "base_delay_ms": 1000, "max_delay_ms": 60000, "backoff_multiplier": 2.0}'::jsonb)
+ON CONFLICT (key) DO NOTHING;
+
 -- Grant permissions (for non-superuser access if needed)
 -- GRANT ALL ON ALL TABLES IN SCHEMA public TO your_app_user;
 -- GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO your_app_user;
