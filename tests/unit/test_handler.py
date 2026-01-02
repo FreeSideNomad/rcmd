@@ -1,11 +1,18 @@
 """Unit tests for handler registry."""
 
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 from commandbus.exceptions import HandlerAlreadyRegisteredError, HandlerNotFoundError
-from commandbus.handler import _HANDLER_ATTR, HandlerMeta, HandlerRegistry, handler
+from commandbus.handler import (
+    _HANDLER_ATTR,
+    HandlerMeta,
+    HandlerRegistry,
+    get_handler_meta,
+    handler,
+)
 from commandbus.models import Command, HandlerContext
 
 
@@ -367,7 +374,6 @@ class TestStandaloneHandlerDecorator:
 
     def test_handler_metadata_accessible(self) -> None:
         """Test that handler metadata can be retrieved."""
-        from commandbus.handler import get_handler_meta
 
         class MyHandlers:
             @handler(domain="orders", command_type="PlaceOrder")
@@ -381,7 +387,6 @@ class TestStandaloneHandlerDecorator:
 
     def test_get_handler_meta_returns_none_for_undecorated(self) -> None:
         """Test that get_handler_meta returns None for undecorated methods."""
-        from commandbus.handler import get_handler_meta
 
         class MyHandlers:
             async def regular_method(self, cmd: Command, ctx: HandlerContext) -> None:
@@ -446,3 +451,189 @@ class TestStandaloneHandlerDecorator:
         assert payments_meta.domain == "payments"
         assert orders_meta.domain == "orders"
         assert payments_meta.command_type == orders_meta.command_type == "Process"
+
+
+class TestRegisterInstance:
+    """Tests for register_instance method."""
+
+    def test_register_instance_discovers_handlers(self) -> None:
+        """Test that register_instance finds all decorated methods."""
+
+        class PaymentHandlers:
+            @handler(domain="payments", command_type="Debit")
+            async def handle_debit(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+            @handler(domain="payments", command_type="Credit")
+            async def handle_credit(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        registry = HandlerRegistry()
+        instance = PaymentHandlers()
+
+        registered = registry.register_instance(instance)
+
+        assert len(registered) == 2
+        assert ("payments", "Debit") in registered
+        assert ("payments", "Credit") in registered
+        assert registry.has_handler("payments", "Debit")
+        assert registry.has_handler("payments", "Credit")
+
+    @pytest.mark.asyncio
+    async def test_registered_handler_bound_to_instance(self) -> None:
+        """Test that registered handler has access to instance state."""
+
+        class PaymentHandlers:
+            def __init__(self, service: AsyncMock) -> None:
+                self._service = service
+
+            @handler(domain="payments", command_type="Debit")
+            async def handle_debit(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return await self._service.debit(cmd.data["amount"])
+
+        mock_service = AsyncMock()
+        mock_service.debit.return_value = {"balance": 100}
+
+        registry = HandlerRegistry()
+        instance = PaymentHandlers(mock_service)
+        registry.register_instance(instance)
+
+        cmd = Command(
+            domain="payments",
+            command_type="Debit",
+            command_id=uuid4(),
+            data={"amount": 50},
+        )
+        ctx = HandlerContext(command=cmd, attempt=1, max_attempts=3, msg_id=1)
+
+        result = await registry.dispatch(cmd, ctx)
+
+        mock_service.debit.assert_called_once_with(50)
+        assert result == {"balance": 100}
+
+    def test_register_instance_rejects_duplicate(self) -> None:
+        """Test that duplicate handlers raise error."""
+
+        class HandlersA:
+            @handler(domain="payments", command_type="Debit")
+            async def handle(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        class HandlersB:
+            @handler(domain="payments", command_type="Debit")
+            async def handle(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        registry = HandlerRegistry()
+        registry.register_instance(HandlersA())
+
+        with pytest.raises(HandlerAlreadyRegisteredError):
+            registry.register_instance(HandlersB())
+
+    def test_register_instance_empty_class(self) -> None:
+        """Test that class with no handlers returns empty list."""
+
+        class NoHandlers:
+            def regular_method(self) -> None:
+                pass
+
+        registry = HandlerRegistry()
+        registered = registry.register_instance(NoHandlers())
+
+        assert registered == []
+
+    def test_register_instance_skips_private_methods(self) -> None:
+        """Test that private methods are not registered."""
+
+        class Handlers:
+            @handler(domain="test", command_type="Public")
+            async def handle_public(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+            @handler(domain="test", command_type="Private")
+            async def _handle_private(self, cmd: Command, ctx: HandlerContext) -> None:
+                pass
+
+        registry = HandlerRegistry()
+        registered = registry.register_instance(Handlers())
+
+        assert len(registered) == 1
+        assert ("test", "Public") in registered
+        assert ("test", "Private") not in registered
+        assert not registry.has_handler("test", "Private")
+
+    @pytest.mark.asyncio
+    async def test_mixed_function_and_class_handlers(self) -> None:
+        """Test that function and class handlers coexist."""
+
+        class ClassHandlers:
+            @handler(domain="orders", command_type="Create")
+            async def handle_create(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return {"source": "class"}
+
+        async def function_handler(cmd: Command, ctx: HandlerContext) -> dict:
+            return {"source": "function"}
+
+        registry = HandlerRegistry()
+        registry.register("payments", "Debit", function_handler)
+        registry.register_instance(ClassHandlers())
+
+        # Dispatch to function handler
+        cmd1 = Command(domain="payments", command_type="Debit", command_id=uuid4(), data={})
+        ctx1 = HandlerContext(command=cmd1, attempt=1, max_attempts=3, msg_id=1)
+        result1 = await registry.dispatch(cmd1, ctx1)
+        assert result1 == {"source": "function"}
+
+        # Dispatch to class handler
+        cmd2 = Command(domain="orders", command_type="Create", command_id=uuid4(), data={})
+        ctx2 = HandlerContext(command=cmd2, attempt=1, max_attempts=3, msg_id=2)
+        result2 = await registry.dispatch(cmd2, ctx2)
+        assert result2 == {"source": "class"}
+
+    def test_register_instance_with_inheritance(self) -> None:
+        """Test that inherited handlers are also discovered."""
+
+        class BaseHandlers:
+            @handler(domain="base", command_type="BaseCmd")
+            async def handle_base(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return {"handler": "base"}
+
+        class DerivedHandlers(BaseHandlers):
+            @handler(domain="derived", command_type="DerivedCmd")
+            async def handle_derived(self, cmd: Command, ctx: HandlerContext) -> dict:
+                return {"handler": "derived"}
+
+        registry = HandlerRegistry()
+        instance = DerivedHandlers()
+
+        registered = registry.register_instance(instance)
+
+        assert len(registered) == 2
+        assert ("base", "BaseCmd") in registered
+        assert ("derived", "DerivedCmd") in registered
+
+    @pytest.mark.asyncio
+    async def test_register_instance_preserves_handler_functionality(self) -> None:
+        """Test that the registered handler invokes the actual instance method."""
+        call_tracker: list[str] = []
+
+        class Handlers:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            @handler(domain="test", command_type="Test")
+            async def handle(self, cmd: Command, ctx: HandlerContext) -> str:
+                call_tracker.append(self.name)
+                return f"handled by {self.name}"
+
+        registry = HandlerRegistry()
+        instance = Handlers("my_instance")
+        registry.register_instance(instance)
+
+        cmd = Command(domain="test", command_type="Test", command_id=uuid4(), data={})
+        ctx = HandlerContext(command=cmd, attempt=1, max_attempts=3, msg_id=1)
+
+        result = await registry.dispatch(cmd, ctx)
+
+        assert result == "handled by my_instance"
+        assert call_tracker == ["my_instance"]

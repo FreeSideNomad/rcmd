@@ -223,3 +223,60 @@ class HandlerRegistry:
     def clear(self) -> None:
         """Remove all registered handlers. Useful for testing."""
         self._handlers.clear()
+
+    def register_instance(self, instance: object) -> list[tuple[str, str]]:
+        """Scan instance for @handler decorated methods and register them.
+
+        This method discovers all methods on the instance that are decorated
+        with the @handler decorator and registers them with this registry.
+        Private methods (names starting with '_') are skipped.
+
+        Args:
+            instance: An object instance with @handler decorated methods
+
+        Returns:
+            List of (domain, command_type) tuples that were registered
+
+        Raises:
+            HandlerAlreadyRegisteredError: If any handler is already registered.
+                Note: If this error is raised, some handlers from the instance
+                may have already been registered.
+
+        Example:
+            class PaymentHandlers:
+                def __init__(self, service):
+                    self._service = service
+
+                @handler(domain="payments", command_type="Debit")
+                async def handle_debit(self, cmd, ctx):
+                    return await self._service.debit(cmd.data["amount"])
+
+            registry = HandlerRegistry()
+            registry.register_instance(PaymentHandlers(my_service))
+        """
+        registered: list[tuple[str, str]] = []
+
+        for name in dir(instance):
+            # Skip private and dunder methods
+            if name.startswith("_"):
+                continue
+
+            method = getattr(instance, name)
+            if not callable(method):
+                continue
+
+            meta = getattr(method, _HANDLER_ATTR, None)
+            if meta is None:
+                continue
+
+            if not isinstance(meta, HandlerMeta):
+                continue
+
+            self.register(meta.domain, meta.command_type, method)
+            registered.append((meta.domain, meta.command_type))
+            logger.info(
+                f"Discovered handler {instance.__class__.__name__}.{name} "
+                f"for {meta.domain}.{meta.command_type}"
+            )
+
+        return registered
