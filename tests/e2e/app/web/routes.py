@@ -1,41 +1,49 @@
-"""E2E Web routes - serves HTML pages."""
+"""E2E Web routes - serves HTML pages with Jinja2 templates."""
 
-from flask import Blueprint, render_template
+from pathlib import Path
 
-web_bp = Blueprint("web", __name__)
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+
+web_router = APIRouter()
+
+# Setup Jinja2 templates
+templates_dir = Path(__file__).parent.parent / "templates"
+templates = Jinja2Templates(directory=str(templates_dir))
 
 
-@web_bp.route("/")
-def dashboard():
+@web_router.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request) -> HTMLResponse:
     """Dashboard page."""
-    return render_template("pages/dashboard.html")
+    return templates.TemplateResponse(request, "pages/dashboard.html")
 
 
-@web_bp.route("/send-command")
-def send_command():
+@web_router.get("/send-command", response_class=HTMLResponse)
+async def send_command(request: Request) -> HTMLResponse:
     """Send command page."""
-    return render_template("pages/send_command.html")
+    return templates.TemplateResponse(request, "pages/send_command.html")
 
 
-@web_bp.route("/commands")
-def commands():
+@web_router.get("/commands", response_class=HTMLResponse)
+async def commands(request: Request) -> HTMLResponse:
     """Commands browser page."""
-    return render_template("pages/commands.html")
+    return templates.TemplateResponse(request, "pages/commands.html")
 
 
-@web_bp.route("/tsq")
-def troubleshooting_queue():
+@web_router.get("/tsq", response_class=HTMLResponse)
+async def troubleshooting_queue(request: Request) -> HTMLResponse:
     """Troubleshooting queue page."""
-    return render_template("pages/tsq.html")
+    return templates.TemplateResponse(request, "pages/tsq.html")
 
 
-@web_bp.route("/audit")
-def audit():
+@web_router.get("/audit", response_class=HTMLResponse)
+async def audit(request: Request) -> HTMLResponse:
     """Audit trail page."""
-    return render_template("pages/audit.html")
+    return templates.TemplateResponse(request, "pages/audit.html")
 
 
-@web_bp.route("/settings")
-def settings():
+@web_router.get("/settings", response_class=HTMLResponse)
+async def settings(request: Request) -> HTMLResponse:
     """Settings page."""
-    return render_template("pages/settings.html")
+    return templates.TemplateResponse(request, "pages/settings.html")

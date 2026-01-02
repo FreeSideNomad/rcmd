@@ -1,40 +1,51 @@
-"""E2E API routes - JSON endpoints with real database connectivity."""
+"""E2E API routes - FastAPI endpoints with native async."""
 
 from __future__ import annotations
 
 import random
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID, uuid4
 
-from flask import Blueprint, current_app, jsonify, request
+from fastapi import APIRouter, HTTPException
 
-from commandbus.bus import CommandBus
-from commandbus.ops.troubleshooting import TroubleshootingQueue
+from ..dependencies import TSQ, Bus, Pool
+from .schemas import (
+    ActivityEvent,
+    AuditEvent,
+    AuditSearchEvent,
+    AuditSearchResponse,
+    AuditTrailResponse,
+    BulkCreateRequest,
+    BulkCreateResponse,
+    CommandListResponse,
+    CommandResponse,
+    ConfigResponse,
+    ConfigUpdateRequest,
+    ConfigUpdateResponse,
+    CreateCommandRequest,
+    CreateCommandResponse,
+    HealthResponse,
+    LoadTestResponse,
+    ProcessingRate,
+    RecentActivityResponse,
+    RetryConfigSchema,
+    StatsOverviewResponse,
+    ThroughputResponse,
+    TSQActionResponse,
+    TSQBulkRetryRequest,
+    TSQBulkRetryResponse,
+    TSQCommandResponse,
+    TSQListResponse,
+    TSQOperatorRequest,
+    WorkerConfigSchema,
+)
 
-from .. import run_async
-
-if TYPE_CHECKING:
-    from psycopg_pool import AsyncConnectionPool
-
-api_bp = Blueprint("api", __name__)
+api_router = APIRouter()
 
 # Domain used for E2E demo commands
 E2E_DOMAIN = "e2e"
-
-
-async def get_pool() -> AsyncConnectionPool:
-    """Get and open database pool from app context."""
-    pool = current_app.config.get("pool")
-    if pool is None:
-        raise RuntimeError("Database pool not initialized")
-
-    if not current_app.config.get("pool_opened"):
-        await pool.open()
-        current_app.config["pool_opened"] = True
-
-    return pool
 
 
 # =============================================================================
@@ -42,133 +53,75 @@ async def get_pool() -> AsyncConnectionPool:
 # =============================================================================
 
 
-@api_bp.route("/commands", methods=["POST"])
-def create_command():
-    """Create a single test command.
-
-    Request body:
-    {
-        "behavior": {
-            "type": "success|fail_permanent|fail_transient|fail_transient_then_succeed|timeout",
-            "transient_failures": 2,  # for fail_transient_then_succeed
-            "error_code": "INVALID_ACCOUNT",  # for failure types
-            "error_message": "Account not found",  # for failure types
-            "execution_time_ms": 100  # optional delay
-        },
-        "payload": {"custom": "data"},  # optional
-        "max_attempts": 5  # optional override
-    }
-    """
-    data = request.get_json() or {}
-
-    behavior = data.get("behavior", {"type": "success"})
-    payload = data.get("payload", {})
-    max_attempts = data.get("max_attempts", 3)
-
+@api_router.post("/commands", response_model=CreateCommandResponse, status_code=201)
+async def create_command(request: CreateCommandRequest, bus: Bus) -> CreateCommandResponse:
+    """Create a single test command."""
     command_id = uuid4()
 
-    async def _create():
-        pool = await get_pool()
-        bus = CommandBus(pool)
-        await bus.send(
-            domain=E2E_DOMAIN,
-            command_type="TestCommand",
-            command_id=command_id,
-            data={"behavior": behavior, "payload": payload},
-            max_attempts=max_attempts,
-        )
-        return command_id
+    await bus.send(
+        domain=E2E_DOMAIN,
+        command_type="TestCommand",
+        command_id=command_id,
+        data={"behavior": request.behavior.model_dump(), "payload": request.payload},
+        max_attempts=request.max_attempts,
+    )
 
-    try:
-        run_async(_create())
-        return jsonify(
-            {
-                "command_id": str(command_id),
-                "status": "PENDING",
-                "behavior": behavior,
-                "payload": payload,
-                "message": "Command created and queued",
-            }
-        ), 201
-    except Exception as e:
-        return jsonify({"error": str(e), "message": "Failed to create command"}), 500
+    return CreateCommandResponse(
+        command_id=command_id,
+        behavior=request.behavior,
+        payload=request.payload,
+        message="Command created and queued",
+    )
 
 
-@api_bp.route("/commands/bulk", methods=["POST"])
-def create_bulk_commands():
-    """Create multiple test commands for load testing.
-
-    Request body:
-    {
-        "count": 100,
-        "behavior_distribution": {
-            "success": 90,
-            "fail_transient_then_succeed": 5,
-            "fail_permanent": 5
-        },
-        "execution_time_ms": 10
-    }
-    """
+@api_router.post("/commands/bulk", response_model=BulkCreateResponse, status_code=201)
+async def create_bulk_commands(request: BulkCreateRequest, bus: Bus) -> BulkCreateResponse:
+    """Create multiple test commands for load testing."""
     start_time = time.time()
-    data = request.get_json() or {}
 
-    count = min(data.get("count", 1), 10000)
-    execution_time_ms = data.get("execution_time_ms", 0)
-    behavior_distribution = data.get("behavior_distribution")
-    simple_behavior = data.get("behavior")
-    max_attempts = data.get("max_attempts", 3)
-
+    count = min(request.count, 10000)
     command_ids: list[UUID] = []
     behaviors_assigned: dict[str, int] = {}
 
-    async def _create_bulk():
-        pool = await get_pool()
-        bus = CommandBus(pool)
+    for _ in range(count):
+        cmd_id = uuid4()
+        command_ids.append(cmd_id)
 
-        for _ in range(count):
-            cmd_id = uuid4()
-            command_ids.append(cmd_id)
-
-            if behavior_distribution:
-                behavior = _select_behavior_from_distribution(
-                    behavior_distribution, execution_time_ms
-                )
-                btype = behavior["type"]
-                behaviors_assigned[btype] = behaviors_assigned.get(btype, 0) + 1
-            elif simple_behavior:
-                behavior = simple_behavior
-            else:
-                behavior = {"type": "success", "execution_time_ms": execution_time_ms}
-
-            await bus.send(
-                domain=E2E_DOMAIN,
-                command_type="TestCommand",
-                command_id=cmd_id,
-                data={"behavior": behavior},
-                max_attempts=max_attempts,
+        if request.behavior_distribution:
+            behavior = _select_behavior_from_distribution(
+                request.behavior_distribution, request.execution_time_ms
             )
+            btype = behavior["type"]
+            behaviors_assigned[btype] = behaviors_assigned.get(btype, 0) + 1
+        elif request.behavior:
+            behavior = request.behavior.model_dump()
+        else:
+            behavior = {"type": "success", "execution_time_ms": request.execution_time_ms}
 
-    try:
-        generation_start = time.time()
-        run_async(_create_bulk())
-        generation_time_ms = int((time.time() - generation_start) * 1000)
+        await bus.send(
+            domain=E2E_DOMAIN,
+            command_type="TestCommand",
+            command_id=cmd_id,
+            data={"behavior": behavior},
+            max_attempts=request.max_attempts,
+        )
 
-        return jsonify(
-            {
-                "created": count,
-                "command_ids": [str(cid) for cid in command_ids[:100]],
-                "total_command_ids": count,
-                "generation_time_ms": generation_time_ms,
-                "queue_time_ms": int((time.time() - start_time) * 1000),
-                "behavior_distribution": behaviors_assigned if behavior_distribution else None,
-                "message": f"{count} commands created and queued",
-            }
-        ), 201
-    except Exception as e:
-        return jsonify({"error": str(e), "message": "Failed to create bulk commands"}), 500
+    generation_time_ms = int((time.time() - start_time) * 1000)
+
+    return BulkCreateResponse(
+        created=count,
+        command_ids=[str(cid) for cid in command_ids[:100]],
+        total_command_ids=count,
+        generation_time_ms=generation_time_ms,
+        queue_time_ms=int((time.time() - start_time) * 1000),
+        behavior_distribution=behaviors_assigned if request.behavior_distribution else None,
+        message=f"{count} commands created and queued",
+    )
 
 
-def _select_behavior_from_distribution(distribution: dict, execution_time_ms: int = 0) -> dict:
+def _select_behavior_from_distribution(
+    distribution: dict[str, int], execution_time_ms: int
+) -> dict[str, Any]:
     """Select a behavior based on weighted distribution."""
     total = sum(distribution.values())
     if total == 0:
@@ -194,114 +147,92 @@ def _select_behavior_from_distribution(distribution: dict, execution_time_ms: in
     return {"type": "success", "execution_time_ms": execution_time_ms}
 
 
-@api_bp.route("/commands", methods=["GET"])
-def list_commands():
+@api_router.get("/commands", response_model=CommandListResponse)
+async def list_commands(
+    pool: Pool,
+    status: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> CommandListResponse:
     """Query commands with filters."""
-    status = request.args.get("status")
-    limit = min(int(request.args.get("limit", 20)), 100)
-    offset = int(request.args.get("offset", 0))
+    limit = min(limit, 100)
 
-    async def _list():
-        pool = await get_pool()
-        async with pool.connection() as conn:
-            # Build query with optional status filter
-            query = """
-                SELECT command_id, domain, command_type, status, attempts, max_attempts,
-                       created_at, updated_at, last_error_code, last_error_msg, correlation_id
-                FROM command_bus_command
-                WHERE domain = %s
-            """
-            params: list[Any] = [E2E_DOMAIN]
+    async with pool.connection() as conn:
+        query = """
+            SELECT command_id, domain, command_type, status, attempts, max_attempts,
+                   created_at, updated_at, last_error_code, last_error_msg, correlation_id
+            FROM command_bus_command
+            WHERE domain = %s
+        """
+        params: list[Any] = [E2E_DOMAIN]
 
+        if status:
+            query += " AND status = %s"
+            params.append(status)
+
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        async with conn.cursor() as cur:
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+
+            # Get total count
+            count_query = "SELECT COUNT(*) FROM command_bus_command WHERE domain = %s"
+            count_params: list[Any] = [E2E_DOMAIN]
             if status:
-                query += " AND status = %s"
-                params.append(status)
+                count_query += " AND status = %s"
+                count_params.append(status)
+            await cur.execute(count_query, count_params)
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
 
-            query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
-            params.extend([limit, offset])
-
-            async with conn.cursor() as cur:
-                await cur.execute(query, params)
-                rows = await cur.fetchall()
-
-                # Get total count
-                count_query = "SELECT COUNT(*) FROM command_bus_command WHERE domain = %s"
-                count_params: list[Any] = [E2E_DOMAIN]
-                if status:
-                    count_query += " AND status = %s"
-                    count_params.append(status)
-                await cur.execute(count_query, count_params)
-                total_row = await cur.fetchone()
-                total = total_row[0] if total_row else 0
-
-            commands = []
-            for row in rows:
-                commands.append(
-                    {
-                        "command_id": str(row[0]),
-                        "domain": row[1],
-                        "command_type": row[2],
-                        "status": row[3],
-                        "attempts": row[4],
-                        "max_attempts": row[5],
-                        "created_at": row[6].isoformat() if row[6] else None,
-                        "updated_at": row[7].isoformat() if row[7] else None,
-                        "last_error_code": row[8],
-                        "last_error_message": row[9],
-                        "correlation_id": str(row[10]) if row[10] else None,
-                    }
-                )
-
-            return commands, total
-
-    try:
-        commands, total = run_async(_list())
-        return jsonify(
-            {
-                "commands": commands,
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-            }
+    commands = [
+        CommandResponse(
+            command_id=row[0],
+            domain=row[1],
+            command_type=row[2],
+            status=row[3],
+            attempts=row[4],
+            max_attempts=row[5],
+            created_at=row[6],
+            updated_at=row[7],
+            last_error_code=row[8],
+            last_error_message=row[9],
+            correlation_id=row[10],
         )
-    except Exception as e:
-        return jsonify({"error": str(e), "commands": [], "total": 0}), 500
+        for row in rows
+    ]
+
+    return CommandListResponse(
+        commands=commands,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
-@api_bp.route("/commands/<command_id>", methods=["GET"])
-def get_command(command_id: str):
+@api_router.get("/commands/{command_id}", response_model=CommandResponse)
+async def get_command(command_id: UUID, bus: Bus) -> CommandResponse:
     """Get single command details."""
+    cmd = await bus.get_command(E2E_DOMAIN, command_id)
 
-    async def _get():
-        pool = await get_pool()
-        bus = CommandBus(pool)
-        return await bus.get_command(E2E_DOMAIN, UUID(command_id))
+    if cmd is None:
+        raise HTTPException(status_code=404, detail="Command not found")
 
-    try:
-        cmd = run_async(_get())
-        if cmd is None:
-            return jsonify({"error": "Command not found"}), 404
-
-        return jsonify(
-            {
-                "command_id": str(cmd.command_id),
-                "domain": cmd.domain,
-                "command_type": cmd.command_type,
-                "status": cmd.status.value,
-                "attempts": cmd.attempts,
-                "max_attempts": cmd.max_attempts,
-                "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
-                "updated_at": cmd.updated_at.isoformat() if cmd.updated_at else None,
-                "correlation_id": str(cmd.correlation_id) if cmd.correlation_id else None,
-                "last_error_code": cmd.last_error_code,
-                "last_error_message": cmd.last_error_msg,
-                "payload": cmd.data,
-            }
-        )
-    except ValueError:
-        return jsonify({"error": "Invalid command ID format"}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return CommandResponse(
+        command_id=cmd.command_id,
+        domain=cmd.domain,
+        command_type=cmd.command_type,
+        status=cmd.status.value,
+        attempts=cmd.attempts,
+        max_attempts=cmd.max_attempts,
+        created_at=cmd.created_at,
+        updated_at=cmd.updated_at,
+        correlation_id=cmd.correlation_id,
+        last_error_code=cmd.last_error_code,
+        last_error_message=cmd.last_error_msg,
+    )
 
 
 # =============================================================================
@@ -309,12 +240,10 @@ def get_command(command_id: str):
 # =============================================================================
 
 
-@api_bp.route("/stats/overview", methods=["GET"])
-def stats_overview():
+@api_router.get("/stats/overview", response_model=StatsOverviewResponse)
+async def stats_overview(pool: Pool) -> StatsOverviewResponse:
     """Get dashboard statistics from real database."""
-
-    async def _stats():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
             # Get status counts
             await cur.execute(
@@ -337,7 +266,6 @@ def stats_overview():
             }
             for row in rows:
                 status_name = row[0]
-                # Map IN_TROUBLESHOOTING_QUEUE to IN_TSQ for UI
                 if status_name == "IN_TROUBLESHOOTING_QUEUE":
                     status_counts["IN_TSQ"] = row[1]
                 elif status_name in status_counts:
@@ -383,55 +311,43 @@ def stats_overview():
             p95_ms = int(sorted_durations[int(n * 0.95)]) if n > 1 else p50_ms
             p99_ms = int(sorted_durations[int(n * 0.99)]) if n > 1 else p95_ms
 
-            return {
-                "status_counts": status_counts,
-                "processing_rate": {
-                    "per_minute": per_minute,
-                    "avg_time_ms": avg_time_ms,
-                    "p50_ms": p50_ms,
-                    "p95_ms": p95_ms,
-                    "p99_ms": p99_ms,
-                },
-                "recent_change": {
+            return StatsOverviewResponse(
+                status_counts=status_counts,
+                processing_rate=ProcessingRate(
+                    per_minute=per_minute,
+                    avg_time_ms=avg_time_ms,
+                    p50_ms=p50_ms,
+                    p95_ms=p95_ms,
+                    p99_ms=p99_ms,
+                ),
+                recent_change={
                     "PENDING": 0,
                     "COMPLETED": per_minute,
                 },
-            }
-
-    try:
-        stats = run_async(_stats())
-        return jsonify(stats)
+            )
     except Exception as e:
-        # Return zeros on error rather than failing completely
-        return jsonify(
-            {
-                "status_counts": {
-                    "PENDING": 0,
-                    "IN_PROGRESS": 0,
-                    "COMPLETED": 0,
-                    "CANCELLED": 0,
-                    "IN_TSQ": 0,
-                },
-                "processing_rate": {
-                    "per_minute": 0,
-                    "avg_time_ms": 0,
-                    "p50_ms": 0,
-                    "p95_ms": 0,
-                    "p99_ms": 0,
-                },
-                "recent_change": {"PENDING": 0, "COMPLETED": 0},
-                "error": str(e),
-            }
+        return StatsOverviewResponse(
+            status_counts={
+                "PENDING": 0,
+                "IN_PROGRESS": 0,
+                "COMPLETED": 0,
+                "CANCELLED": 0,
+                "IN_TSQ": 0,
+            },
+            processing_rate=ProcessingRate(
+                per_minute=0, avg_time_ms=0, p50_ms=0, p95_ms=0, p99_ms=0
+            ),
+            recent_change={"PENDING": 0, "COMPLETED": 0},
+            error=str(e),
         )
 
 
-@api_bp.route("/stats/recent-activity", methods=["GET"])
-def recent_activity():
+@api_router.get("/stats/recent-activity", response_model=RecentActivityResponse)
+async def recent_activity(pool: Pool, limit: int = 10) -> RecentActivityResponse:
     """Get recent activity feed from audit table."""
-    limit = min(int(request.args.get("limit", 10)), 50)
+    limit = min(limit, 50)
 
-    async def _activity():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
@@ -462,30 +378,23 @@ def recent_activity():
                     "OPERATOR_COMPLETE": f"{cmd_type} completed by operator",
                 }
                 events.append(
-                    {
-                        "command_id": str(row[0]),
-                        "event_type": event_type,
-                        "timestamp": row[2].isoformat() if row[2] else None,
-                        "summary": summary_map.get(event_type, f"{cmd_type} {event_type.lower()}"),
-                    }
+                    ActivityEvent(
+                        command_id=str(row[0]),
+                        event_type=event_type,
+                        timestamp=row[2].isoformat() if row[2] else None,
+                        summary=summary_map.get(event_type, f"{cmd_type} {event_type.lower()}"),
+                    )
                 )
 
-            return events
-
-    try:
-        events = run_async(_activity())
-        return jsonify({"events": events})
+            return RecentActivityResponse(events=events)
     except Exception as e:
-        return jsonify({"events": [], "error": str(e)})
+        return RecentActivityResponse(events=[], error=str(e))
 
 
-@api_bp.route("/stats/throughput", methods=["GET"])
-def stats_throughput():
+@api_router.get("/stats/throughput", response_model=ThroughputResponse)
+async def stats_throughput(pool: Pool, window: int = 60) -> ThroughputResponse:
     """Get processing throughput metrics."""
-    window_seconds = int(request.args.get("window", 60))
-
-    async def _throughput():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
             # Get commands completed in window
             await cur.execute(
@@ -495,7 +404,7 @@ def stats_throughput():
                       AND event_type = 'COMPLETED'
                       AND ts > NOW() - INTERVAL '%s seconds'
                 """,
-                (E2E_DOMAIN, window_seconds),
+                (E2E_DOMAIN, window),
             )
             row = await cur.fetchone()
             commands_processed = row[0] if row else 0
@@ -511,34 +420,36 @@ def stats_throughput():
             queue_row = await cur.fetchone()
             queue_depth = queue_row[0] if queue_row else 0
 
-            return {
-                "window_seconds": window_seconds,
-                "commands_processed": commands_processed,
-                "throughput_per_second": round(commands_processed / window_seconds, 1)
-                if window_seconds > 0
-                else 0,
-                "avg_processing_time_ms": 0,
-                "p50_ms": 0,
-                "p95_ms": 0,
-                "p99_ms": 0,
-                "active_workers": 0,
-                "queue_depth": queue_depth,
-            }
-
-    try:
-        result = run_async(_throughput())
-        return jsonify(result)
+            return ThroughputResponse(
+                window_seconds=window,
+                commands_processed=commands_processed,
+                throughput_per_second=round(commands_processed / window, 1) if window > 0 else 0,
+                avg_processing_time_ms=0,
+                p50_ms=0,
+                p95_ms=0,
+                p99_ms=0,
+                active_workers=0,
+                queue_depth=queue_depth,
+            )
     except Exception as e:
-        return jsonify({"error": str(e), "window_seconds": window_seconds, "commands_processed": 0})
+        return ThroughputResponse(
+            window_seconds=window,
+            commands_processed=0,
+            throughput_per_second=0,
+            avg_processing_time_ms=0,
+            p50_ms=0,
+            p95_ms=0,
+            p99_ms=0,
+            active_workers=0,
+            queue_depth=0,
+            error=str(e),
+        )
 
 
-@api_bp.route("/stats/load-test", methods=["GET"])
-def stats_load_test():
+@api_router.get("/stats/load-test", response_model=LoadTestResponse)
+async def stats_load_test(pool: Pool, total: int = 10000) -> LoadTestResponse:
     """Get load test progress."""
-    total_commands = int(request.args.get("total", 10000))
-
-    async def _load_test():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
@@ -550,7 +461,7 @@ def stats_load_test():
             )
             rows = await cur.fetchall()
 
-            counts = {}
+            counts: dict[str, int] = {}
             for row in rows:
                 counts[row[0]] = row[1]
 
@@ -558,25 +469,34 @@ def stats_load_test():
             failed = counts.get("CANCELLED", 0)
             in_tsq = counts.get("IN_TROUBLESHOOTING_QUEUE", 0)
             pending = counts.get("PENDING", 0) + counts.get("IN_PROGRESS", 0)
-            total = completed + failed + in_tsq + pending
+            total_actual = completed + failed + in_tsq + pending
 
-            return {
-                "total_commands": total if total > 0 else total_commands,
-                "completed": completed,
-                "failed": failed,
-                "in_tsq": in_tsq,
-                "pending": pending,
-                "progress_percent": round((completed / total) * 100, 1) if total > 0 else 0,
-                "elapsed_seconds": 0,
-                "estimated_remaining_seconds": 0,
-                "throughput_per_second": 0,
-            }
-
-    try:
-        result = run_async(_load_test())
-        return jsonify(result)
+            return LoadTestResponse(
+                total_commands=total_actual if total_actual > 0 else total,
+                completed=completed,
+                failed=failed,
+                in_tsq=in_tsq,
+                pending=pending,
+                progress_percent=round((completed / total_actual) * 100, 1)
+                if total_actual > 0
+                else 0,
+                elapsed_seconds=0,
+                estimated_remaining_seconds=0,
+                throughput_per_second=0,
+            )
     except Exception as e:
-        return jsonify({"error": str(e), "total_commands": 0, "completed": 0})
+        return LoadTestResponse(
+            total_commands=0,
+            completed=0,
+            failed=0,
+            in_tsq=0,
+            pending=0,
+            progress_percent=0,
+            elapsed_seconds=0,
+            estimated_remaining_seconds=0,
+            throughput_per_second=0,
+            error=str(e),
+        )
 
 
 # =============================================================================
@@ -584,114 +504,67 @@ def stats_load_test():
 # =============================================================================
 
 
-@api_bp.route("/health", methods=["GET"])
-def health():
+@api_router.get("/health", response_model=HealthResponse)
+async def health(pool: Pool) -> HealthResponse:
     """Health check endpoint."""
-
-    async def _check():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute("SELECT 1")
-            return True
-
-    try:
-        run_async(_check())
-        return jsonify({"status": "ok", "database": "connected"})
+        return HealthResponse(status="ok", database="connected")
     except Exception as e:
-        return jsonify({"status": "error", "database": "disconnected", "error": str(e)}), 503
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
-@api_bp.route("/config", methods=["GET"])
-def get_config():
+@api_router.get("/config", response_model=ConfigResponse)
+async def get_config(pool: Pool) -> ConfigResponse:
     """Get current configuration from database."""
-
-    async def _get_config():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute("SELECT key, value FROM e2e_config")
             rows = await cur.fetchall()
-            config = {}
+            config: dict[str, Any] = {}
             for row in rows:
                 config[row[0]] = row[1]
-            return config
 
-    try:
-        config = run_async(_get_config())
-        return jsonify(
-            {
-                "worker": config.get(
-                    "worker",
-                    {
-                        "visibility_timeout": 30,
-                        "concurrency": 4,
-                        "poll_interval": 1.0,
-                        "batch_size": 10,
-                    },
-                ),
-                "retry": config.get(
-                    "retry",
-                    {
-                        "max_attempts": 3,
-                        "base_delay_ms": 1000,
-                        "max_delay_ms": 60000,
-                        "backoff_multiplier": 2.0,
-                    },
-                ),
-            }
-        )
+            return ConfigResponse(
+                worker=WorkerConfigSchema(**(config.get("worker", {}))),
+                retry=RetryConfigSchema(**(config.get("retry", {}))),
+            )
     except Exception as e:
-        # Return defaults on error
-        return jsonify(
-            {
-                "worker": {
-                    "visibility_timeout": 30,
-                    "concurrency": 4,
-                    "poll_interval": 1.0,
-                    "batch_size": 10,
-                },
-                "retry": {
-                    "max_attempts": 3,
-                    "base_delay_ms": 1000,
-                    "max_delay_ms": 60000,
-                    "backoff_multiplier": 2.0,
-                },
-                "error": str(e),
-            }
+        return ConfigResponse(
+            worker=WorkerConfigSchema(),
+            retry=RetryConfigSchema(),
+            error=str(e),
         )
 
 
-@api_bp.route("/config", methods=["PUT"])
-def update_config():
+@api_router.put("/config", response_model=ConfigUpdateResponse)
+async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdateResponse:
     """Update configuration in database."""
-    data = request.get_json() or {}
-
-    async def _update_config():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
-            if "worker" in data:
+            if request.worker:
                 await cur.execute(
                     """
                         INSERT INTO e2e_config (key, value, updated_at)
                         VALUES ('worker', %s, NOW())
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
-                    (data["worker"],),
+                    (request.worker.model_dump(),),
                 )
-            if "retry" in data:
+            if request.retry:
                 await cur.execute(
                     """
                         INSERT INTO e2e_config (key, value, updated_at)
                         VALUES ('retry', %s, NOW())
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
-                    (data["retry"],),
+                    (request.retry.model_dump(),),
                 )
 
-    try:
-        run_async(_update_config())
-        return jsonify({"status": "ok", "config": data})
+        return ConfigUpdateResponse(status="ok", config=request)
     except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+        return ConfigUpdateResponse(status="error", error=str(e))
 
 
 # =============================================================================
@@ -699,34 +572,32 @@ def update_config():
 # =============================================================================
 
 
-@api_bp.route("/tsq", methods=["GET"])
-def list_tsq_commands():
+@api_router.get("/tsq", response_model=TSQListResponse)
+async def list_tsq_commands(
+    tsq: TSQ, pool: Pool, limit: int = 20, offset: int = 0
+) -> TSQListResponse:
     """List commands in troubleshooting queue."""
-    limit = min(int(request.args.get("limit", 20)), 100)
-    offset = int(request.args.get("offset", 0))
+    limit = min(limit, 100)
 
-    async def _list_tsq():
-        pool = await get_pool()
-        tsq = TroubleshootingQueue(pool)
+    try:
         commands = await tsq.list_commands(E2E_DOMAIN, limit=limit, offset=offset)
 
-        result = []
-        for cmd in commands:
-            result.append(
-                {
-                    "command_id": str(cmd.command_id),
-                    "domain": cmd.domain,
-                    "command_type": cmd.command_type,
-                    "status": "IN_TSQ",
-                    "attempts": cmd.attempts,
-                    "max_attempts": cmd.max_attempts,
-                    "last_error_type": cmd.last_error_type,
-                    "last_error_code": cmd.last_error_code,
-                    "last_error_message": cmd.last_error_msg,
-                    "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
-                    "updated_at": cmd.updated_at.isoformat() if cmd.updated_at else None,
-                }
+        result = [
+            TSQCommandResponse(
+                command_id=str(cmd.command_id),
+                domain=cmd.domain,
+                command_type=cmd.command_type,
+                status="IN_TSQ",
+                attempts=cmd.attempts,
+                max_attempts=cmd.max_attempts,
+                last_error_type=cmd.last_error_type,
+                last_error_code=cmd.last_error_code,
+                last_error_message=cmd.last_error_msg,
+                created_at=cmd.created_at.isoformat() if cmd.created_at else None,
+                updated_at=cmd.updated_at.isoformat() if cmd.updated_at else None,
             )
+            for cmd in commands
+        ]
 
         # Get total count
         async with pool.connection() as conn, conn.cursor() as cur:
@@ -740,139 +611,90 @@ def list_tsq_commands():
             row = await cur.fetchone()
             total = row[0] if row else 0
 
-        return result, total
-
-    try:
-        commands, total = run_async(_list_tsq())
-        return jsonify(
-            {
-                "commands": commands,
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
+        return TSQListResponse(commands=result, total=total, limit=limit, offset=offset)
     except Exception as e:
-        return jsonify({"commands": [], "total": 0, "error": str(e)})
+        return TSQListResponse(commands=[], total=0, limit=limit, offset=offset, error=str(e))
 
 
-@api_bp.route("/tsq/<command_id>/retry", methods=["POST"])
-def retry_tsq_command(command_id: str):
+@api_router.post("/tsq/{command_id}/retry", response_model=TSQActionResponse)
+async def retry_tsq_command(
+    command_id: str, tsq: TSQ, request: TSQOperatorRequest | None = None
+) -> TSQActionResponse:
     """Retry a command from TSQ."""
-    data = request.get_json() or {}
-    operator = data.get("operator", "e2e-ui")
+    operator = request.operator if request else "e2e-ui"
 
-    async def _retry():
-        pool = await get_pool()
-        tsq = TroubleshootingQueue(pool)
+    try:
         await tsq.operator_retry(E2E_DOMAIN, UUID(command_id), operator=operator)
-
-    try:
-        run_async(_retry())
-        return jsonify(
-            {
-                "command_id": command_id,
-                "status": "PENDING",
-                "message": "Command re-queued for processing",
-            }
+        return TSQActionResponse(
+            command_id=command_id,
+            status="PENDING",
+            message="Command re-queued for processing",
         )
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@api_bp.route("/tsq/<command_id>/cancel", methods=["POST"])
-def cancel_tsq_command(command_id: str):
+@api_router.post("/tsq/{command_id}/cancel", response_model=TSQActionResponse)
+async def cancel_tsq_command(
+    command_id: str, tsq: TSQ, request: TSQOperatorRequest | None = None
+) -> TSQActionResponse:
     """Cancel a command in TSQ."""
-    data = request.get_json() or {}
-    operator = data.get("operator", "e2e-ui")
-    reason = data.get("reason", "Cancelled via UI")
-
-    async def _cancel():
-        pool = await get_pool()
-        tsq = TroubleshootingQueue(pool)
-        await tsq.operator_cancel(E2E_DOMAIN, UUID(command_id), operator=operator, reason=reason)
+    operator = request.operator if request else "e2e-ui"
+    reason = request.reason if request else "Cancelled via UI"
 
     try:
-        run_async(_cancel())
-        return jsonify(
-            {
-                "command_id": command_id,
-                "status": "CANCELLED",
-                "message": "Command cancelled",
-            }
+        await tsq.operator_cancel(E2E_DOMAIN, UUID(command_id), operator=operator, reason=reason)
+        return TSQActionResponse(
+            command_id=command_id,
+            status="CANCELLED",
+            message="Command cancelled",
         )
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@api_bp.route("/tsq/<command_id>/complete", methods=["POST"])
-def complete_tsq_command(command_id: str):
+@api_router.post("/tsq/{command_id}/complete", response_model=TSQActionResponse)
+async def complete_tsq_command(
+    command_id: str, tsq: TSQ, request: TSQOperatorRequest | None = None
+) -> TSQActionResponse:
     """Manually complete a command in TSQ."""
-    data = request.get_json() or {}
-    result_data = data.get("result_data")
-    operator = data.get("operator", "e2e-ui")
+    operator = request.operator if request else "e2e-ui"
+    result_data = request.result_data if request else None
 
-    async def _complete():
-        pool = await get_pool()
-        tsq = TroubleshootingQueue(pool)
+    try:
         await tsq.operator_complete(
             E2E_DOMAIN,
             UUID(command_id),
             result_data=result_data,
             operator=operator,
         )
-
-    try:
-        run_async(_complete())
-        return jsonify(
-            {
-                "command_id": command_id,
-                "status": "COMPLETED",
-                "result_data": result_data,
-                "operator": operator,
-                "message": "Command manually completed",
-            }
+        return TSQActionResponse(
+            command_id=command_id,
+            status="COMPLETED",
+            result_data=result_data,
+            operator=operator,
+            message="Command manually completed",
         )
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@api_bp.route("/tsq/bulk-retry", methods=["POST"])
-def bulk_retry_tsq_commands():
+@api_router.post("/tsq/bulk-retry", response_model=TSQBulkRetryResponse)
+async def bulk_retry_tsq_commands(request: TSQBulkRetryRequest, tsq: TSQ) -> TSQBulkRetryResponse:
     """Retry multiple commands from TSQ."""
-    data = request.get_json() or {}
-    command_ids = data.get("command_ids", [])
-    operator = data.get("operator", "e2e-ui")
+    retried = 0
+    for cmd_id in request.command_ids:
+        try:
+            await tsq.operator_retry(E2E_DOMAIN, UUID(cmd_id), operator=request.operator)
+            retried += 1
+        except Exception:
+            pass  # Skip failed retries
 
-    async def _bulk_retry():
-        pool = await get_pool()
-        tsq = TroubleshootingQueue(pool)
-        retried = 0
-        for cmd_id in command_ids:
-            try:
-                await tsq.operator_retry(E2E_DOMAIN, UUID(cmd_id), operator=operator)
-                retried += 1
-            except Exception:
-                pass  # Skip failed retries
-        return retried
-
-    try:
-        retried = run_async(_bulk_retry())
-        return jsonify(
-            {
-                "retried": retried,
-                "command_ids": command_ids,
-                "message": f"{retried} commands re-queued for processing",
-            }
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return TSQBulkRetryResponse(
+        retried=retried,
+        command_ids=request.command_ids,
+        message=f"{retried} commands re-queued for processing",
+    )
 
 
 # =============================================================================
@@ -880,12 +702,10 @@ def bulk_retry_tsq_commands():
 # =============================================================================
 
 
-@api_bp.route("/audit/<command_id>", methods=["GET"])
-def get_audit_trail(command_id: str):
+@api_router.get("/audit/{command_id}", response_model=AuditTrailResponse)
+async def get_audit_trail(command_id: str, pool: Pool) -> AuditTrailResponse:
     """Get audit trail for a specific command."""
-
-    async def _get_audit():
-        pool = await get_pool()
+    try:
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
@@ -898,50 +718,51 @@ def get_audit_trail(command_id: str):
             )
             rows = await cur.fetchall()
 
-            events = []
-            for row in rows:
-                events.append(
-                    {
-                        "id": row[0],
-                        "event_type": row[1],
-                        "timestamp": row[2].isoformat() if row[2] else None,
-                        "details": row[3] or {},
-                    }
+            events = [
+                AuditEvent(
+                    id=row[0],
+                    event_type=row[1],
+                    timestamp=row[2].isoformat() if row[2] else None,
+                    details=row[3] or {},
                 )
+                for row in rows
+            ]
 
             # Calculate duration
             total_duration_ms = 0
             if len(events) >= 2:
-                first_ts = datetime.fromisoformat(events[0]["timestamp"].replace("Z", "+00:00"))
-                last_ts = datetime.fromisoformat(events[-1]["timestamp"].replace("Z", "+00:00"))
+                first_ts = datetime.fromisoformat(
+                    events[0].timestamp.replace("Z", "+00:00") if events[0].timestamp else ""
+                )
+                last_ts = datetime.fromisoformat(
+                    events[-1].timestamp.replace("Z", "+00:00") if events[-1].timestamp else ""
+                )
                 total_duration_ms = int((last_ts - first_ts).total_seconds() * 1000)
 
-            return events, total_duration_ms
+            return AuditTrailResponse(
+                command_id=command_id,
+                events=events,
+                total_duration_ms=total_duration_ms,
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid command ID format") from e
+    except Exception as e:
+        return AuditTrailResponse(
+            command_id=command_id, events=[], total_duration_ms=0, error=str(e)
+        )
+
+
+@api_router.get("/audit/search", response_model=AuditSearchResponse)
+async def search_audit_events(
+    pool: Pool,
+    event_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> AuditSearchResponse:
+    """Search audit events across commands."""
+    limit = min(limit, 200)
 
     try:
-        events, duration = run_async(_get_audit())
-        return jsonify(
-            {
-                "command_id": command_id,
-                "events": events,
-                "total_duration_ms": duration,
-            }
-        )
-    except ValueError:
-        return jsonify({"error": "Invalid command ID format"}), 400
-    except Exception as e:
-        return jsonify({"command_id": command_id, "events": [], "error": str(e)})
-
-
-@api_bp.route("/audit/search", methods=["GET"])
-def search_audit_events():
-    """Search audit events across commands."""
-    event_type = request.args.get("event_type")
-    limit = min(int(request.args.get("limit", 50)), 200)
-    offset = int(request.args.get("offset", 0))
-
-    async def _search():
-        pool = await get_pool()
         async with pool.connection() as conn, conn.cursor() as cur:
             query = """
                 SELECT a.audit_id, a.command_id, a.event_type, a.ts,
@@ -963,19 +784,18 @@ def search_audit_events():
             await cur.execute(query, params)
             rows = await cur.fetchall()
 
-            events = []
-            for row in rows:
-                events.append(
-                    {
-                        "id": row[0],
-                        "command_id": str(row[1]),
-                        "event_type": row[2],
-                        "timestamp": row[3].isoformat() if row[3] else None,
-                        "details": row[4] or {},
-                        "domain": E2E_DOMAIN,
-                        "command_type": row[5] or "TestCommand",
-                    }
+            events = [
+                AuditSearchEvent(
+                    id=row[0],
+                    command_id=str(row[1]),
+                    event_type=row[2],
+                    timestamp=row[3].isoformat() if row[3] else None,
+                    details=row[4] or {},
+                    domain=E2E_DOMAIN,
+                    command_type=row[5] or "TestCommand",
                 )
+                for row in rows
+            ]
 
             # Get total count
             count_query = "SELECT COUNT(*) FROM command_bus_audit WHERE domain = %s"
@@ -987,17 +807,11 @@ def search_audit_events():
             total_row = await cur.fetchone()
             total = total_row[0] if total_row else 0
 
-            return events, total
-
-    try:
-        events, total = run_async(_search())
-        return jsonify(
-            {
-                "events": events,
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
+            return AuditSearchResponse(
+                events=events,
+                total=total,
+                limit=limit,
+                offset=offset,
+            )
     except Exception as e:
-        return jsonify({"events": [], "total": 0, "error": str(e)})
+        return AuditSearchResponse(events=[], total=0, limit=limit, offset=offset, error=str(e))
