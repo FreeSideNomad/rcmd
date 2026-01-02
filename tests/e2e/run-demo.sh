@@ -1,6 +1,12 @@
 #!/bin/bash
 # E2E Demo Application Runner
 # This script sets up the environment and runs the Flask demo app
+#
+# Recommended: Use 'make e2e-app' from the project root instead.
+#
+# Prerequisites:
+#   1. Start database: make docker-up
+#   2. Set up E2E tables: make e2e-setup
 
 set -e
 
@@ -27,10 +33,20 @@ if ! command -v uv &> /dev/null; then
     exit 1
 fi
 
+# Check if Docker is running and postgres is up
+if ! docker compose -f "$PROJECT_ROOT/docker-compose.yml" ps postgres 2>/dev/null | grep -q "Up"; then
+    echo "Warning: PostgreSQL container not running."
+    echo "  Run 'make docker-up' from project root first."
+    echo ""
+fi
+
 echo "Syncing dependencies with e2e extras..."
 cd "$PROJECT_ROOT"
 uv sync --extra e2e
 
-echo "Starting Flask demo app on port ${PORT:-5001}..."
+echo ""
+echo "Starting Flask demo app on http://localhost:${PORT:-5001}"
+echo "Tip: Run 'make e2e-setup' if you see database errors."
+echo ""
 cd "$SCRIPT_DIR"
 exec uv run --project "$PROJECT_ROOT" --extra e2e python -m flask --app run:app run --host 0.0.0.0 --port "${PORT:-5001}"
