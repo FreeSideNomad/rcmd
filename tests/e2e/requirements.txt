@@ -1,7 +1,11 @@
 # E2E Demo Application Dependencies
-# Install with: pip install -r requirements.txt
+# Note: Use `uv sync --extra e2e` from project root instead.
+# This file is kept for reference only.
 
-Flask>=3.1.0
+fastapi>=0.128.0
+uvicorn[standard]>=0.40.0
+jinja2>=3.1.6
+python-multipart>=0.0.20
 python-dotenv>=1.0.1
 psycopg[binary,pool]>=3.2.0
 
