@@ -53,10 +53,10 @@ test = [
     "testcontainers[postgres]>=4.0.0",
 ]
 e2e = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "jinja2>=3.1.4",
-    "python-multipart>=0.0.9",
+    "fastapi>=0.128.0",
+    "uvicorn[standard]>=0.40.0",
+    "jinja2>=3.1.6",
+    "python-multipart>=0.0.20",
     "python-dotenv>=1.0.1",
 ]
 
