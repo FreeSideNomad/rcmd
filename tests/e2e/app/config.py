@@ -10,14 +10,14 @@ load_dotenv()
 
 
 class Config:
-    """Flask configuration."""
+    """Application configuration."""
 
     SECRET_KEY = os.environ.get("SECRET_KEY", "dev-key-e2e-testing")
     DATABASE_URL = os.environ.get(
         "E2E_DATABASE_URL",
         "postgresql://postgres:postgres@localhost:5432/commandbus",  # pragma: allowlist secret
     )
-    DEBUG = os.environ.get("FLASK_DEBUG", "1") == "1"
+    DEBUG = os.environ.get("DEBUG", "1") == "1"
 
 
 @dataclass
