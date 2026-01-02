@@ -150,7 +150,7 @@
             document.getElementById('config-visibility').textContent = config.worker.visibility_timeout + 's';
             document.getElementById('config-max-attempts').textContent = config.retry.max_attempts;
             document.getElementById('config-backoff').textContent =
-                `${config.retry.base_delay_ms/1000}s-${config.retry.max_delay_ms/1000}s (${config.retry.backoff_multiplier}x multiplier)`;
+                config.retry.backoff_schedule.join('s, ') + 's';
         }
     }
 
