@@ -384,3 +384,146 @@ class TestPgmqClientSetVt:
         result = await client.set_vt("test_queue", 999, 60)
 
         assert result is False
+
+
+class TestPgmqClientSendBatch:
+    """Tests for PgmqClient.send_batch()."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool."""
+        pool = MagicMock()
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(return_value=[(1,), (2,), (3,)])
+
+        @asynccontextmanager
+        async def mock_cursor():
+            yield cursor
+
+        conn.cursor = mock_cursor
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        pool.connection = mock_connection
+        pool._mock_conn = conn
+        pool._mock_cursor = cursor
+        return pool
+
+    @pytest.fixture
+    def client(self, mock_pool: MagicMock) -> PgmqClient:
+        """Create a PgmqClient with mocked pool."""
+        return PgmqClient(mock_pool)
+
+    @pytest.mark.asyncio
+    async def test_send_batch_without_conn(self, client: PgmqClient, mock_pool: MagicMock) -> None:
+        """Test sending batch using pool connection."""
+        messages = [{"key": "value1"}, {"key": "value2"}, {"key": "value3"}]
+        result = await client.send_batch("test_queue", messages)
+
+        assert result == [1, 2, 3]
+        # Should only call pgmq.send_batch (no NOTIFY for batch)
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        assert "pgmq.send_batch" in str(call_args)
+
+    @pytest.mark.asyncio
+    async def test_send_batch_with_external_conn(self, client: PgmqClient) -> None:
+        """Test sending batch with an external connection."""
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(return_value=[(10,), (20,)])
+
+        @asynccontextmanager
+        async def mock_cursor():
+            yield cursor
+
+        conn.cursor = mock_cursor
+
+        messages = [{"key": "value1"}, {"key": "value2"}]
+        result = await client.send_batch("test_queue", messages, conn=conn)
+
+        assert result == [10, 20]
+
+    @pytest.mark.asyncio
+    async def test_send_batch_with_delay(self, client: PgmqClient, mock_pool: MagicMock) -> None:
+        """Test sending batch with delay."""
+        messages = [{"key": "value1"}]
+        await client.send_batch("test_queue", messages, delay=10)
+
+        call_args = mock_pool._mock_cursor.execute.call_args
+        # Verify delay parameter is passed (third positional arg)
+        assert call_args[0][1][2] == 10
+
+    @pytest.mark.asyncio
+    async def test_send_batch_empty_list(self, client: PgmqClient, mock_pool: MagicMock) -> None:
+        """Test sending empty batch returns empty list."""
+        mock_pool._mock_cursor.fetchall = AsyncMock(return_value=[])
+
+        result = await client.send_batch("test_queue", [])
+
+        assert result == []
+
+
+class TestPgmqClientNotify:
+    """Tests for PgmqClient.notify()."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool."""
+        pool = MagicMock()
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_cursor():
+            yield cursor
+
+        conn.cursor = mock_cursor
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        pool.connection = mock_connection
+        pool._mock_conn = conn
+        pool._mock_cursor = cursor
+        return pool
+
+    @pytest.fixture
+    def client(self, mock_pool: MagicMock) -> PgmqClient:
+        """Create a PgmqClient with mocked pool."""
+        return PgmqClient(mock_pool)
+
+    @pytest.mark.asyncio
+    async def test_notify_without_conn(self, client: PgmqClient, mock_pool: MagicMock) -> None:
+        """Test sending NOTIFY using pool connection."""
+        await client.notify("test_queue")
+
+        mock_pool._mock_cursor.execute.assert_called_once()
+        call_args = mock_pool._mock_cursor.execute.call_args
+        assert "NOTIFY pgmq_notify_test_queue" in str(call_args)
+
+    @pytest.mark.asyncio
+    async def test_notify_with_external_conn(self, client: PgmqClient) -> None:
+        """Test sending NOTIFY with an external connection."""
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_cursor():
+            yield cursor
+
+        conn.cursor = mock_cursor
+
+        await client.notify("test_queue", conn=conn)
+
+        cursor.execute.assert_called_once()
+        call_args = cursor.execute.call_args
+        assert "NOTIFY pgmq_notify_test_queue" in str(call_args)

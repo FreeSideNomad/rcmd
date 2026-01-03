@@ -1,6 +1,6 @@
 """Command Bus - A Python library for Command Bus over PostgreSQL + PGMQ."""
 
-from commandbus.bus import CommandBus, SendResult
+from commandbus.bus import CommandBus
 from commandbus.exceptions import (
     CommandBusError,
     CommandNotFoundError,
@@ -14,11 +14,14 @@ from commandbus.exceptions import (
 from commandbus.handler import HandlerMeta, HandlerRegistry, handler
 from commandbus.models import (
     AuditEvent,
+    BatchSendResult,
     Command,
     CommandMetadata,
     CommandStatus,
     HandlerContext,
     ReplyOutcome,
+    SendRequest,
+    SendResult,
     TroubleshootingItem,
 )
 from commandbus.ops.troubleshooting import TroubleshootingQueue
@@ -32,6 +35,7 @@ __all__ = [
     "DEFAULT_RETRY_POLICY",
     "AuditEvent",
     "AuditEventType",
+    "BatchSendResult",
     "Command",
     "CommandBus",
     "CommandBusError",
@@ -53,6 +57,7 @@ __all__ = [
     "ReceivedCommand",
     "ReplyOutcome",
     "RetryPolicy",
+    "SendRequest",
     "SendResult",
     "TransientCommandError",
     "TroubleshootingItem",

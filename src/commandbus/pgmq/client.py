@@ -131,6 +131,81 @@ class PgmqClient:
         logger.debug(f"Sent message to {queue_name}: msg_id={result}")
         return int(result)
 
+    async def send_batch(
+        self,
+        queue_name: str,
+        messages: list[dict[str, Any]],
+        delay: int = 0,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> list[int]:
+        """Send multiple messages to a queue in a single operation.
+
+        Uses PGMQ's native send_batch() for optimal performance.
+        Does NOT send NOTIFY - caller is responsible for notification.
+
+        Args:
+            queue_name: Name of the queue
+            messages: List of message payloads (will be JSON serialized)
+            delay: Delay in seconds before messages become visible
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            List of message IDs assigned by PGMQ
+        """
+        if conn is not None:
+            return await self._send_batch(conn, queue_name, messages, delay)
+
+        async with self._pool.connection() as acquired_conn:
+            return await self._send_batch(acquired_conn, queue_name, messages, delay)
+
+    async def _send_batch(
+        self,
+        conn: AsyncConnection[Any],
+        queue_name: str,
+        messages: list[dict[str, Any]],
+        delay: int,
+    ) -> list[int]:
+        """Send multiple messages using an existing connection.
+
+        Note: Does NOT send NOTIFY. Caller must handle notification.
+        """
+        if not messages:
+            return []
+
+        msgs_json = [json.dumps(m) for m in messages]
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM pgmq.send_batch(%s, %s::jsonb[], %s)",
+                (queue_name, msgs_json, delay),
+            )
+            rows = await cur.fetchall()
+            msg_ids = [int(row[0]) for row in rows]
+
+        logger.debug(f"Sent {len(msg_ids)} messages to {queue_name}")
+        return msg_ids
+
+    async def notify(
+        self,
+        queue_name: str,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> None:
+        """Send a NOTIFY signal for a queue.
+
+        Used after batch operations to wake up workers.
+
+        Args:
+            queue_name: Name of the queue
+            conn: Optional connection
+        """
+        channel = f"{PGMQ_NOTIFY_CHANNEL}_{queue_name}"
+        if conn is not None:
+            async with conn.cursor() as cur:
+                await cur.execute(f"NOTIFY {channel}")
+        else:
+            async with self._pool.connection() as acquired_conn, acquired_conn.cursor() as cur:
+                await cur.execute(f"NOTIFY {channel}")
+        logger.debug(f"Notified channel {channel}")
+
     async def read(
         self,
         queue_name: str,

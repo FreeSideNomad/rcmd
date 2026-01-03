@@ -101,6 +101,33 @@ class PostgresAuditLogger:
         )
         logger.debug(f"Audit: {event_type.value} for {domain}.{command_id}")
 
+    async def log_batch(
+        self,
+        events: list[tuple[str, UUID, AuditEventType, dict[str, Any] | None]],
+        conn: AsyncConnection[Any],
+    ) -> None:
+        """Log multiple audit events in a single operation.
+
+        Args:
+            events: List of tuples (domain, command_id, event_type, details)
+            conn: Database connection (required for batch operation)
+        """
+        if not events:
+            return
+
+        async with conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+                VALUES (%s, %s, %s, %s::jsonb)
+                """,
+                [
+                    (domain, command_id, event_type.value, json.dumps(details) if details else None)
+                    for domain, command_id, event_type, details in events
+                ],
+            )
+        logger.debug(f"Logged {len(events)} audit events")
+
     async def get_events(
         self,
         command_id: UUID,

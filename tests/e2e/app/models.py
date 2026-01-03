@@ -76,6 +76,27 @@ class TestCommandRepository:
             row = await cur.fetchone()
             return TestCommand.from_row(row)
 
+    async def create_batch(
+        self,
+        commands: list[tuple[UUID, dict[str, Any], dict[str, Any]]],
+    ) -> None:
+        """Create multiple test commands in a single operation.
+
+        Args:
+            commands: List of (command_id, behavior, payload) tuples
+        """
+        if not commands:
+            return
+
+        async with self.pool.connection() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO test_command (command_id, payload, behavior)
+                VALUES (%s, %s, %s)
+                """,
+                [(cmd_id, Json(payload), Json(behavior)) for cmd_id, behavior, payload in commands],
+            )
+
     async def get_by_command_id(self, command_id: UUID) -> TestCommand | None:
         """Get test command by command_id."""
         async with self.pool.connection() as conn, conn.cursor() as cur:

@@ -11,6 +11,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException
 from psycopg.types.json import Json
 
+from commandbus.models import SendRequest
+
 from ..dependencies import TSQ, Bus, Pool
 from ..models import TestCommandRepository
 from .schemas import (
@@ -87,17 +89,24 @@ async def create_command(
 async def create_bulk_commands(
     request: BulkCreateRequest, bus: Bus, pool: Pool
 ) -> BulkCreateResponse:
-    """Create multiple test commands for load testing."""
+    """Create multiple test commands for load testing.
+
+    Uses batch operations for efficient bulk creation:
+    - bus.send_batch() for PGMQ messages and command metadata
+    - repo.create_batch() for test command records
+    """
     start_time = time.time()
 
-    count = min(request.count, 10000)
-    command_ids: list[UUID] = []
+    count = request.count  # No artificial limit - let the bus handle chunking
     behaviors_assigned: dict[str, int] = {}
     repo = TestCommandRepository(pool)
 
+    # Build all commands first
+    send_requests: list[SendRequest] = []
+    test_commands: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
+
     for _ in range(count):
         cmd_id = uuid4()
-        command_ids.append(cmd_id)
 
         if request.behavior_distribution:
             behavior = _select_behavior_from_distribution(
@@ -110,27 +119,39 @@ async def create_bulk_commands(
         else:
             behavior = {"type": "success", "execution_time_ms": request.execution_time_ms}
 
-        # Insert into test_command table (handler reads behavior from here)
-        await repo.create(cmd_id, behavior, {})
+        # Prepare test command record
+        test_commands.append((cmd_id, behavior, {}))
 
-        await bus.send(
-            domain=E2E_DOMAIN,
-            command_type="TestCommand",
-            command_id=cmd_id,
-            data={"behavior": behavior},
-            max_attempts=request.max_attempts,
+        # Prepare send request
+        send_requests.append(
+            SendRequest(
+                domain=E2E_DOMAIN,
+                command_type="TestCommand",
+                command_id=cmd_id,
+                data={"behavior": behavior},
+                max_attempts=request.max_attempts,
+            )
         )
+
+    # Batch insert test commands
+    await repo.create_batch(test_commands)
+
+    # Batch send to command bus
+    batch_result = await bus.send_batch(send_requests)
 
     generation_time_ms = int((time.time() - start_time) * 1000)
 
+    # Get first 100 command IDs from results
+    command_ids = [r.command_id for r in batch_result.results[:100]]
+
     return BulkCreateResponse(
-        created=count,
-        command_ids=[str(cid) for cid in command_ids[:100]],
-        total_command_ids=count,
+        created=batch_result.total_commands,
+        command_ids=[str(cid) for cid in command_ids],
+        total_command_ids=batch_result.total_commands,
         generation_time_ms=generation_time_ms,
         queue_time_ms=int((time.time() - start_time) * 1000),
         behavior_distribution=behaviors_assigned if request.behavior_distribution else None,
-        message=f"{count} commands created and queued",
+        message=f"{batch_result.total_commands} commands in {batch_result.chunks_processed} chunks",
     )
 
 
