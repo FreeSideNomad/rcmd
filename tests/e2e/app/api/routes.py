@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException
 from psycopg.types.json import Json
 
+from commandbus import BatchCommand
 from commandbus.models import SendRequest
 
 from ..dependencies import TSQ, Bus, Pool
@@ -21,6 +22,11 @@ from .schemas import (
     AuditSearchEvent,
     AuditSearchResponse,
     AuditTrailResponse,
+    BatchCommandResponse,
+    BatchCommandsListResponse,
+    BatchDetailResponse,
+    BatchListResponse,
+    BatchSummary,
     BulkCreateRequest,
     BulkCreateResponse,
     CommandListResponse,
@@ -28,6 +34,8 @@ from .schemas import (
     ConfigResponse,
     ConfigUpdateRequest,
     ConfigUpdateResponse,
+    CreateBatchRequest,
+    CreateBatchResponse,
     CreateCommandRequest,
     CreateCommandResponse,
     HealthResponse,
@@ -867,3 +875,216 @@ async def search_audit_events(
             )
     except Exception as e:
         return AuditSearchResponse(events=[], total=0, limit=limit, offset=offset, error=str(e))
+
+
+# =============================================================================
+# Batch Endpoints
+# =============================================================================
+
+
+@api_router.post("/batches", response_model=CreateBatchResponse, status_code=201)
+async def create_batch(request: CreateBatchRequest, bus: Bus, pool: Pool) -> CreateBatchResponse:
+    """Create a new batch with test commands."""
+    repo = TestCommandRepository(pool)
+    behavior = request.behavior.model_dump()
+
+    # Build batch commands
+    batch_commands: list[BatchCommand] = []
+    test_commands: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
+
+    for _ in range(request.command_count):
+        cmd_id = uuid4()
+        batch_commands.append(
+            BatchCommand(
+                command_type="TestCommand",
+                command_id=cmd_id,
+                data={"behavior": behavior},
+                max_attempts=request.max_attempts,
+            )
+        )
+        test_commands.append((cmd_id, behavior, {}))
+
+    # Create test command records
+    await repo.create_batch(test_commands)
+
+    # Create batch via CommandBus
+    result = await bus.create_batch(
+        domain=E2E_DOMAIN,
+        commands=batch_commands,
+        name=request.name,
+    )
+
+    return CreateBatchResponse(
+        batch_id=result.batch_id,
+        total_commands=result.total_commands,
+        message=f"Batch created with {result.total_commands} commands",
+    )
+
+
+@api_router.get("/batches", response_model=BatchListResponse)
+async def list_batches(
+    pool: Pool,
+    status: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> BatchListResponse:
+    """List batches with optional status filter."""
+    limit = min(limit, 100)
+
+    try:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            query = """
+                SELECT batch_id, name, status, total_count, completed_count,
+                       failed_count, canceled_count, in_troubleshooting_count, created_at
+                FROM command_bus_batch
+                WHERE domain = %s
+            """
+            params: list[Any] = [E2E_DOMAIN]
+
+            if status:
+                query += " AND status = %s"
+                params.append(status)
+
+            query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+
+            # Get total count
+            count_query = "SELECT COUNT(*) FROM command_bus_batch WHERE domain = %s"
+            count_params: list[Any] = [E2E_DOMAIN]
+            if status:
+                count_query += " AND status = %s"
+                count_params.append(status)
+            await cur.execute(count_query, count_params)
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
+
+        batches = []
+        for row in rows:
+            total_count = row[3] or 0
+            completed = row[4] or 0
+            progress = (completed / total_count * 100) if total_count > 0 else 0
+            batches.append(
+                BatchSummary(
+                    batch_id=row[0],
+                    name=row[1],
+                    status=row[2],
+                    total_count=total_count,
+                    completed_count=completed,
+                    failed_count=row[5] or 0,
+                    canceled_count=row[6] or 0,
+                    in_troubleshooting_count=row[7] or 0,
+                    progress_percent=round(progress, 1),
+                    created_at=row[8],
+                )
+            )
+
+        return BatchListResponse(
+            batches=batches,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        return BatchListResponse(batches=[], total=0, limit=limit, offset=offset, error=str(e))
+
+
+@api_router.get("/batches/{batch_id}", response_model=BatchDetailResponse)
+async def get_batch(batch_id: UUID, bus: Bus) -> BatchDetailResponse:
+    """Get batch details."""
+    batch = await bus.get_batch(E2E_DOMAIN, batch_id)
+
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    total_count = batch.total_count or 0
+    completed = batch.completed_count or 0
+    progress = (completed / total_count * 100) if total_count > 0 else 0
+
+    return BatchDetailResponse(
+        batch_id=batch.batch_id,
+        name=batch.name,
+        status=batch.status.value,
+        total_count=total_count,
+        completed_count=completed,
+        failed_count=batch.failed_count or 0,
+        canceled_count=batch.canceled_count or 0,
+        in_troubleshooting_count=batch.in_troubleshooting_count or 0,
+        progress_percent=round(progress, 1),
+        created_at=batch.created_at,
+        started_at=batch.started_at,
+        completed_at=batch.completed_at,
+        custom_data=batch.custom_data,
+    )
+
+
+@api_router.get("/batches/{batch_id}/commands", response_model=BatchCommandsListResponse)
+async def get_batch_commands(
+    batch_id: UUID,
+    pool: Pool,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> BatchCommandsListResponse:
+    """Get commands belonging to a batch."""
+    limit = min(limit, 100)
+
+    try:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            query = """
+                SELECT command_id, command_type, status, attempts, max_attempts,
+                       created_at, last_error_code, last_error_msg
+                FROM command_bus_command
+                WHERE domain = %s AND batch_id = %s
+            """
+            params: list[Any] = [E2E_DOMAIN, batch_id]
+
+            if status:
+                query += " AND status = %s"
+                params.append(status)
+
+            query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+
+            # Get total count
+            count_query = """
+                SELECT COUNT(*) FROM command_bus_command
+                WHERE domain = %s AND batch_id = %s
+            """
+            count_params: list[Any] = [E2E_DOMAIN, batch_id]
+            if status:
+                count_query += " AND status = %s"
+                count_params.append(status)
+            await cur.execute(count_query, count_params)
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
+
+        commands = [
+            BatchCommandResponse(
+                command_id=row[0],
+                command_type=row[1],
+                status=row[2],
+                attempts=row[3],
+                max_attempts=row[4],
+                created_at=row[5],
+                last_error_code=row[6],
+                last_error_message=row[7],
+            )
+            for row in rows
+        ]
+
+        return BatchCommandsListResponse(
+            commands=commands,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        return BatchCommandsListResponse(
+            commands=[], total=0, limit=limit, offset=offset, error=str(e)
+        )

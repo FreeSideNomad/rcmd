@@ -220,6 +220,7 @@ python-dotenv>=1.0.1
 | S023 | Automated E2E Tests - Success Scenarios | Must Have |
 | S024 | Automated E2E Tests - Failure Scenarios | Must Have |
 | S025 | Load Testing Support | Could Have |
+| S045 | Batch Management UI View | Should Have |
 
 ## Success Criteria
 

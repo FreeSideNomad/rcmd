@@ -1,0 +1,303 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Batch Details - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <nav class="flex mb-2" aria-label="Breadcrumb">
+        <ol class="inline-flex items-center space-x-1 text-sm text-gray-500 dark:text-gray-400">
+            <li><a href="/batches" class="hover:text-blue-600 dark:hover:text-blue-400">Batches</a></li>
+            <li><span class="mx-2">/</span></li>
+            <li class="text-gray-700 dark:text-gray-300" id="breadcrumb-name">Loading...</li>
+        </ol>
+    </nav>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white" id="batch-name">Loading...</h1>
+</div>
+
+<!-- Batch Overview -->
+<div class="bg-white rounded-lg shadow p-6 mb-6 dark:bg-gray-800">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
+            <dd class="mt-1" id="batch-status">
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">-</span>
+            </dd>
+        </div>
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Created</dt>
+            <dd class="mt-1 text-sm text-gray-900 dark:text-white" id="batch-created">-</dd>
+        </div>
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Started</dt>
+            <dd class="mt-1 text-sm text-gray-900 dark:text-white" id="batch-started">-</dd>
+        </div>
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Completed</dt>
+            <dd class="mt-1 text-sm text-gray-900 dark:text-white" id="batch-completed">-</dd>
+        </div>
+    </div>
+</div>
+
+<!-- Progress Section -->
+<div class="bg-white rounded-lg shadow p-6 mb-6 dark:bg-gray-800">
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Progress</h2>
+
+    <!-- Progress Bar -->
+    <div class="mb-4">
+        <div class="flex justify-between mb-1">
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Overall Progress</span>
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300" id="progress-percent">0%</span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-4 dark:bg-gray-700">
+            <div id="progress-bar" class="bg-blue-600 h-4 rounded-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <!-- Counters -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Total</dt>
+            <dd class="text-2xl font-bold text-gray-900 dark:text-white" id="count-total">0</dd>
+        </div>
+        <div class="bg-green-50 dark:bg-green-900/20 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-green-600 dark:text-green-400">Completed</dt>
+            <dd class="text-2xl font-bold text-green-700 dark:text-green-300" id="count-completed">0</dd>
+        </div>
+        <div class="bg-red-50 dark:bg-red-900/20 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-red-600 dark:text-red-400">Failed</dt>
+            <dd class="text-2xl font-bold text-red-700 dark:text-red-300" id="count-failed">0</dd>
+        </div>
+        <div class="bg-orange-50 dark:bg-orange-900/20 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-orange-600 dark:text-orange-400">In TSQ</dt>
+            <dd class="text-2xl font-bold text-orange-700 dark:text-orange-300" id="count-tsq">0</dd>
+        </div>
+        <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Canceled</dt>
+            <dd class="text-2xl font-bold text-gray-700 dark:text-gray-300" id="count-canceled">0</dd>
+        </div>
+    </div>
+</div>
+
+<!-- Commands Table -->
+<div class="bg-white rounded-lg shadow dark:bg-gray-800">
+    <div class="p-4 border-b dark:border-gray-700 flex justify-between items-center">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Commands</h2>
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <label for="cmd-filter-status" class="text-sm text-gray-500 dark:text-gray-400">Status:</label>
+                <select id="cmd-filter-status" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                    <option value="">All</option>
+                    <option value="PENDING">Pending</option>
+                    <option value="IN_PROGRESS">In Progress</option>
+                    <option value="COMPLETED">Completed</option>
+                    <option value="CANCELLED">Cancelled</option>
+                    <option value="IN_TSQ">In TSQ</option>
+                </select>
+            </div>
+            <div class="text-sm text-gray-500 dark:text-gray-400">
+                Showing <span id="showing-range">0-0</span> of <span id="total-count">0</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                    <th scope="col" class="px-6 py-3">Command ID</th>
+                    <th scope="col" class="px-6 py-3">Type</th>
+                    <th scope="col" class="px-6 py-3">Status</th>
+                    <th scope="col" class="px-6 py-3">Attempts</th>
+                    <th scope="col" class="px-6 py-3">Created</th>
+                    <th scope="col" class="px-6 py-3">Error</th>
+                </tr>
+            </thead>
+            <tbody id="commands-table-body">
+                <tr>
+                    <td colspan="6" class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">
+                        Loading commands...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="p-4 border-t dark:border-gray-700 flex justify-between items-center">
+        <button id="prev-page" disabled class="px-4 py-2 text-sm font-medium text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600">
+            ← Previous
+        </button>
+        <span id="page-info" class="text-sm text-gray-500 dark:text-gray-400">Page 1 of 1</span>
+        <button id="next-page" disabled class="px-4 py-2 text-sm font-medium text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600">
+            Next →
+        </button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '/static/src/api.js';
+
+    const api = new ApiClient();
+    const batchId = '{{ batch_id }}';
+    let currentPage = 0;
+    let pageSize = 50;
+    let totalCommands = 0;
+
+    // Status badge colors
+    const statusColors = {
+        'PENDING': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
+        'IN_PROGRESS': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+        'COMPLETED': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+        'COMPLETED_WITH_FAILURES': 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
+        'FAILED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+        'IN_TSQ': 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
+        'CANCELLED': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+    };
+
+    // Format date
+    function formatDate(isoString) {
+        if (!isoString) return '-';
+        const date = new Date(isoString);
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
+
+    // Load batch details
+    async function loadBatchDetails() {
+        const result = await api.get(`/batches/${batchId}`);
+        if (!result) return;
+
+        // Update header
+        const name = result.name || batchId.substring(0, 8) + '...';
+        document.getElementById('batch-name').textContent = name;
+        document.getElementById('breadcrumb-name').textContent = name;
+
+        // Update status
+        const statusHtml = `<span class="px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColors[result.status] || statusColors['PENDING']}">${result.status}</span>`;
+        document.getElementById('batch-status').innerHTML = statusHtml;
+
+        // Update dates
+        document.getElementById('batch-created').textContent = formatDate(result.created_at);
+        document.getElementById('batch-started').textContent = formatDate(result.started_at);
+        document.getElementById('batch-completed').textContent = formatDate(result.completed_at);
+
+        // Update progress
+        document.getElementById('progress-percent').textContent = result.progress_percent.toFixed(1) + '%';
+        document.getElementById('progress-bar').style.width = result.progress_percent + '%';
+
+        // Update counters
+        document.getElementById('count-total').textContent = result.total_count;
+        document.getElementById('count-completed').textContent = result.completed_count;
+        document.getElementById('count-failed').textContent = result.failed_count;
+        document.getElementById('count-tsq').textContent = result.in_troubleshooting_count;
+        document.getElementById('count-canceled').textContent = result.canceled_count;
+    }
+
+    // Load batch commands
+    async function loadCommands() {
+        const status = document.getElementById('cmd-filter-status').value;
+        const params = new URLSearchParams({
+            limit: pageSize,
+            offset: currentPage * pageSize,
+        });
+        if (status) params.set('status', status);
+
+        const result = await api.get(`/batches/${batchId}/commands?${params}`);
+        if (!result) return;
+
+        totalCommands = result.total;
+        renderCommands(result.commands);
+        updatePagination();
+    }
+
+    // Render commands table
+    function renderCommands(commands) {
+        const tbody = document.getElementById('commands-table-body');
+
+        if (commands.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">
+                        No commands found.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = commands.map(cmd => `
+            <tr class="bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <td class="px-6 py-4 font-mono text-xs">
+                    <a href="/commands?command_id=${cmd.command_id}" class="text-blue-600 hover:underline dark:text-blue-400">
+                        ${cmd.command_id.substring(0, 8)}...
+                    </a>
+                </td>
+                <td class="px-6 py-4">
+                    ${cmd.command_type}
+                </td>
+                <td class="px-6 py-4">
+                    <span class="px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColors[cmd.status] || statusColors['PENDING']}">
+                        ${cmd.status}
+                    </span>
+                </td>
+                <td class="px-6 py-4">
+                    ${cmd.attempts}/${cmd.max_attempts}
+                </td>
+                <td class="px-6 py-4">
+                    ${formatDate(cmd.created_at)}
+                </td>
+                <td class="px-6 py-4">
+                    ${cmd.last_error_code ? `<span class="text-red-600 dark:text-red-400 font-mono text-xs">${cmd.last_error_code}</span>` : '-'}
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    // Update pagination
+    function updatePagination() {
+        const totalPages = Math.ceil(totalCommands / pageSize);
+        const start = currentPage * pageSize + 1;
+        const end = Math.min((currentPage + 1) * pageSize, totalCommands);
+
+        document.getElementById('showing-range').textContent = totalCommands > 0 ? `${start}-${end}` : '0-0';
+        document.getElementById('total-count').textContent = totalCommands;
+        document.getElementById('page-info').textContent = `Page ${currentPage + 1} of ${totalPages || 1}`;
+
+        document.getElementById('prev-page').disabled = currentPage === 0;
+        document.getElementById('next-page').disabled = currentPage >= totalPages - 1;
+    }
+
+    // Event listeners
+    document.getElementById('cmd-filter-status').addEventListener('change', () => {
+        currentPage = 0;
+        loadCommands();
+    });
+
+    document.getElementById('prev-page').addEventListener('click', () => {
+        if (currentPage > 0) {
+            currentPage--;
+            loadCommands();
+        }
+    });
+
+    document.getElementById('next-page').addEventListener('click', () => {
+        const totalPages = Math.ceil(totalCommands / pageSize);
+        if (currentPage < totalPages - 1) {
+            currentPage++;
+            loadCommands();
+        }
+    });
+
+    // Initial load
+    loadBatchDetails();
+    loadCommands();
+
+    // Auto-refresh every 3 seconds
+    setInterval(() => {
+        loadBatchDetails();
+        loadCommands();
+    }, 3000);
+</script>
+{% endblock %}
