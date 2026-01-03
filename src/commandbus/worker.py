@@ -593,7 +593,12 @@ class Worker:
         semaphore: asyncio.Semaphore,
         poll_interval: float,
     ) -> None:
-        """Run the worker using pg_notify for wake-up with poll fallback."""
+        """Run the worker using pg_notify for wake-up with poll fallback.
+
+        Uses a tight processing loop to drain the queue efficiently when
+        multiple messages are pending. Only waits for notifications when
+        the queue appears empty.
+        """
         assert self._stop_event is not None
 
         async with self._pool.connection() as listen_conn:
@@ -606,56 +611,84 @@ class Worker:
             await listen_conn.execute(f"LISTEN {channel}")
             logger.debug(f"Listening on channel {channel}")
 
-            # Initial poll to process any pending commands
-            await self._process_batch(semaphore)
-
             while not self._stop_event.is_set():
+                # TIGHT LOOP: Process all available work before waiting
+                await self._drain_queue(semaphore)
+
+                if self._stop_event.is_set():
+                    return
+
+                # IDLE: Queue is empty, wait for notification or poll timeout
                 try:
-                    # Wait for notification with timeout (poll fallback)
                     gen = listen_conn.notifies(timeout=poll_interval)
                     async for _ in gen:
-                        if self._stop_event.is_set():
-                            return
-                        # Got notification, process batch
-                        await self._process_batch(semaphore)
-                        break  # Exit inner loop to check stop event
+                        break  # Got notification, return to tight loop
                 except TimeoutError:
-                    pass  # Timeout is expected, poll fallback
+                    pass  # Poll fallback, return to tight loop
 
-                # Poll on timeout or after notification
-                if not self._stop_event.is_set():
-                    await self._process_batch(semaphore)
+    async def _drain_queue(self, semaphore: asyncio.Semaphore) -> None:
+        """Process commands continuously until queue is empty.
+
+        This tight loop ensures high throughput when many messages are
+        pending. It only exits when receive() returns no commands.
+        """
+        assert self._stop_event is not None
+
+        while not self._stop_event.is_set():
+            available_slots = semaphore._value
+
+            if available_slots == 0:
+                # All slots busy - wait for at least one to complete
+                await self._wait_for_slot()
+                continue
+
+            commands = await self.receive(batch_size=available_slots)
+
+            if not commands:
+                # Queue is empty (for this worker), exit tight loop
+                return
+
+            # Spawn concurrent processing tasks
+            for cmd in commands:
+                task = asyncio.create_task(self._process_command(cmd, semaphore))
+                self._in_flight.add(task)
+                task.add_done_callback(self._in_flight.discard)
+
+    async def _wait_for_slot(self) -> None:
+        """Wait for at least one in-flight task to complete."""
+        if not self._in_flight:
+            return
+
+        # Wait for any one task to complete
+        _done, _ = await asyncio.wait(
+            self._in_flight,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
     async def _run_with_polling(
         self,
         semaphore: asyncio.Semaphore,
         poll_interval: float,
     ) -> None:
-        """Run the worker using simple polling."""
+        """Run the worker using simple polling.
+
+        Uses the same tight processing loop as notify mode for consistency.
+        """
         assert self._stop_event is not None
 
         while not self._stop_event.is_set():
-            await self._process_batch(semaphore)
+            # TIGHT LOOP: Process all available work before waiting
+            await self._drain_queue(semaphore)
+
+            if self._stop_event.is_set():
+                return
+
+            # IDLE: Wait for poll interval
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
                     self._stop_event.wait(),
                     timeout=poll_interval,
                 )
-
-    async def _process_batch(self, semaphore: asyncio.Semaphore) -> None:
-        """Receive and process a batch of commands."""
-        # Calculate how many slots are available
-        available_slots = semaphore._value
-
-        if available_slots == 0:
-            return
-
-        commands = await self.receive(batch_size=available_slots)
-
-        for cmd in commands:
-            task = asyncio.create_task(self._process_command(cmd, semaphore))
-            self._in_flight.add(task)
-            task.add_done_callback(self._in_flight.discard)
 
     async def _process_command(
         self,
