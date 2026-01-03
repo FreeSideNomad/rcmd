@@ -16,7 +16,7 @@ class CommandBehavior(BaseModel):
 
     type: str = Field(
         default="success",
-        description="Behavior type: success, fail_permanent, fail_transient, "
+        description="Behavior type: no_op, success, fail_permanent, fail_transient, "
         "fail_transient_then_succeed, timeout",
     )
     transient_failures: int = Field(

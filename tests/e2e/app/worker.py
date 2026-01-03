@@ -8,7 +8,7 @@ from psycopg_pool import AsyncConnectionPool
 from commandbus import HandlerRegistry, RetryPolicy, Worker
 
 from .config import Config, ConfigStore, RetryConfig
-from .handlers import TestCommandHandlers
+from .handlers import NoOpHandlers, TestCommandHandlers
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +38,14 @@ def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
     - @handler decorator on class methods
     - register_instance() for automatic handler discovery
     """
-    # Create handler instance with dependencies
-    handlers = TestCommandHandlers(pool)
+    # Create handler instances with dependencies
+    test_handlers = TestCommandHandlers(pool)
+    no_op_handlers = NoOpHandlers(pool)
 
     # Register all decorated handlers
     registry = HandlerRegistry()
-    registry.register_instance(handlers)
+    registry.register_instance(test_handlers)
+    registry.register_instance(no_op_handlers)
 
     return registry
 
