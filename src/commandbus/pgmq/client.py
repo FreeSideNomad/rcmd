@@ -13,6 +13,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Channel name prefix for pg_notify - must match worker.py PGMQ_NOTIFY_CHANNEL
+PGMQ_NOTIFY_CHANNEL = "pgmq_notify"
+
 
 @dataclass
 class PgmqMessage:
@@ -118,6 +121,13 @@ class PgmqClient:
             if row is None:
                 raise RuntimeError(f"Failed to send message to queue {queue_name}")
             result = row[0]
+
+            # Notify listeners that a new message is available
+            # This wakes up workers using use_notify=True immediately
+            channel = f"{PGMQ_NOTIFY_CHANNEL}_{queue_name}"
+            await cur.execute(f"NOTIFY {channel}")
+            logger.debug(f"Notified channel {channel}")
+
         logger.debug(f"Sent message to {queue_name}: msg_id={result}")
         return int(result)
 
