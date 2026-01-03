@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import os
 from uuid import uuid4
 
 import pytest
@@ -24,33 +23,7 @@ from commandbus import (
 from commandbus.repositories.audit import AuditEventType
 
 
-@pytest.fixture
-def database_url() -> str:
-    """Get database URL from environment."""
-    return os.environ.get(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/commandbus"
-    )
-
-
-@pytest.fixture
-async def pool(database_url: str) -> AsyncConnectionPool:
-    """Create a connection pool for testing."""
-    async with AsyncConnectionPool(conninfo=database_url, min_size=1, max_size=5, open=False) as p:
-        yield p
-
-
-@pytest.fixture
-async def command_bus(pool: AsyncConnectionPool) -> CommandBus:
-    """Create a CommandBus with real database connection."""
-    return CommandBus(pool)
-
-
-@pytest.fixture
-def handler_registry() -> HandlerRegistry:
-    """Create handler registry."""
-    return HandlerRegistry()
-
-
+@pytest.mark.integration
 class TestRetryExhaustionFlow:
     """Integration tests for retry exhaustion handling flow."""
 
@@ -60,6 +33,7 @@ class TestRetryExhaustionFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that exhausted retries move command to troubleshooting queue."""
         command_id = uuid4()
@@ -118,6 +92,7 @@ class TestRetryExhaustionFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that exhausted command records MOVED_TO_TSQ with EXHAUSTED reason."""
         command_id = uuid4()
@@ -152,14 +127,14 @@ class TestRetryExhaustionFlow:
         events = await audit_logger.get_events(command_id, domain="payments")
 
         # Should have MOVED_TO_TSQ event
-        event_types = [e["event_type"] for e in events]
+        event_types = [e.event_type for e in events]
         assert AuditEventType.MOVED_TO_TSQ.value in event_types
 
         # Check MOVED_TO_TSQ event has EXHAUSTED reason
-        tsq_event = next(e for e in events if e["event_type"] == AuditEventType.MOVED_TO_TSQ.value)
-        assert tsq_event["details"]["reason"] == "EXHAUSTED"
-        assert tsq_event["details"]["error_type"] == "TRANSIENT"
-        assert tsq_event["details"]["error_code"] == "RATE_LIMIT"
+        tsq_event = next(e for e in events if e.event_type == AuditEventType.MOVED_TO_TSQ.value)
+        assert tsq_event.details["reason"] == "EXHAUSTED"
+        assert tsq_event.details["error_type"] == "TRANSIENT"
+        assert tsq_event.details["error_code"] == "RATE_LIMIT"
 
     @pytest.mark.asyncio
     async def test_exhausted_command_no_further_retries(
@@ -167,6 +142,7 @@ class TestRetryExhaustionFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that exhausted commands do not get further retries."""
         command_id = uuid4()
@@ -206,6 +182,7 @@ class TestRetryExhaustionFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test exhaustion with custom max_attempts (5 attempts)."""
         command_id = uuid4()
@@ -257,6 +234,7 @@ class TestRetryExhaustionFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that worker.run() properly handles retry exhaustion."""
         command_id = uuid4()
@@ -316,6 +294,7 @@ class TestRetryExhaustionFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that exhausted commands do not send automatic replies."""
         command_id = uuid4()
