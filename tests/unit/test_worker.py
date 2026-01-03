@@ -12,7 +12,6 @@ from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from commandbus.models import Command, CommandMetadata, CommandStatus, HandlerContext
 from commandbus.pgmq.client import PgmqMessage
 from commandbus.policies import RetryPolicy
-from commandbus.repositories.audit import AuditEventType
 from commandbus.worker import ReceivedCommand, Worker
 
 
@@ -40,9 +39,17 @@ class TestWorkerReceive:
 
     @pytest.fixture
     def mock_pool(self) -> MagicMock:
-        """Create a mock connection pool."""
+        """Create a mock connection pool with proper async support."""
         pool = MagicMock()
         conn = MagicMock()
+        # Make execute awaitable
+        conn.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield
+
+        conn.transaction = mock_transaction
 
         @asynccontextmanager
         async def mock_connection():
@@ -77,12 +84,13 @@ class TestWorkerReceive:
             },
         )
 
-        metadata = CommandMetadata(
+        # Metadata reflecting what sp_receive_command returns
+        updated_metadata = CommandMetadata(
             domain="payments",
             command_id=command_id,
             command_type="DebitAccount",
-            status=CommandStatus.PENDING,
-            attempts=0,
+            status=CommandStatus.IN_PROGRESS,
+            attempts=1,
             max_attempts=3,
             msg_id=42,
             correlation_id=correlation_id,
@@ -92,16 +100,12 @@ class TestWorkerReceive:
 
         with (
             patch.object(worker._pgmq, "read", new_callable=AsyncMock) as mock_read,
-            patch.object(worker._command_repo, "get", new_callable=AsyncMock) as mock_get,
             patch.object(
-                worker._command_repo, "increment_attempts", new_callable=AsyncMock
-            ) as mock_increment,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+                worker._command_repo, "sp_receive_command", new_callable=AsyncMock
+            ) as mock_receive_cmd,
         ):
             mock_read.return_value = [pgmq_message]
-            mock_get.return_value = metadata
-            mock_increment.return_value = 1
+            mock_receive_cmd.return_value = (updated_metadata, 1)
 
             results = await worker.receive(batch_size=1)
 
@@ -142,12 +146,13 @@ class TestWorkerReceive:
             },
         )
 
+        # receive_command returns metadata with incremented attempts
         metadata = CommandMetadata(
             domain="payments",
             command_id=command_id,
             command_type="DebitAccount",
-            status=CommandStatus.PENDING,
-            attempts=0,
+            status=CommandStatus.IN_PROGRESS,
+            attempts=2,  # Second attempt
             max_attempts=3,
             created_at=now,
             updated_at=now,
@@ -155,25 +160,25 @@ class TestWorkerReceive:
 
         with (
             patch.object(worker._pgmq, "read", new_callable=AsyncMock) as mock_read,
-            patch.object(worker._command_repo, "get", new_callable=AsyncMock) as mock_get,
             patch.object(
-                worker._command_repo, "increment_attempts", new_callable=AsyncMock
-            ) as mock_increment,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+                worker._command_repo, "sp_receive_command", new_callable=AsyncMock
+            ) as mock_receive_cmd,
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             mock_read.return_value = [pgmq_message]
-            mock_get.return_value = metadata
-            mock_increment.return_value = 2  # Second attempt
+            mock_receive_cmd.return_value = (metadata, 2)  # Second attempt
 
             results = await worker.receive()
 
-            mock_increment.assert_called_once_with("payments", command_id)
+            mock_receive_cmd.assert_called_once()
+            call_args = mock_receive_cmd.call_args[0]
+            assert call_args[0] == "payments"
+            assert call_args[1] == command_id
             assert results[0].context.attempt == 2
 
     @pytest.mark.asyncio
-    async def test_receive_records_audit_event(self, worker: Worker) -> None:
-        """Test that receive records RECEIVED audit event."""
+    async def test_receive_calls_sp_with_msg_id(self, worker: Worker) -> None:
+        """Test that receive calls sp_receive_command with correct msg_id."""
         command_id = uuid4()
         now = datetime.now(UTC)
 
@@ -194,8 +199,8 @@ class TestWorkerReceive:
             domain="payments",
             command_id=command_id,
             command_type="DebitAccount",
-            status=CommandStatus.PENDING,
-            attempts=0,
+            status=CommandStatus.IN_PROGRESS,
+            attempts=1,
             max_attempts=3,
             created_at=now,
             updated_at=now,
@@ -203,25 +208,19 @@ class TestWorkerReceive:
 
         with (
             patch.object(worker._pgmq, "read", new_callable=AsyncMock) as mock_read,
-            patch.object(worker._command_repo, "get", new_callable=AsyncMock) as mock_get,
             patch.object(
-                worker._command_repo, "increment_attempts", new_callable=AsyncMock
-            ) as mock_increment,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+                worker._command_repo, "sp_receive_command", new_callable=AsyncMock
+            ) as mock_receive_cmd,
         ):
             mock_read.return_value = [pgmq_message]
-            mock_get.return_value = metadata
-            mock_increment.return_value = 1
+            mock_receive_cmd.return_value = (metadata, 1)
 
             await worker.receive()
 
-            mock_audit.assert_called_once()
-            call_kwargs = mock_audit.call_args[1]
-            assert call_kwargs["domain"] == "payments"
-            assert call_kwargs["command_id"] == command_id
-            assert call_kwargs["event_type"] == AuditEventType.RECEIVED
-            assert call_kwargs["details"]["attempt"] == 1
+            # Verify sp_receive_command was called with msg_id for audit logging
+            mock_receive_cmd.assert_called_once()
+            call_kwargs = mock_receive_cmd.call_args[1]
+            assert call_kwargs["msg_id"] == 42
 
     @pytest.mark.asyncio
     async def test_receive_skips_completed_command(self, worker: Worker) -> None:
@@ -242,29 +241,25 @@ class TestWorkerReceive:
             },
         )
 
-        metadata = CommandMetadata(
-            domain="payments",
-            command_id=command_id,
-            command_type="DebitAccount",
-            status=CommandStatus.COMPLETED,  # Terminal state
-            attempts=1,
-            max_attempts=3,
-            created_at=now,
-            updated_at=now,
-        )
-
         with (
             patch.object(worker._pgmq, "read", new_callable=AsyncMock) as mock_read,
-            patch.object(worker._command_repo, "get", new_callable=AsyncMock) as mock_get,
+            patch.object(
+                worker._command_repo, "sp_receive_command", new_callable=AsyncMock
+            ) as mock_receive_cmd,
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
         ):
             mock_read.return_value = [pgmq_message]
-            mock_get.return_value = metadata
+            # receive_command returns None for terminal states (COMPLETED, CANCELED)
+            mock_receive_cmd.return_value = None
 
             results = await worker.receive()
 
             assert results == []
-            mock_archive.assert_called_once_with("payments__commands", 42)
+            mock_archive.assert_called_once()
+            call_args = mock_archive.call_args[0]
+            assert call_args[0] == "payments__commands"
+            assert call_args[1] == 42
+            # 3rd arg is conn (shared connection)
 
     @pytest.mark.asyncio
     async def test_receive_skips_canceled_command(self, worker: Worker) -> None:
@@ -285,24 +280,16 @@ class TestWorkerReceive:
             },
         )
 
-        metadata = CommandMetadata(
-            domain="payments",
-            command_id=command_id,
-            command_type="DebitAccount",
-            status=CommandStatus.CANCELED,  # Terminal state
-            attempts=1,
-            max_attempts=3,
-            created_at=now,
-            updated_at=now,
-        )
-
         with (
             patch.object(worker._pgmq, "read", new_callable=AsyncMock) as mock_read,
-            patch.object(worker._command_repo, "get", new_callable=AsyncMock) as mock_get,
+            patch.object(
+                worker._command_repo, "sp_receive_command", new_callable=AsyncMock
+            ) as mock_receive_cmd,
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
         ):
             mock_read.return_value = [pgmq_message]
-            mock_get.return_value = metadata
+            # receive_command returns None for terminal states (COMPLETED, CANCELED)
+            mock_receive_cmd.return_value = None
 
             results = await worker.receive()
 
@@ -330,11 +317,13 @@ class TestWorkerReceive:
 
         with (
             patch.object(worker._pgmq, "read", new_callable=AsyncMock) as mock_read,
-            patch.object(worker._command_repo, "get", new_callable=AsyncMock) as mock_get,
+            patch.object(
+                worker._command_repo, "sp_receive_command", new_callable=AsyncMock
+            ) as mock_receive_cmd,
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
         ):
             mock_read.return_value = [pgmq_message]
-            mock_get.return_value = None  # No metadata
+            mock_receive_cmd.return_value = None  # No metadata
 
             results = await worker.receive()
 
@@ -389,12 +378,13 @@ class TestWorkerReceive:
             },
         )
 
+        # receive_command atomically increments attempts and updates status
         metadata = CommandMetadata(
             domain="payments",
             command_id=command_id,
             command_type="DebitAccount",
-            status=CommandStatus.PENDING,
-            attempts=0,
+            status=CommandStatus.IN_PROGRESS,  # Status after receive_command
+            attempts=1,
             max_attempts=3,
             created_at=now,
             updated_at=now,
@@ -402,24 +392,20 @@ class TestWorkerReceive:
 
         with (
             patch.object(worker._pgmq, "read", new_callable=AsyncMock) as mock_read,
-            patch.object(worker._command_repo, "get", new_callable=AsyncMock) as mock_get,
             patch.object(
-                worker._command_repo, "increment_attempts", new_callable=AsyncMock
-            ) as mock_increment,
-            patch.object(
-                worker._command_repo, "update_status", new_callable=AsyncMock
-            ) as mock_update_status,
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+                worker._command_repo, "sp_receive_command", new_callable=AsyncMock
+            ) as mock_receive_cmd,
         ):
             mock_read.return_value = [pgmq_message]
-            mock_get.return_value = metadata
-            mock_increment.return_value = 1
+            mock_receive_cmd.return_value = (metadata, 1)
 
             await worker.receive()
 
-            mock_update_status.assert_called_once_with(
-                "payments", command_id, CommandStatus.IN_PROGRESS
-            )
+            # sp_receive_command is called with domain and command_id
+            mock_receive_cmd.assert_called_once()
+            call_args = mock_receive_cmd.call_args[0]
+            assert call_args[0] == "payments"
+            assert call_args[1] == command_id
 
     @pytest.mark.asyncio
     async def test_receive_with_custom_visibility_timeout(self, worker: Worker) -> None:
@@ -429,11 +415,11 @@ class TestWorkerReceive:
 
             await worker.receive(visibility_timeout=60)
 
-            mock_read.assert_called_once_with(
-                "payments__commands",
-                visibility_timeout=60,
-                batch_size=1,
-            )
+            mock_read.assert_called_once()
+            call_kwargs = mock_read.call_args[1]
+            assert call_kwargs["visibility_timeout"] == 60
+            assert call_kwargs["batch_size"] == 1
+            # conn is also passed as kwarg
 
     @pytest.mark.asyncio
     async def test_receive_with_batch_size(self, worker: Worker) -> None:
@@ -443,11 +429,11 @@ class TestWorkerReceive:
 
             await worker.receive(batch_size=10)
 
-            mock_read.assert_called_once_with(
-                "payments__commands",
-                visibility_timeout=30,
-                batch_size=10,
-            )
+            mock_read.assert_called_once()
+            call_kwargs = mock_read.call_args[1]
+            assert call_kwargs["visibility_timeout"] == 30
+            assert call_kwargs["batch_size"] == 10
+            # conn is also passed as kwarg
 
 
 class TestWorkerComplete:
@@ -458,7 +444,7 @@ class TestWorkerComplete:
         """Create a mock connection pool with transaction support."""
         pool = MagicMock()
         conn = MagicMock()
-        transaction = MagicMock()
+        conn.execute = AsyncMock()
 
         @asynccontextmanager
         async def mock_connection():
@@ -466,7 +452,7 @@ class TestWorkerComplete:
 
         @asynccontextmanager
         async def mock_transaction():
-            yield transaction
+            yield
 
         pool.connection = mock_connection
         conn.transaction = mock_transaction
@@ -526,7 +512,7 @@ class TestWorkerComplete:
         """Test that complete deletes the message from the queue."""
         with (
             patch.object(worker._pgmq, "delete", new_callable=AsyncMock) as mock_delete,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_finish_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             mock_delete.return_value = True
@@ -546,7 +532,7 @@ class TestWorkerComplete:
         with (
             patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
             patch.object(
-                worker._command_repo, "update_status", new_callable=AsyncMock
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
             ) as mock_update,
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
@@ -559,22 +545,22 @@ class TestWorkerComplete:
             assert call_args[0][2] == CommandStatus.COMPLETED
 
     @pytest.mark.asyncio
-    async def test_complete_records_audit_event(
+    async def test_complete_calls_sp_with_audit_params(
         self, worker: Worker, received_command: ReceivedCommand
     ) -> None:
-        """Test that complete records COMPLETED audit event."""
+        """Test that complete calls sp_finish_command with audit parameters."""
         with (
             patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+            patch.object(
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_sp_finish,
         ):
             await worker.complete(received_command)
 
-            mock_audit.assert_called_once()
-            call_kwargs = mock_audit.call_args[1]
-            assert call_kwargs["domain"] == "payments"
-            assert call_kwargs["command_id"] == received_command.command.command_id
-            assert call_kwargs["event_type"] == AuditEventType.COMPLETED
+            mock_sp_finish.assert_called_once()
+            call_kwargs = mock_sp_finish.call_args[1]
+            # SP handles audit internally with these parameters
+            assert call_kwargs["event_type"] == "COMPLETED"
             assert call_kwargs["details"]["msg_id"] == 42
 
     @pytest.mark.asyncio
@@ -602,7 +588,7 @@ class TestWorkerComplete:
         with (
             patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
             patch.object(worker._pgmq, "send", new_callable=AsyncMock) as mock_send,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_finish_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker.complete(received_with_reply, result={"status": "ok"})
@@ -623,7 +609,7 @@ class TestWorkerComplete:
         with (
             patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
             patch.object(worker._pgmq, "send", new_callable=AsyncMock) as mock_send,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_finish_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker.complete(received_command)
@@ -634,15 +620,16 @@ class TestWorkerComplete:
     async def test_complete_with_result(
         self, worker: Worker, received_command: ReceivedCommand
     ) -> None:
-        """Test that complete includes result in audit details."""
+        """Test that complete includes result in sp_finish_command details."""
         with (
             patch.object(worker._pgmq, "delete", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+            patch.object(
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_sp_finish,
         ):
             await worker.complete(received_command, result={"status": "processed"})
 
-            call_kwargs = mock_audit.call_args[1]
+            call_kwargs = mock_sp_finish.call_args[1]
             assert call_kwargs["details"]["has_result"] is True
 
 
@@ -654,7 +641,7 @@ class TestWorkerRun:
         """Create a mock connection pool with transaction support."""
         pool = MagicMock()
         conn = MagicMock()
-        transaction = MagicMock()
+        conn.execute = AsyncMock()
 
         @asynccontextmanager
         async def mock_connection():
@@ -662,7 +649,7 @@ class TestWorkerRun:
 
         @asynccontextmanager
         async def mock_transaction():
-            yield transaction
+            yield
 
         pool.connection = mock_connection
         conn.transaction = mock_transaction
@@ -892,12 +879,18 @@ class TestWorkerFail:
         """Create a mock connection pool."""
         pool = MagicMock()
         conn = MagicMock()
+        conn.execute = AsyncMock()
 
         @asynccontextmanager
         async def mock_connection():
             yield conn
 
+        @asynccontextmanager
+        async def mock_transaction():
+            yield
+
         pool.connection = mock_connection
+        conn.transaction = mock_transaction
         return pool
 
     @pytest.fixture
@@ -957,42 +950,44 @@ class TestWorkerFail:
 
         with (
             patch.object(
-                worker._command_repo, "update_error", new_callable=AsyncMock
-            ) as mock_update_error,
+                worker._command_repo, "sp_fail_command", new_callable=AsyncMock
+            ) as mock_sp_fail,
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
             patch.object(worker._pgmq, "set_vt", new_callable=AsyncMock),
         ):
             await worker.fail(received_command, error)
 
-            mock_update_error.assert_called_once_with(
-                "payments",
-                received_command.command.command_id,
-                "TRANSIENT",
-                "TIMEOUT",
-                "Connection timeout",
-            )
+            mock_sp_fail.assert_called_once()
+            call_args = mock_sp_fail.call_args[0]
+            assert call_args[0] == "payments"
+            assert call_args[1] == received_command.command.command_id
+            assert call_args[2] == "TRANSIENT"
+            assert call_args[3] == "TIMEOUT"
+            assert call_args[4] == "Connection timeout"
 
     @pytest.mark.asyncio
-    async def test_fail_records_audit_event(
+    async def test_fail_calls_sp_with_audit_params(
         self, worker: Worker, received_command: ReceivedCommand
     ) -> None:
-        """Test that fail records FAILED audit event."""
+        """Test that fail calls sp_fail_command which handles audit internally."""
         error = TransientCommandError("TIMEOUT", "Connection timeout")
 
         with (
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+            patch.object(
+                worker._command_repo, "sp_fail_command", new_callable=AsyncMock
+            ) as mock_sp_fail,
             patch.object(worker._pgmq, "set_vt", new_callable=AsyncMock),
         ):
             await worker.fail(received_command, error)
 
-            mock_audit.assert_called_once()
-            call_kwargs = mock_audit.call_args[1]
-            assert call_kwargs["domain"] == "payments"
-            assert call_kwargs["command_id"] == received_command.command.command_id
-            assert call_kwargs["event_type"] == AuditEventType.FAILED
-            assert call_kwargs["details"]["error_type"] == "TRANSIENT"
-            assert call_kwargs["details"]["error_code"] == "TIMEOUT"
+            # sp_fail_command is called with all error details; it handles audit internally
+            mock_sp_fail.assert_called_once()
+            call_args = mock_sp_fail.call_args[0]
+            assert call_args[0] == "payments"  # domain
+            assert call_args[1] == received_command.command.command_id  # command_id
+            assert call_args[2] == "TRANSIENT"  # error_type
+            assert call_args[3] == "TIMEOUT"  # error_code
+            assert call_args[4] == "Connection timeout"  # error_msg
 
     @pytest.mark.asyncio
     async def test_fail_applies_backoff_via_set_vt(
@@ -1002,14 +997,19 @@ class TestWorkerFail:
         error = TransientCommandError("TIMEOUT", "Connection timeout")
 
         with (
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_fail_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
             patch.object(worker._pgmq, "set_vt", new_callable=AsyncMock) as mock_set_vt,
         ):
             await worker.fail(received_command, error)
 
             # Attempt 1 -> backoff schedule index 0 -> 10 seconds
-            mock_set_vt.assert_called_once_with("payments__commands", 42, 10)
+            mock_set_vt.assert_called_once()
+            call_args = mock_set_vt.call_args[0]
+            assert call_args[0] == "payments__commands"
+            assert call_args[1] == 42
+            assert call_args[2] == 10
+            # 4th arg is conn (shared connection)
 
     @pytest.mark.asyncio
     async def test_fail_backoff_increases_with_attempts(
@@ -1033,14 +1033,19 @@ class TestWorkerFail:
         error = TransientCommandError("TIMEOUT", "Connection timeout")
 
         with (
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_fail_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
             patch.object(worker._pgmq, "set_vt", new_callable=AsyncMock) as mock_set_vt,
         ):
             await worker.fail(received, error)
 
             # Attempt 2 -> backoff schedule index 1 -> 60 seconds
-            mock_set_vt.assert_called_once_with("payments__commands", 42, 60)
+            mock_set_vt.assert_called_once()
+            call_args = mock_set_vt.call_args[0]
+            assert call_args[0] == "payments__commands"
+            assert call_args[1] == 42
+            assert call_args[2] == 60
+            # 4th arg is conn (shared connection)
 
     @pytest.mark.asyncio
     async def test_fail_calls_exhausted_at_max_attempts(
@@ -1084,51 +1089,42 @@ class TestWorkerFail:
 
         with (
             patch.object(
-                worker._command_repo, "update_error", new_callable=AsyncMock
-            ) as mock_update_error,
+                worker._command_repo, "sp_fail_command", new_callable=AsyncMock
+            ) as mock_sp_fail,
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
             patch.object(worker._pgmq, "set_vt", new_callable=AsyncMock),
         ):
             await worker.fail(received_command, error)
 
             # Unknown exception treated as transient
-            mock_update_error.assert_called_once_with(
-                "payments",
-                received_command.command.command_id,
-                "TRANSIENT",
-                "ValueError",
-                "Some unexpected error",
-            )
+            mock_sp_fail.assert_called_once()
+            call_args = mock_sp_fail.call_args[0]
+            assert call_args[2] == "TRANSIENT"
+            assert call_args[3] == "ValueError"
+            assert call_args[4] == "Some unexpected error"
 
     @pytest.mark.asyncio
     async def test_fail_handles_permanent_error(
         self, worker: Worker, received_command: ReceivedCommand
     ) -> None:
-        """Test that fail handles permanent errors."""
+        """Test that fail handles permanent errors (no backoff applied)."""
         error = PermanentCommandError("INVALID_DATA", "Missing required field")
 
         with (
             patch.object(
-                worker._command_repo, "update_error", new_callable=AsyncMock
-            ) as mock_update_error,
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+                worker._command_repo, "sp_fail_command", new_callable=AsyncMock
+            ) as mock_sp_fail,
             patch.object(worker._pgmq, "set_vt", new_callable=AsyncMock) as mock_set_vt,
         ):
             await worker.fail(received_command, error, is_transient=False)
 
-            mock_update_error.assert_called_once_with(
-                "payments",
-                received_command.command.command_id,
-                "PERMANENT",
-                "INVALID_DATA",
-                "Missing required field",
-            )
+            mock_sp_fail.assert_called_once()
+            call_args = mock_sp_fail.call_args[0]
+            assert call_args[2] == "PERMANENT"
+            assert call_args[3] == "INVALID_DATA"
+            assert call_args[4] == "Missing required field"
             # Permanent errors should not apply backoff
             mock_set_vt.assert_not_called()
-
-            # Audit should record FAILED with PERMANENT type
-            call_kwargs = mock_audit.call_args[1]
-            assert call_kwargs["details"]["error_type"] == "PERMANENT"
 
 
 class TestWorkerTransientErrorHandling:
@@ -1139,7 +1135,7 @@ class TestWorkerTransientErrorHandling:
         """Create a mock connection pool."""
         pool = MagicMock()
         conn = MagicMock()
-        transaction = MagicMock()
+        conn.execute = AsyncMock()
 
         @asynccontextmanager
         async def mock_connection():
@@ -1147,7 +1143,7 @@ class TestWorkerTransientErrorHandling:
 
         @asynccontextmanager
         async def mock_transaction():
-            yield transaction
+            yield
 
         pool.connection = mock_connection
         conn.transaction = mock_transaction
@@ -1271,7 +1267,7 @@ class TestWorkerFailPermanent:
         """Create a mock connection pool with transaction support."""
         pool = MagicMock()
         conn = MagicMock()
-        transaction = MagicMock()
+        conn.execute = AsyncMock()
 
         @asynccontextmanager
         async def mock_connection():
@@ -1279,7 +1275,7 @@ class TestWorkerFailPermanent:
 
         @asynccontextmanager
         async def mock_transaction():
-            yield transaction
+            yield
 
         pool.connection = mock_connection
         conn.transaction = mock_transaction
@@ -1338,8 +1334,8 @@ class TestWorkerFailPermanent:
 
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_finish_command", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_fail_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker.fail_permanent(received_command, error)
@@ -1359,15 +1355,15 @@ class TestWorkerFailPermanent:
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
             patch.object(
-                worker._command_repo, "update_status", new_callable=AsyncMock
-            ) as mock_update_status,
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
+            patch.object(worker._command_repo, "sp_fail_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker.fail_permanent(received_command, error)
 
-            mock_update_status.assert_called_once()
-            call_args = mock_update_status.call_args
+            mock_finish_command.assert_called_once()
+            call_args = mock_finish_command.call_args
             assert call_args[0][0] == "payments"
             assert call_args[0][1] == received_command.command.command_id
             assert call_args[0][2] == CommandStatus.IN_TROUBLESHOOTING_QUEUE
@@ -1376,54 +1372,49 @@ class TestWorkerFailPermanent:
     async def test_fail_permanent_stores_error_details(
         self, worker: Worker, received_command: ReceivedCommand
     ) -> None:
-        """Test that fail_permanent stores error details in metadata."""
+        """Test that fail_permanent stores error details in metadata via finish_command."""
         error = PermanentCommandError(
             "INVALID_ACCOUNT", "Account not found", details={"account_id": "xyz"}
         )
 
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
             patch.object(
-                worker._command_repo, "update_error", new_callable=AsyncMock
-            ) as mock_update_error,
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker.fail_permanent(received_command, error)
 
-            mock_update_error.assert_called_once()
-            call_args = mock_update_error.call_args
-            assert call_args[0][0] == "payments"
-            assert call_args[0][1] == received_command.command.command_id
-            assert call_args[0][2] == "PERMANENT"
-            assert call_args[0][3] == "INVALID_ACCOUNT"
-            assert call_args[0][4] == "Account not found"
+            mock_finish_command.assert_called_once()
+            call_kwargs = mock_finish_command.call_args[1]
+            assert call_kwargs["error_type"] == "PERMANENT"
+            assert call_kwargs["error_code"] == "INVALID_ACCOUNT"
+            assert call_kwargs["error_msg"] == "Account not found"
 
     @pytest.mark.asyncio
-    async def test_fail_permanent_records_moved_to_tsq_audit_event(
+    async def test_fail_permanent_calls_sp_with_audit_params(
         self, worker: Worker, received_command: ReceivedCommand
     ) -> None:
-        """Test that fail_permanent records MOVED_TO_TSQ audit event."""
+        """Test that fail_permanent calls sp_finish_command with audit parameters."""
         error = PermanentCommandError(
             "INVALID_ACCOUNT", "Account not found", details={"account_id": "xyz"}
         )
 
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+            patch.object(
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_sp_finish,
         ):
             await worker.fail_permanent(received_command, error)
 
-            mock_audit.assert_called_once()
-            call_kwargs = mock_audit.call_args[1]
-            assert call_kwargs["domain"] == "payments"
-            assert call_kwargs["command_id"] == received_command.command.command_id
-            assert call_kwargs["event_type"] == AuditEventType.MOVED_TO_TSQ
-            assert call_kwargs["details"]["error_code"] == "INVALID_ACCOUNT"
-            assert call_kwargs["details"]["error_msg"] == "Account not found"
-            assert call_kwargs["details"]["error_details"] == {"account_id": "xyz"}
+            mock_sp_finish.assert_called_once()
+            call_kwargs = mock_sp_finish.call_args[1]
+            # sp_finish_command handles audit internally with these parameters
+            assert call_kwargs["event_type"] == "MOVED_TO_TSQ"
+            assert call_kwargs["error_code"] == "INVALID_ACCOUNT"
+            assert call_kwargs["error_msg"] == "Account not found"
 
     @pytest.mark.asyncio
     async def test_fail_permanent_first_attempt(
@@ -1438,10 +1429,8 @@ class TestWorkerFailPermanent:
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
             patch.object(
-                worker._command_repo, "update_status", new_callable=AsyncMock
-            ) as mock_update_status,
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
         ):
             await worker.fail_permanent(received_command, error)
 
@@ -1449,11 +1438,11 @@ class TestWorkerFailPermanent:
             mock_archive.assert_called_once()
 
             # Status should be IN_TROUBLESHOOTING_QUEUE
-            call_args = mock_update_status.call_args
+            call_args = mock_finish_command.call_args
             assert call_args[0][2] == CommandStatus.IN_TROUBLESHOOTING_QUEUE
 
-            # Audit should record attempt number
-            call_kwargs = mock_audit.call_args[1]
+            # sp_finish_command should include attempt in details
+            call_kwargs = mock_finish_command.call_args[1]
             assert call_kwargs["details"]["attempt"] == 1
 
 
@@ -1465,7 +1454,7 @@ class TestWorkerFailExhausted:
         """Create a mock connection pool with transaction support."""
         pool = MagicMock()
         conn = MagicMock()
-        transaction = MagicMock()
+        conn.execute = AsyncMock()
 
         @asynccontextmanager
         async def mock_connection():
@@ -1473,7 +1462,7 @@ class TestWorkerFailExhausted:
 
         @asynccontextmanager
         async def mock_transaction():
-            yield transaction
+            yield
 
         pool.connection = mock_connection
         conn.transaction = mock_transaction
@@ -1534,8 +1523,8 @@ class TestWorkerFailExhausted:
         """Test that _fail_exhausted archives the message."""
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_finish_command", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_fail_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker._fail_exhausted(
@@ -1555,17 +1544,17 @@ class TestWorkerFailExhausted:
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
             patch.object(
-                worker._command_repo, "update_status", new_callable=AsyncMock
-            ) as mock_update_status,
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
+            patch.object(worker._command_repo, "sp_fail_command", new_callable=AsyncMock),
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker._fail_exhausted(
                 exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
             )
 
-            mock_update_status.assert_called_once()
-            call_args = mock_update_status.call_args
+            mock_finish_command.assert_called_once()
+            call_args = mock_finish_command.call_args
             assert call_args[0][0] == "payments"
             assert call_args[0][1] == exhausted_command.command.command_id
             assert call_args[0][2] == CommandStatus.IN_TROUBLESHOOTING_QUEUE
@@ -1574,74 +1563,68 @@ class TestWorkerFailExhausted:
     async def test_fail_exhausted_stores_error_details(
         self, worker: Worker, exhausted_command: ReceivedCommand
     ) -> None:
-        """Test that _fail_exhausted stores error details in metadata."""
+        """Test that _fail_exhausted stores error details in metadata via finish_command."""
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
             patch.object(
-                worker._command_repo, "update_error", new_callable=AsyncMock
-            ) as mock_update_error,
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
             patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
         ):
             await worker._fail_exhausted(
                 exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
             )
 
-            mock_update_error.assert_called_once()
-            call_args = mock_update_error.call_args
-            assert call_args[0][0] == "payments"
-            assert call_args[0][1] == exhausted_command.command.command_id
-            assert call_args[0][2] == "TRANSIENT"
-            assert call_args[0][3] == "TIMEOUT"
-            assert call_args[0][4] == "Connection timeout"
+            mock_finish_command.assert_called_once()
+            call_kwargs = mock_finish_command.call_args[1]
+            assert call_kwargs["error_type"] == "TRANSIENT"
+            assert call_kwargs["error_code"] == "TIMEOUT"
+            assert call_kwargs["error_msg"] == "Connection timeout"
 
     @pytest.mark.asyncio
-    async def test_fail_exhausted_records_moved_to_tsq_audit_event(
+    async def test_fail_exhausted_calls_sp_with_audit_params(
         self, worker: Worker, exhausted_command: ReceivedCommand
     ) -> None:
-        """Test that _fail_exhausted records MOVED_TO_TSQ audit event with EXHAUSTED reason."""
+        """Test that _fail_exhausted calls sp_finish_command with audit parameters."""
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_error", new_callable=AsyncMock),
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock) as mock_audit,
+            patch.object(
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_sp_finish,
         ):
             await worker._fail_exhausted(
                 exhausted_command, "TRANSIENT", "TIMEOUT", "Connection timeout"
             )
 
-            mock_audit.assert_called_once()
-            call_kwargs = mock_audit.call_args[1]
-            assert call_kwargs["domain"] == "payments"
-            assert call_kwargs["command_id"] == exhausted_command.command.command_id
-            assert call_kwargs["event_type"] == AuditEventType.MOVED_TO_TSQ
+            mock_sp_finish.assert_called_once()
+            call_kwargs = mock_sp_finish.call_args[1]
+            # sp_finish_command handles audit internally with these parameters
+            assert call_kwargs["event_type"] == "MOVED_TO_TSQ"
             assert call_kwargs["details"]["reason"] == "EXHAUSTED"
             assert call_kwargs["details"]["attempt"] == 3
             assert call_kwargs["details"]["max_attempts"] == 3
-            assert call_kwargs["details"]["error_type"] == "TRANSIENT"
-            assert call_kwargs["details"]["error_code"] == "TIMEOUT"
+            assert call_kwargs["error_type"] == "TRANSIENT"
+            assert call_kwargs["error_code"] == "TIMEOUT"
 
     @pytest.mark.asyncio
     async def test_fail_exhausted_with_unknown_exception(
         self, worker: Worker, exhausted_command: ReceivedCommand
     ) -> None:
-        """Test that _fail_exhausted handles unknown exceptions as transient."""
+        """Test that _fail_exhausted handles unknown exceptions as transient via finish_command."""
         with (
             patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
-            patch.object(worker._command_repo, "update_status", new_callable=AsyncMock),
             patch.object(
-                worker._command_repo, "update_error", new_callable=AsyncMock
-            ) as mock_update_error,
-            patch.object(worker._audit_logger, "log", new_callable=AsyncMock),
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
         ):
             await worker._fail_exhausted(
                 exhausted_command, "TRANSIENT", "RuntimeError", "Unexpected error"
             )
 
-            mock_update_error.assert_called_once()
-            call_args = mock_update_error.call_args
-            assert call_args[0][2] == "TRANSIENT"
-            assert call_args[0][3] == "RuntimeError"
+            mock_finish_command.assert_called_once()
+            call_kwargs = mock_finish_command.call_args[1]
+            assert call_kwargs["error_type"] == "TRANSIENT"
+            assert call_kwargs["error_code"] == "RuntimeError"
 
     @pytest.mark.asyncio
     async def test_fail_triggers_exhausted_for_transient_at_max(

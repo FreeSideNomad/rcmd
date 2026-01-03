@@ -19,7 +19,7 @@ from commandbus.models import (
 )
 from commandbus.pgmq.client import PGMQ_NOTIFY_CHANNEL, PgmqClient
 from commandbus.policies import DEFAULT_RETRY_POLICY, RetryPolicy
-from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
+from commandbus.repositories.audit import PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
@@ -125,6 +125,9 @@ class Worker:
         Commands in terminal states (COMPLETED, CANCELED) are automatically
         archived and skipped.
 
+        Uses a single shared connection for all DB operations to reduce
+        connection pool pressure and improve throughput.
+
         Args:
             batch_size: Maximum number of commands to receive
             visibility_timeout: Override default visibility timeout
@@ -135,20 +138,24 @@ class Worker:
         vt = visibility_timeout or self._visibility_timeout
         received: list[ReceivedCommand] = []
 
-        messages = await self._pgmq.read(
-            self._queue_name,
-            visibility_timeout=vt,
-            batch_size=batch_size,
-        )
+        # Use a single connection for all receive operations
+        # This reduces pool pressure: 3 connections per message → 1 shared
+        async with self._pool.connection() as conn:
+            messages = await self._pgmq.read(
+                self._queue_name,
+                visibility_timeout=vt,
+                batch_size=batch_size,
+                conn=conn,
+            )
 
-        for msg in messages:
-            try:
-                result = await self._process_message(msg.msg_id, msg.message)
-                if result is not None:
-                    received.append(result)
-            except Exception:
-                logger.exception(f"Error processing message {msg.msg_id}")
-                # Message will reappear after visibility timeout
+            for msg in messages:
+                try:
+                    result = await self._process_message(msg.msg_id, msg.message, conn)
+                    if result is not None:
+                        received.append(result)
+                except Exception:
+                    logger.exception(f"Error processing message {msg.msg_id}")
+                    # Message will reappear after visibility timeout
 
         return received
 
@@ -156,12 +163,14 @@ class Worker:
         self,
         msg_id: int,
         message: dict[str, Any],
+        conn: Any = None,
     ) -> ReceivedCommand | None:
         """Process a single message from the queue.
 
         Args:
             msg_id: PGMQ message ID
             message: Message payload
+            conn: Shared database connection (optional)
 
         Returns:
             ReceivedCommand if ready for processing, None if skipped
@@ -170,42 +179,23 @@ class Worker:
         command_id_str = message.get("command_id")
         if not command_id_str:
             logger.warning(f"Message {msg_id} missing command_id, archiving")
-            await self._pgmq.archive(self._queue_name, msg_id)
+            await self._pgmq.archive(self._queue_name, msg_id, conn)
             return None
 
         command_id = UUID(command_id_str)
 
-        # Get command metadata
-        metadata = await self._command_repo.get(domain, command_id)
-        if metadata is None:
-            logger.warning(f"No metadata for command {command_id} in domain {domain}, archiving")
-            await self._pgmq.archive(self._queue_name, msg_id)
-            return None
-
-        # Skip terminal states
-        if metadata.status in (CommandStatus.COMPLETED, CommandStatus.CANCELED):
-            logger.debug(
-                f"Command {command_id} already in terminal state {metadata.status}, archiving"
-            )
-            await self._pgmq.archive(self._queue_name, msg_id)
-            return None
-
-        # Increment attempts and record audit
-        attempts = await self._command_repo.increment_attempts(domain, command_id)
-
-        await self._audit_logger.log(
-            domain=domain,
-            command_id=command_id,
-            event_type=AuditEventType.RECEIVED,
-            details={
-                "msg_id": msg_id,
-                "attempt": attempts,
-                "max_attempts": metadata.max_attempts,
-            },
+        # Use stored procedure: atomically get metadata + increment attempts +
+        # update status + insert audit event - ALL IN ONE DB CALL
+        result = await self._command_repo.sp_receive_command(
+            domain, command_id, msg_id=msg_id, conn=conn
         )
 
-        # Update status to IN_PROGRESS
-        await self._command_repo.update_status(domain, command_id, CommandStatus.IN_PROGRESS)
+        if result is None:
+            logger.warning(f"No metadata for command {command_id} in domain {domain}, archiving")
+            await self._pgmq.archive(self._queue_name, msg_id, conn)
+            return None
+
+        metadata, attempts = result
 
         # Build command object
         correlation_id_str = message.get("correlation_id")
@@ -227,11 +217,6 @@ class Worker:
             msg_id=msg_id,
         )
 
-        # Get updated metadata
-        updated_metadata = await self._command_repo.get(domain, command_id)
-        if updated_metadata is None:
-            updated_metadata = metadata
-
         logger.info(
             f"Received command {domain}.{command.command_type} "
             f"(command_id={command_id}, attempt={attempts}/{metadata.max_attempts})"
@@ -241,7 +226,7 @@ class Worker:
             command=command,
             context=context,
             msg_id=msg_id,
-            metadata=updated_metadata,
+            metadata=metadata,
         )
 
     async def complete(
@@ -267,9 +252,18 @@ class Worker:
             # Delete message from queue
             await self._pgmq.delete(self._queue_name, received.msg_id, conn)
 
-            # Update status to COMPLETED
-            await self._command_repo.update_status(
-                domain, command_id, CommandStatus.COMPLETED, conn
+            # Use stored procedure: update status + insert audit in ONE DB CALL
+            await self._command_repo.sp_finish_command(
+                domain,
+                command_id,
+                CommandStatus.COMPLETED,
+                event_type="COMPLETED",
+                details={
+                    "msg_id": received.msg_id,
+                    "reply_to": command.reply_to,
+                    "has_result": result is not None,
+                },
+                conn=conn,
             )
 
             # Send reply if reply_to is configured
@@ -284,19 +278,6 @@ class Worker:
                 }
                 await self._pgmq.send(command.reply_to, reply_message, conn=conn)
 
-            # Record audit event
-            await self._audit_logger.log(
-                domain=domain,
-                command_id=command_id,
-                event_type=AuditEventType.COMPLETED,
-                details={
-                    "msg_id": received.msg_id,
-                    "reply_to": command.reply_to,
-                    "has_result": result is not None,
-                },
-                conn=conn,
-            )
-
         logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
 
     async def fail(
@@ -310,6 +291,9 @@ class Worker:
         For transient errors, applies backoff and leaves the message to expire.
         If retries are exhausted, moves the command to the troubleshooting queue.
         For permanent errors, this method does NOT handle them - use fail_permanent().
+
+        All operations are performed atomically in a single transaction with
+        shared connection for consistency and reduced pool pressure.
 
         Args:
             received: The received command that failed
@@ -341,28 +325,27 @@ class Worker:
             await self._fail_exhausted(received, error_type, error_code, error_msg)
             return
 
-        # Update error information in metadata
-        await self._command_repo.update_error(domain, command_id, error_type, error_code, error_msg)
+        # Use shared connection and transaction for fail operations
+        async with self._pool.connection() as conn, conn.transaction():
+            # Use stored procedure: update error + insert audit in ONE DB CALL
+            await self._command_repo.sp_fail_command(
+                domain,
+                command_id,
+                error_type,
+                error_code,
+                error_msg,
+                attempt,
+                received.metadata.max_attempts,
+                received.msg_id,
+                conn=conn,
+            )
 
-        # Record audit event
-        await self._audit_logger.log(
-            domain=domain,
-            command_id=command_id,
-            event_type=AuditEventType.FAILED,
-            details={
-                "msg_id": received.msg_id,
-                "attempt": attempt,
-                "max_attempts": received.metadata.max_attempts,
-                "error_type": error_type,
-                "error_code": error_code,
-                "error_msg": error_msg,
-            },
-        )
+            # Apply backoff by extending visibility timeout
+            if is_transient:
+                backoff = self._retry_policy.get_backoff(attempt)
+                await self._pgmq.set_vt(self._queue_name, received.msg_id, backoff, conn)
 
-        # Apply backoff by extending visibility timeout
         if is_transient:
-            backoff = self._retry_policy.get_backoff(attempt)
-            await self._pgmq.set_vt(self._queue_name, received.msg_id, backoff)
             logger.info(
                 f"Transient failure for {domain}.{command.command_type} "
                 f"(command_id={command_id}, attempt={attempt}, backoff={backoff}s): "
@@ -384,6 +367,7 @@ class Worker:
 
         Archives the message, updates status to IN_TROUBLESHOOTING_QUEUE,
         stores error details, and records an audit event.
+        Uses finish_command() to combine status + error update into one query.
 
         Args:
             received: The received command that failed
@@ -397,26 +381,15 @@ class Worker:
             # Archive message (not delete - keeps history)
             await self._pgmq.archive(self._queue_name, received.msg_id, conn)
 
-            # Update status to IN_TROUBLESHOOTING_QUEUE
-            await self._command_repo.update_status(
-                domain, command_id, CommandStatus.IN_TROUBLESHOOTING_QUEUE, conn
-            )
-
-            # Update error information
-            await self._command_repo.update_error(
+            # Use stored procedure: update status + error + audit in ONE DB CALL
+            await self._command_repo.sp_finish_command(
                 domain,
                 command_id,
-                "PERMANENT",
-                error.code,
-                error.error_message,
-                conn,
-            )
-
-            # Record audit event
-            await self._audit_logger.log(
-                domain=domain,
-                command_id=command_id,
-                event_type=AuditEventType.MOVED_TO_TSQ,
+                CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+                event_type="MOVED_TO_TSQ",
+                error_type="PERMANENT",
+                error_code=error.code,
+                error_msg=error.error_message,
                 details={
                     "msg_id": received.msg_id,
                     "attempt": received.context.attempt,
@@ -445,6 +418,7 @@ class Worker:
         Called when a transient error occurs but max_attempts has been reached.
         Archives the message, updates status to IN_TROUBLESHOOTING_QUEUE,
         stores error details, and records an audit event with reason "EXHAUSTED".
+        Uses finish_command() to combine status + error update into one query.
 
         Args:
             received: The received command that exhausted retries
@@ -461,26 +435,15 @@ class Worker:
             # Archive message (not delete - keeps history)
             await self._pgmq.archive(self._queue_name, received.msg_id, conn)
 
-            # Update status to IN_TROUBLESHOOTING_QUEUE
-            await self._command_repo.update_status(
-                domain, command_id, CommandStatus.IN_TROUBLESHOOTING_QUEUE, conn
-            )
-
-            # Update error information
-            await self._command_repo.update_error(
+            # Use stored procedure: update status + error + audit in ONE DB CALL
+            await self._command_repo.sp_finish_command(
                 domain,
                 command_id,
-                error_type,
-                error_code,
-                error_msg,
-                conn,
-            )
-
-            # Record audit event with EXHAUSTED reason
-            await self._audit_logger.log(
-                domain=domain,
-                command_id=command_id,
-                event_type=AuditEventType.MOVED_TO_TSQ,
+                CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+                event_type="MOVED_TO_TSQ",
+                error_type=error_type,
+                error_code=error_code,
+                error_msg=error_msg,
                 details={
                     "msg_id": received.msg_id,
                     "attempt": attempt,

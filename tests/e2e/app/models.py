@@ -88,8 +88,8 @@ class TestCommandRepository:
         if not commands:
             return
 
-        async with self.pool.connection() as conn:
-            await conn.executemany(
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.executemany(
                 """
                 INSERT INTO test_command (command_id, payload, behavior)
                 VALUES (%s, %s, %s)
