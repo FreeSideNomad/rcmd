@@ -392,6 +392,90 @@ class PostgresCommandRepository:
             row = await cur.fetchone()
             return int(row[0]) if row else 0
 
+    async def receive_command(
+        self,
+        domain: str,
+        command_id: UUID,
+        new_status: CommandStatus = CommandStatus.IN_PROGRESS,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> tuple[CommandMetadata, int] | None:
+        """Atomically get metadata, increment attempts, and update status.
+
+        This combines get(), increment_attempts(), and update_status() into a
+        single database round-trip for better performance.
+
+        Args:
+            domain: The domain
+            command_id: The command ID
+            new_status: Status to set (default: IN_PROGRESS)
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            Tuple of (CommandMetadata, new_attempts) if found, None otherwise
+        """
+        if conn is not None:
+            return await self._receive_command(conn, domain, command_id, new_status)
+
+        async with self._pool.connection() as acquired_conn:
+            return await self._receive_command(acquired_conn, domain, command_id, new_status)
+
+    async def _receive_command(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_id: UUID,
+        new_status: CommandStatus,
+    ) -> tuple[CommandMetadata, int] | None:
+        """Receive command using an existing connection.
+
+        Uses a single UPDATE ... RETURNING to atomically:
+        1. Check command is not in terminal state (COMPLETED, CANCELED)
+        2. Increment attempts
+        3. Update status to new_status
+        4. Return all metadata fields
+
+        Returns None if command not found OR if in terminal state.
+        """
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE command_bus_command
+                SET attempts = attempts + 1,
+                    status = %s,
+                    updated_at = NOW()
+                WHERE domain = %s AND command_id = %s
+                  AND status NOT IN ('COMPLETED', 'CANCELED')
+                RETURNING domain, command_id, command_type, status, attempts,
+                          max_attempts, msg_id, correlation_id, reply_queue,
+                          last_error_type, last_error_code, last_error_msg,
+                          created_at, updated_at
+                """,
+                (new_status.value, domain, command_id),
+            )
+            row = await cur.fetchone()
+
+        if row is None:
+            return None
+
+        metadata = CommandMetadata(
+            domain=row[0],
+            command_id=row[1],
+            command_type=row[2],
+            status=CommandStatus(row[3]),
+            attempts=row[4],
+            max_attempts=row[5],
+            msg_id=row[6],
+            correlation_id=row[7],
+            reply_to=row[8] if row[8] else None,
+            last_error_type=row[9],
+            last_error_code=row[10],
+            last_error_msg=row[11],
+            created_at=row[12],
+            updated_at=row[13],
+        )
+        # attempts is already incremented in the UPDATE
+        return metadata, metadata.attempts
+
     async def update_error(
         self,
         domain: str,
@@ -439,6 +523,65 @@ class PostgresCommandRepository:
             (error_type, error_code, error_msg, domain, command_id),
         )
         logger.debug(f"Updated error for {domain}.{command_id}: [{error_code}] {error_msg}")
+
+    async def finish_command(
+        self,
+        domain: str,
+        command_id: UUID,
+        status: CommandStatus,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        error_msg: str | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> None:
+        """Atomically update status and error info in a single query.
+
+        This combines update_status() and update_error() into one DB round-trip.
+        Use this for command completion (success or failure).
+
+        Args:
+            domain: The domain
+            command_id: The command ID
+            status: New status
+            error_type: Type of error (optional, for failures)
+            error_code: Error code (optional, for failures)
+            error_msg: Error message (optional, for failures)
+            conn: Optional connection (for transaction support)
+        """
+        if conn is not None:
+            await self._finish_command(
+                conn, domain, command_id, status, error_type, error_code, error_msg
+            )
+        else:
+            async with self._pool.connection() as acquired_conn:
+                await self._finish_command(
+                    acquired_conn, domain, command_id, status, error_type, error_code, error_msg
+                )
+
+    async def _finish_command(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_id: UUID,
+        status: CommandStatus,
+        error_type: str | None,
+        error_code: str | None,
+        error_msg: str | None,
+    ) -> None:
+        """Finish command using an existing connection."""
+        await conn.execute(
+            """
+            UPDATE command_bus_command
+            SET status = %s,
+                last_error_type = COALESCE(%s, last_error_type),
+                last_error_code = COALESCE(%s, last_error_code),
+                last_error_msg = COALESCE(%s, last_error_msg),
+                updated_at = NOW()
+            WHERE domain = %s AND command_id = %s
+            """,
+            (status.value, error_type, error_code, error_msg, domain, command_id),
+        )
+        logger.debug(f"Finished {domain}.{command_id} with status {status.value}")
 
     async def exists(
         self,
@@ -510,6 +653,252 @@ class PostgresCommandRepository:
             return await self._query(
                 conn, status, domain, command_type, created_after, created_before, limit, offset
             )
+
+    async def sp_receive_command(
+        self,
+        domain: str,
+        command_id: UUID,
+        msg_id: int | None = None,
+        max_attempts: int | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> tuple[CommandMetadata, int] | None:
+        """Receive command using stored procedure.
+
+        This combines receive_command + audit logging into a single DB call.
+        Uses sp_receive_command stored procedure for maximum performance.
+
+        Args:
+            domain: The domain
+            command_id: The command ID
+            msg_id: The PGMQ message ID (for audit)
+            max_attempts: Override max_attempts (for audit)
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            Tuple of (CommandMetadata, new_attempts) if found, None otherwise
+        """
+        if conn is not None:
+            return await self._sp_receive_command(conn, domain, command_id, msg_id, max_attempts)
+
+        async with self._pool.connection() as acquired_conn:
+            return await self._sp_receive_command(
+                acquired_conn, domain, command_id, msg_id, max_attempts
+            )
+
+    async def _sp_receive_command(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_id: UUID,
+        msg_id: int | None,
+        max_attempts: int | None,
+    ) -> tuple[CommandMetadata, int] | None:
+        """Call sp_receive_command stored procedure."""
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM sp_receive_command(%s, %s, %s, %s, %s)",
+                (domain, command_id, "IN_PROGRESS", msg_id, max_attempts),
+            )
+            row = await cur.fetchone()
+
+        if row is None:
+            return None
+
+        metadata = CommandMetadata(
+            domain=row[0],
+            command_id=row[1],
+            command_type=row[2],
+            status=CommandStatus(row[3]),
+            attempts=row[4],
+            max_attempts=row[5],
+            msg_id=row[6],
+            correlation_id=row[7],
+            reply_to=row[8] if row[8] else None,
+            last_error_type=row[9],
+            last_error_code=row[10],
+            last_error_msg=row[11],
+            created_at=row[12],
+            updated_at=row[13],
+        )
+        return metadata, metadata.attempts
+
+    async def sp_finish_command(
+        self,
+        domain: str,
+        command_id: UUID,
+        status: CommandStatus,
+        event_type: str,
+        error_type: str | None = None,
+        error_code: str | None = None,
+        error_msg: str | None = None,
+        details: dict[str, Any] | None = None,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> bool:
+        """Finish command using stored procedure.
+
+        This combines finish_command + audit logging into a single DB call.
+        Uses sp_finish_command stored procedure for maximum performance.
+
+        Args:
+            domain: The domain
+            command_id: The command ID
+            status: New status
+            event_type: Audit event type (e.g., 'COMPLETED', 'MOVED_TO_TSQ')
+            error_type: Type of error (optional, for failures)
+            error_code: Error code (optional, for failures)
+            error_msg: Error message (optional, for failures)
+            details: Additional audit details (optional)
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            True if command was found and updated, False otherwise
+        """
+        import json
+
+        details_json = json.dumps(details) if details else None
+
+        if conn is not None:
+            return await self._sp_finish_command(
+                conn,
+                domain,
+                command_id,
+                status,
+                event_type,
+                error_type,
+                error_code,
+                error_msg,
+                details_json,
+            )
+
+        async with self._pool.connection() as acquired_conn:
+            return await self._sp_finish_command(
+                acquired_conn,
+                domain,
+                command_id,
+                status,
+                event_type,
+                error_type,
+                error_code,
+                error_msg,
+                details_json,
+            )
+
+    async def _sp_finish_command(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_id: UUID,
+        status: CommandStatus,
+        event_type: str,
+        error_type: str | None,
+        error_code: str | None,
+        error_msg: str | None,
+        details_json: str | None,
+    ) -> bool:
+        """Call sp_finish_command stored procedure."""
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT sp_finish_command(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                (
+                    domain,
+                    command_id,
+                    status.value,
+                    event_type,
+                    error_type,
+                    error_code,
+                    error_msg,
+                    details_json,
+                ),
+            )
+            row = await cur.fetchone()
+            return bool(row[0]) if row else False
+
+    async def sp_fail_command(
+        self,
+        domain: str,
+        command_id: UUID,
+        error_type: str,
+        error_code: str,
+        error_msg: str,
+        attempt: int,
+        max_attempts: int,
+        msg_id: int,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> bool:
+        """Record command failure using stored procedure.
+
+        This combines update_error + audit logging into a single DB call.
+        Uses sp_fail_command stored procedure for maximum performance.
+
+        Args:
+            domain: The domain
+            command_id: The command ID
+            error_type: Type of error (e.g., 'TRANSIENT', 'PERMANENT')
+            error_code: Error code
+            error_msg: Error message
+            attempt: Current attempt number
+            max_attempts: Maximum attempts allowed
+            msg_id: PGMQ message ID
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            True if command was found and updated, False otherwise
+        """
+        if conn is not None:
+            return await self._sp_fail_command(
+                conn,
+                domain,
+                command_id,
+                error_type,
+                error_code,
+                error_msg,
+                attempt,
+                max_attempts,
+                msg_id,
+            )
+
+        async with self._pool.connection() as acquired_conn:
+            return await self._sp_fail_command(
+                acquired_conn,
+                domain,
+                command_id,
+                error_type,
+                error_code,
+                error_msg,
+                attempt,
+                max_attempts,
+                msg_id,
+            )
+
+    async def _sp_fail_command(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_id: UUID,
+        error_type: str,
+        error_code: str,
+        error_msg: str,
+        attempt: int,
+        max_attempts: int,
+        msg_id: int,
+    ) -> bool:
+        """Call sp_fail_command stored procedure."""
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT sp_fail_command(%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    domain,
+                    command_id,
+                    error_type,
+                    error_code,
+                    error_msg,
+                    attempt,
+                    max_attempts,
+                    msg_id,
+                ),
+            )
+            row = await cur.fetchone()
+            return bool(row[0]) if row else False
 
     async def _query(
         self,
