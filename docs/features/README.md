@@ -18,6 +18,7 @@ See [development-plan.md](development-plan.md) for the implementation sequence a
 | [F006](F006-e2e-testing-demo.md) | E2E Testing & Demo App | Should Have | Complete |
 | [F007](F007-handler-dependency-injection.md) | Handler DI & Transactions | Should Have | Planned |
 | [F008](F008-e2e-fastapi-migration.md) | E2E FastAPI Migration | Should Have | Planned |
+| [F009](F009-batch-commands.md) | Batch Commands | Should Have | Planned |
 
 ## User Story Index
 
@@ -78,6 +79,12 @@ Stories are organized by parent feature. Each story follows INVEST criteria and 
 - S038 - Web Routes with Jinja2
 - S039 - OpenAPI Documentation Review
 - S040 - Handler Classes with @handler Decorator (uses F007)
+
+### F009 - Batch Commands
+- [S041](stories/S041-create-batch.md) - Create a batch with commands
+- [S042](stories/S042-batch-status-tracking.md) - Track batch status and counts
+- [S043](stories/S043-batch-completion-callback.md) - Receive callback on batch completion
+- [S044](stories/S044-query-batches.md) - Query batches and their commands
 
 ## Document Format
 

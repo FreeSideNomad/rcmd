@@ -4,6 +4,30 @@
 -- Enable PGMQ extension
 CREATE EXTENSION IF NOT EXISTS pgmq;
 
+-- Create batch table (must be created before command table for FK)
+CREATE TABLE IF NOT EXISTS command_bus_batch (
+    domain                    TEXT NOT NULL,
+    batch_id                  UUID NOT NULL,
+    name                      TEXT NULL,
+    custom_data               JSONB NULL,
+    status                    TEXT NOT NULL DEFAULT 'PENDING',
+    total_count               INT NOT NULL DEFAULT 0,
+    completed_count           INT NOT NULL DEFAULT 0,
+    failed_count              INT NOT NULL DEFAULT 0,
+    canceled_count            INT NOT NULL DEFAULT 0,
+    in_troubleshooting_count  INT NOT NULL DEFAULT 0,
+    created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at                TIMESTAMPTZ NULL,
+    completed_at              TIMESTAMPTZ NULL,
+    PRIMARY KEY (domain, batch_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_command_bus_batch_status
+    ON command_bus_batch(domain, status);
+
+CREATE INDEX IF NOT EXISTS ix_command_bus_batch_created
+    ON command_bus_batch(domain, created_at DESC);
+
 -- Create command bus tables
 CREATE TABLE IF NOT EXISTS command_bus_command (
     domain            TEXT NOT NULL,
@@ -21,7 +45,8 @@ CREATE TABLE IF NOT EXISTS command_bus_command (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     reply_queue       TEXT NOT NULL DEFAULT '',
-    correlation_id    UUID NULL
+    correlation_id    UUID NULL,
+    batch_id          UUID NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_command_bus_command_domain_cmdid
@@ -35,6 +60,9 @@ CREATE INDEX IF NOT EXISTS ix_command_bus_command_status_created
 
 CREATE INDEX IF NOT EXISTS ix_command_bus_command_updated
     ON command_bus_command(updated_at);
+
+CREATE INDEX IF NOT EXISTS ix_command_bus_command_batch
+    ON command_bus_command(domain, batch_id) WHERE batch_id IS NOT NULL;
 
 -- Audit table (append-only)
 CREATE TABLE IF NOT EXISTS command_bus_audit (

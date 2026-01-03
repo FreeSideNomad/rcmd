@@ -26,6 +26,15 @@ class ReplyOutcome(str, Enum):
     CANCELED = "CANCELED"
 
 
+class BatchStatus(str, Enum):
+    """Status of a batch in its lifecycle."""
+
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    COMPLETED_WITH_FAILURES = "COMPLETED_WITH_FAILURES"
+
+
 @dataclass(frozen=True)
 class Command:
     """A command to be processed by a handler.
@@ -111,6 +120,7 @@ class CommandMetadata:
         last_error_msg: Error message
         created_at: Creation timestamp
         updated_at: Last update timestamp
+        batch_id: Optional batch this command belongs to
     """
 
     domain: str
@@ -127,6 +137,7 @@ class CommandMetadata:
     last_error_msg: str | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+    batch_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -254,4 +265,75 @@ class BatchSendResult:
 
     results: list[SendResult]
     chunks_processed: int
+    total_commands: int
+
+
+@dataclass(frozen=True)
+class BatchCommand:
+    """A command to be included in a batch.
+
+    Attributes:
+        command_type: The type of command (e.g., "DebitAccount")
+        command_id: Unique identifier for this command
+        data: The command payload
+        correlation_id: Optional correlation ID for tracing
+        reply_to: Optional reply queue name
+        max_attempts: Max retry attempts (defaults to bus default)
+    """
+
+    command_type: str
+    command_id: UUID
+    data: dict[str, Any]
+    correlation_id: UUID | None = None
+    reply_to: str | None = None
+    max_attempts: int | None = None
+
+
+@dataclass
+class BatchMetadata:
+    """Metadata stored for a batch of commands.
+
+    Attributes:
+        domain: The domain this batch belongs to
+        batch_id: Unique identifier
+        name: Optional human-readable name for the batch
+        custom_data: Optional custom metadata
+        status: Current batch status
+        total_count: Total number of commands in the batch
+        completed_count: Number of successfully completed commands
+        failed_count: Number of failed commands (deprecated, use canceled_count)
+        canceled_count: Number of canceled commands (after TSQ resolution)
+        in_troubleshooting_count: Number of commands currently in TSQ
+        created_at: Batch creation timestamp
+        started_at: When first command was processed
+        completed_at: When all commands reached terminal state
+    """
+
+    domain: str
+    batch_id: UUID
+    status: BatchStatus = BatchStatus.PENDING
+    name: str | None = None
+    custom_data: dict[str, Any] | None = None
+    total_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    canceled_count: int = 0
+    in_troubleshooting_count: int = 0
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+@dataclass
+class CreateBatchResult:
+    """Result of creating a batch with commands.
+
+    Attributes:
+        batch_id: The unique ID of the created batch
+        command_results: Individual results for each command sent
+        total_commands: Total number of commands in the batch
+    """
+
+    batch_id: UUID
+    command_results: list[SendResult]
     total_commands: int
