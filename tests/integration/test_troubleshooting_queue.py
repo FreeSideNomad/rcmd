@@ -1,6 +1,6 @@
 """Integration tests for TroubleshootingQueue operations."""
 
-import os
+from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
 import pytest
@@ -24,48 +24,23 @@ from commandbus import (
     Worker,
 )
 
-
-@pytest.fixture
-def database_url() -> str:
-    """Get database URL from environment."""
-    return os.environ.get(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/commandbus"
-    )
+# Type alias for ensure_domain fixture
+EnsureDomainFixture = Callable[[str], Awaitable[None]]
 
 
-@pytest.fixture
-async def pool(database_url: str) -> AsyncConnectionPool:
-    """Create a connection pool for testing."""
-    async with AsyncConnectionPool(conninfo=database_url, min_size=1, max_size=5, open=False) as p:
-        yield p
-
-
-@pytest.fixture
-async def command_bus(pool: AsyncConnectionPool) -> CommandBus:
-    """Create a CommandBus with real database connection."""
-    return CommandBus(pool)
-
-
-@pytest.fixture
-def handler_registry() -> HandlerRegistry:
-    """Create handler registry."""
-    return HandlerRegistry()
-
-
-@pytest.fixture
-def tsq(pool: AsyncConnectionPool) -> TroubleshootingQueue:
-    """Create a TroubleshootingQueue."""
-    return TroubleshootingQueue(pool)
-
-
+@pytest.mark.integration
 class TestListTroubleshootingIntegration:
     """Integration tests for listing troubleshooting queue items."""
 
     @pytest.mark.asyncio
-    async def test_list_empty_queue(self, tsq: TroubleshootingQueue) -> None:
+    async def test_list_empty_queue(
+        self, tsq: TroubleshootingQueue, ensure_domain: EnsureDomainFixture
+    ) -> None:
         """Test listing empty troubleshooting queue."""
         # Use a unique domain to ensure we get empty results
-        items = await tsq.list_troubleshooting(f"empty_domain_{uuid4().hex[:8]}")
+        domain = f"empty_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
+        items = await tsq.list_troubleshooting(domain)
 
         assert items == []
 
@@ -76,10 +51,12 @@ class TestListTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test listing a command that exhausted retries."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -123,10 +100,12 @@ class TestListTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test listing a command that failed permanently."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -148,7 +127,7 @@ class TestListTroubleshootingIntegration:
         # Fail permanently
         received = await worker.receive()
         error = PermanentCommandError("INVALID_DATA", "Invalid account format")
-        await worker.fail(received[0], error)
+        await worker.fail_permanent(received[0], error)
 
         # List troubleshooting items
         items = await tsq.list_troubleshooting(domain)
@@ -166,10 +145,12 @@ class TestListTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test that listed items include original payload from archive."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         original_data = {"account_id": "ACC-123", "amount": 500, "currency": "USD"}
 
         @handler_registry.handler(domain, "TransferCommand")
@@ -186,7 +167,7 @@ class TestListTroubleshootingIntegration:
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
         error = PermanentCommandError("INSUFFICIENT_FUNDS", "Not enough balance")
-        await worker.fail(received[0], error)
+        await worker.fail_permanent(received[0], error)
 
         items = await tsq.list_troubleshooting(domain)
 
@@ -202,9 +183,11 @@ class TestListTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test filtering by command type."""
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         debit_id = uuid4()
         credit_id = uuid4()
 
@@ -236,7 +219,7 @@ class TestListTroubleshootingIntegration:
         for _ in range(2):
             received = await worker.receive()
             for cmd in received:
-                await worker.fail(cmd, PermanentCommandError("INVALID", "Invalid"))
+                await worker.fail_permanent(cmd, PermanentCommandError("INVALID", "Invalid"))
 
         # Filter by DebitCommand
         debit_items = await tsq.list_troubleshooting(domain, command_type="DebitCommand")
@@ -255,9 +238,11 @@ class TestListTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test pagination with limit and offset."""
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -281,7 +266,7 @@ class TestListTroubleshootingIntegration:
             if not received:
                 break
             for cmd in received:
-                await worker.fail(cmd, PermanentCommandError("INVALID", "Invalid"))
+                await worker.fail_permanent(cmd, PermanentCommandError("INVALID", "Invalid"))
 
         # Test limit
         page1 = await tsq.list_troubleshooting(domain, limit=2, offset=0)
@@ -303,11 +288,13 @@ class TestListTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test that correlation_id and reply_to are preserved."""
         command_id = uuid4()
         correlation_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         reply_queue = f"{domain}__replies"
 
         @handler_registry.handler(domain, "TestCommand")
@@ -325,7 +312,7 @@ class TestListTroubleshootingIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("FAILED", "Failed"))
+        await worker.fail_permanent(received[0], PermanentCommandError("FAILED", "Failed"))
 
         items = await tsq.list_troubleshooting(domain)
 
@@ -334,6 +321,7 @@ class TestListTroubleshootingIntegration:
         assert items[0].reply_to == reply_queue
 
 
+@pytest.mark.integration
 class TestCountTroubleshootingIntegration:
     """Integration tests for counting troubleshooting queue items."""
 
@@ -351,9 +339,11 @@ class TestCountTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test counting items in troubleshooting queue."""
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -376,7 +366,7 @@ class TestCountTroubleshootingIntegration:
             if not received:
                 break
             for cmd in received:
-                await worker.fail(cmd, PermanentCommandError("INVALID", "Invalid"))
+                await worker.fail_permanent(cmd, PermanentCommandError("INVALID", "Invalid"))
 
         count = await tsq.count_troubleshooting(domain)
 
@@ -389,9 +379,11 @@ class TestCountTroubleshootingIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test counting with command type filter."""
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TypeA")
         async def handle_a(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -415,7 +407,7 @@ class TestCountTroubleshootingIntegration:
             if not received:
                 break
             for cmd in received:
-                await worker.fail(cmd, PermanentCommandError("INVALID", "Invalid"))
+                await worker.fail_permanent(cmd, PermanentCommandError("INVALID", "Invalid"))
 
         # Count by type
         type_a_count = await tsq.count_troubleshooting(domain, command_type="TypeA")
@@ -427,6 +419,7 @@ class TestCountTroubleshootingIntegration:
         assert total_count == 5
 
 
+@pytest.mark.integration
 class TestOperatorRetryIntegration:
     """Integration tests for operator_retry()."""
 
@@ -449,10 +442,12 @@ class TestOperatorRetryIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_retry raises InvalidOperationError when command not in TSQ."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -478,10 +473,12 @@ class TestOperatorRetryIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test successful operator_retry re-enqueues the command."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         original_data = {"account_id": "ACC-123", "amount": 500}
 
         @handler_registry.handler(domain, "TestCommand")
@@ -498,7 +495,7 @@ class TestOperatorRetryIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Verify command is in TSQ
         items = await tsq.list_troubleshooting(domain)
@@ -528,10 +525,12 @@ class TestOperatorRetryIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_retry records OPERATOR_RETRY audit event."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -547,7 +546,7 @@ class TestOperatorRetryIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Retry with operator identity
         await tsq.operator_retry(domain, command_id, operator="admin_user")
@@ -556,9 +555,9 @@ class TestOperatorRetryIntegration:
         audit_logger = PostgresAuditLogger(pool)
         events = await audit_logger.get_events(command_id, domain)
 
-        operator_retry_events = [e for e in events if e["event_type"] == "OPERATOR_RETRY"]
+        operator_retry_events = [e for e in events if e.event_type == "OPERATOR_RETRY"]
         assert len(operator_retry_events) == 1
-        assert operator_retry_events[0]["details"]["operator"] == "admin_user"
+        assert operator_retry_events[0].details["operator"] == "admin_user"
 
     @pytest.mark.asyncio
     async def test_operator_retry_command_can_be_processed_again(
@@ -567,24 +566,17 @@ class TestOperatorRetryIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test retried command can be received and processed by worker."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         original_data = {"test_key": "test_value"}
-        processed_data: dict[str, str] = {}
-
-        call_count = 0
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise PermanentCommandError("INVALID", "Invalid")
-            # Second time - success
-            processed_data.update(command.data)
-            return {"status": "ok"}
+            raise PermanentCommandError("INVALID", "Invalid")
 
         # Send and fail the command
         await command_bus.send(
@@ -596,7 +588,7 @@ class TestOperatorRetryIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Retry the command
         await tsq.operator_retry(domain, command_id, operator="admin")
@@ -604,13 +596,12 @@ class TestOperatorRetryIntegration:
         # Receive and process the retried command
         received2 = await worker.receive()
         assert len(received2) == 1
-        assert received2[0].command_id == command_id
+        assert received2[0].command.command_id == command_id
+        # Verify original data is preserved in the retried command
+        assert received2[0].command.data == original_data
 
         # Process successfully this time
         await worker.complete(received2[0], {"status": "ok"})
-
-        # Verify command was processed with original data
-        assert processed_data == original_data
 
         # Verify command is now completed
         command_repo = PostgresCommandRepository(pool)
@@ -625,10 +616,12 @@ class TestOperatorRetryIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test retried command no longer appears in troubleshooting list."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -644,7 +637,7 @@ class TestOperatorRetryIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Verify in TSQ
         count_before = await tsq.count_troubleshooting(domain)
@@ -661,6 +654,7 @@ class TestOperatorRetryIntegration:
         assert len(items) == 0
 
 
+@pytest.mark.integration
 class TestOperatorCancelIntegration:
     """Integration tests for operator_cancel()."""
 
@@ -685,10 +679,12 @@ class TestOperatorCancelIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_cancel raises InvalidOperationError when command not in TSQ."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -714,10 +710,12 @@ class TestOperatorCancelIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_cancel sets command status to CANCELED."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -733,7 +731,7 @@ class TestOperatorCancelIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Cancel the command
         await tsq.operator_cancel(domain, command_id, "Invalid account")
@@ -751,11 +749,13 @@ class TestOperatorCancelIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_cancel sends CANCELED reply to reply queue."""
         command_id = uuid4()
         correlation_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         reply_queue = f"{domain}__replies"
 
         @handler_registry.handler(domain, "TestCommand")
@@ -778,7 +778,7 @@ class TestOperatorCancelIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Cancel the command
         await tsq.operator_cancel(domain, command_id, "Invalid account format")
@@ -800,10 +800,12 @@ class TestOperatorCancelIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_cancel records OPERATOR_CANCEL audit event."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -819,7 +821,7 @@ class TestOperatorCancelIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Cancel with operator identity and reason
         await tsq.operator_cancel(domain, command_id, "Duplicate request", operator="admin_user")
@@ -828,10 +830,10 @@ class TestOperatorCancelIntegration:
         audit_logger = PostgresAuditLogger(pool)
         events = await audit_logger.get_events(command_id, domain)
 
-        cancel_events = [e for e in events if e["event_type"] == "OPERATOR_CANCEL"]
+        cancel_events = [e for e in events if e.event_type == "OPERATOR_CANCEL"]
         assert len(cancel_events) == 1
-        assert cancel_events[0]["details"]["operator"] == "admin_user"
-        assert cancel_events[0]["details"]["reason"] == "Duplicate request"
+        assert cancel_events[0].details["operator"] == "admin_user"
+        assert cancel_events[0].details["reason"] == "Duplicate request"
 
     @pytest.mark.asyncio
     async def test_operator_cancel_removes_from_tsq_list(
@@ -840,10 +842,12 @@ class TestOperatorCancelIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test canceled command no longer appears in troubleshooting list."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -859,7 +863,7 @@ class TestOperatorCancelIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Verify in TSQ
         count_before = await tsq.count_troubleshooting(domain)
@@ -876,6 +880,7 @@ class TestOperatorCancelIntegration:
         assert len(items) == 0
 
 
+@pytest.mark.integration
 class TestOperatorCompleteIntegration:
     """Integration tests for operator_complete()."""
 
@@ -900,10 +905,12 @@ class TestOperatorCompleteIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_complete raises InvalidOperationError when command not in TSQ."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -929,10 +936,12 @@ class TestOperatorCompleteIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_complete sets command status to COMPLETED."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -948,7 +957,7 @@ class TestOperatorCompleteIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Complete the command
         await tsq.operator_complete(domain, command_id)
@@ -966,11 +975,13 @@ class TestOperatorCompleteIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_complete sends SUCCESS reply to reply queue."""
         command_id = uuid4()
         correlation_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         reply_queue = f"{domain}__replies"
 
         @handler_registry.handler(domain, "TestCommand")
@@ -993,7 +1004,7 @@ class TestOperatorCompleteIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Complete the command
         await tsq.operator_complete(domain, command_id)
@@ -1015,10 +1026,12 @@ class TestOperatorCompleteIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_complete sends SUCCESS reply with result_data."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
         reply_queue = f"{domain}__replies"
         result_data = {"transaction_id": "txn_123", "amount": 100}
 
@@ -1041,7 +1054,7 @@ class TestOperatorCompleteIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Complete the command with result_data
         await tsq.operator_complete(domain, command_id, result_data=result_data)
@@ -1061,10 +1074,12 @@ class TestOperatorCompleteIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test operator_complete records OPERATOR_COMPLETE audit event."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -1080,7 +1095,7 @@ class TestOperatorCompleteIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Complete with operator identity
         await tsq.operator_complete(domain, command_id, operator="admin_user")
@@ -1089,9 +1104,9 @@ class TestOperatorCompleteIntegration:
         audit_logger = PostgresAuditLogger(pool)
         events = await audit_logger.get_events(command_id, domain)
 
-        complete_events = [e for e in events if e["event_type"] == "OPERATOR_COMPLETE"]
+        complete_events = [e for e in events if e.event_type == "OPERATOR_COMPLETE"]
         assert len(complete_events) == 1
-        assert complete_events[0]["details"]["operator"] == "admin_user"
+        assert complete_events[0].details["operator"] == "admin_user"
 
     @pytest.mark.asyncio
     async def test_operator_complete_removes_from_tsq_list(
@@ -1100,10 +1115,12 @@ class TestOperatorCompleteIntegration:
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
         tsq: TroubleshootingQueue,
+        ensure_domain: EnsureDomainFixture,
     ) -> None:
         """Test completed command no longer appears in troubleshooting list."""
         command_id = uuid4()
         domain = f"test_domain_{uuid4().hex[:8]}"
+        await ensure_domain(domain)
 
         @handler_registry.handler(domain, "TestCommand")
         async def handle_test(command: Command, context: HandlerContext) -> dict[str, str]:
@@ -1119,7 +1136,7 @@ class TestOperatorCompleteIntegration:
 
         worker = Worker(pool, domain=domain, registry=handler_registry)
         received = await worker.receive()
-        await worker.fail(received[0], PermanentCommandError("INVALID", "Invalid"))
+        await worker.fail_permanent(received[0], PermanentCommandError("INVALID", "Invalid"))
 
         # Verify in TSQ
         count_before = await tsq.count_troubleshooting(domain)
