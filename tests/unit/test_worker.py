@@ -733,8 +733,8 @@ class TestWorkerRun:
         await worker.stop()  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_process_batch_receives_commands(self, worker: Worker) -> None:
-        """Test that _process_batch receives and processes commands."""
+    async def test_drain_queue_receives_commands(self, worker: Worker) -> None:
+        """Test that _drain_queue receives and processes commands."""
         command_id = uuid4()
         now = datetime.now(UTC)
 
@@ -757,25 +757,34 @@ class TestWorkerRun:
         )
 
         semaphore = asyncio.Semaphore(5)
+        worker._stop_event = asyncio.Event()
 
         with (
             patch.object(worker, "receive", new_callable=AsyncMock) as mock_receive,
             patch.object(worker, "_process_command", new_callable=AsyncMock),
         ):
-            mock_receive.return_value = [received]
+            # Return commands first call, then empty to exit loop
+            mock_receive.side_effect = [[received], []]
 
-            await worker._process_batch(semaphore)
+            await worker._drain_queue(semaphore)
 
-            mock_receive.assert_called_once_with(batch_size=5)
+            assert mock_receive.call_count == 2
+            mock_receive.assert_any_call(batch_size=5)
 
     @pytest.mark.asyncio
-    async def test_process_batch_skips_when_no_slots(self, worker: Worker) -> None:
-        """Test that _process_batch skips when no slots available."""
+    async def test_drain_queue_waits_for_slot(self, worker: Worker) -> None:
+        """Test that _drain_queue waits when no slots available."""
         semaphore = asyncio.Semaphore(0)
+        worker._stop_event = asyncio.Event()
+        worker._in_flight = set()
 
         with patch.object(worker, "receive", new_callable=AsyncMock) as mock_receive:
-            await worker._process_batch(semaphore)
+            # Set stop event to exit immediately after waiting for slot
+            worker._stop_event.set()
 
+            await worker._drain_queue(semaphore)
+
+            # Should not have called receive since no slots and stop was set
             mock_receive.assert_not_called()
 
     @pytest.mark.asyncio
