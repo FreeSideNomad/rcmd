@@ -143,7 +143,8 @@ e2e-setup:
 	@docker compose exec -T postgres psql -U postgres -d commandbus -c "SELECT pgmq.create('e2e__commands');" 2>/dev/null || true
 	@docker compose exec -T postgres psql -U postgres -d commandbus -c "SELECT pgmq.create('e2e__replies');" 2>/dev/null || true
 	@docker compose exec -T postgres psql -U postgres -d commandbus -c "CREATE TABLE IF NOT EXISTS e2e_config (key TEXT PRIMARY KEY, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());"
-	@docker compose exec -T postgres psql -U postgres -d commandbus -c "INSERT INTO e2e_config (key, value) VALUES ('worker', '{\"visibility_timeout\": 30, \"concurrency\": 4, \"poll_interval\": 1.0, \"batch_size\": 10}'::jsonb), ('retry', '{\"max_attempts\": 3, \"base_delay_ms\": 1000, \"max_delay_ms\": 60000, \"backoff_multiplier\": 2.0}'::jsonb) ON CONFLICT (key) DO NOTHING;"
+	@docker compose exec -T postgres psql -U postgres -d commandbus -c "INSERT INTO e2e_config (key, value) VALUES ('worker', '{\"visibility_timeout\": 30, \"concurrency\": 4, \"poll_interval\": 1.0, \"batch_size\": 10}'::jsonb), ('retry', '{\"max_attempts\": 3, \"backoff_schedule\": [10, 60, 300]}'::jsonb) ON CONFLICT (key) DO NOTHING;"
+	@docker compose exec -T postgres psql -U postgres -d commandbus -c "CREATE TABLE IF NOT EXISTS test_command (id SERIAL PRIMARY KEY, command_id UUID NOT NULL UNIQUE, payload JSONB NOT NULL DEFAULT '{}', behavior JSONB NOT NULL DEFAULT '{\"type\": \"success\"}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), processed_at TIMESTAMPTZ, attempts INT NOT NULL DEFAULT 0, result JSONB);"
 	@echo "E2E database setup complete!"
 
 # Start the E2E demo application
