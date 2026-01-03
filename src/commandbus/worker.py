@@ -597,6 +597,10 @@ class Worker:
         assert self._stop_event is not None
 
         async with self._pool.connection() as listen_conn:
+            # Set autocommit mode - required for LISTEN/NOTIFY to work in real-time
+            # Without autocommit, notifications are only received when a transaction ends
+            await listen_conn.set_autocommit(True)
+
             # Subscribe to notifications for this queue
             channel = f"{PGMQ_NOTIFY_CHANNEL}_{self._queue_name}"
             await listen_conn.execute(f"LISTEN {channel}")
