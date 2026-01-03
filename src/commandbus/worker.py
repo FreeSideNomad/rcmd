@@ -660,7 +660,7 @@ class Worker:
             return
 
         # Wait for any one task to complete
-        done, _ = await asyncio.wait(
+        _done, _ = await asyncio.wait(
             self._in_flight,
             return_when=asyncio.FIRST_COMPLETED,
         )
