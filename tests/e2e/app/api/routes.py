@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException
 
 from ..dependencies import TSQ, Bus, Pool
+from ..models import TestCommandRepository
 from .schemas import (
     ActivityEvent,
     AuditEvent,
@@ -54,15 +55,22 @@ E2E_DOMAIN = "e2e"
 
 
 @api_router.post("/commands", response_model=CreateCommandResponse, status_code=201)
-async def create_command(request: CreateCommandRequest, bus: Bus) -> CreateCommandResponse:
+async def create_command(
+    request: CreateCommandRequest, bus: Bus, pool: Pool
+) -> CreateCommandResponse:
     """Create a single test command."""
     command_id = uuid4()
+    behavior = request.behavior.model_dump()
+
+    # Insert into test_command table (handler reads behavior from here)
+    repo = TestCommandRepository(pool)
+    await repo.create(command_id, behavior, request.payload)
 
     await bus.send(
         domain=E2E_DOMAIN,
         command_type="TestCommand",
         command_id=command_id,
-        data={"behavior": request.behavior.model_dump(), "payload": request.payload},
+        data={"behavior": behavior, "payload": request.payload},
         max_attempts=request.max_attempts,
     )
 
@@ -75,13 +83,16 @@ async def create_command(request: CreateCommandRequest, bus: Bus) -> CreateComma
 
 
 @api_router.post("/commands/bulk", response_model=BulkCreateResponse, status_code=201)
-async def create_bulk_commands(request: BulkCreateRequest, bus: Bus) -> BulkCreateResponse:
+async def create_bulk_commands(
+    request: BulkCreateRequest, bus: Bus, pool: Pool
+) -> BulkCreateResponse:
     """Create multiple test commands for load testing."""
     start_time = time.time()
 
     count = min(request.count, 10000)
     command_ids: list[UUID] = []
     behaviors_assigned: dict[str, int] = {}
+    repo = TestCommandRepository(pool)
 
     for _ in range(count):
         cmd_id = uuid4()
@@ -97,6 +108,9 @@ async def create_bulk_commands(request: BulkCreateRequest, bus: Bus) -> BulkCrea
             behavior = request.behavior.model_dump()
         else:
             behavior = {"type": "success", "execution_time_ms": request.execution_time_ms}
+
+        # Insert into test_command table (handler reads behavior from here)
+        await repo.create(cmd_id, behavior, {})
 
         await bus.send(
             domain=E2E_DOMAIN,
