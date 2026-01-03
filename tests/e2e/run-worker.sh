@@ -39,6 +39,15 @@ if ! docker compose -f "$PROJECT_ROOT/docker-compose.yml" ps postgres 2>/dev/nul
     echo ""
 fi
 
+# Stop any existing worker processes
+EXISTING_PIDS=$(pgrep -f "python -m app.worker" 2>/dev/null || true)
+if [ -n "$EXISTING_PIDS" ]; then
+    echo "Stopping existing worker processes..."
+    echo "$EXISTING_PIDS" | xargs kill 2>/dev/null || true
+    sleep 1
+    echo "Stopped."
+fi
+
 echo "Syncing dependencies with e2e extras..."
 cd "$PROJECT_ROOT"
 uv sync --extra e2e
