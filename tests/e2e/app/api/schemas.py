@@ -48,7 +48,7 @@ class CreateCommandResponse(BaseModel):
 class BulkCreateRequest(BaseModel):
     """Request to create multiple test commands."""
 
-    count: int = Field(default=1, ge=1, le=10000)
+    count: int = Field(default=1, ge=1, le=1000000)
     behavior: CommandBehavior | None = None
     behavior_distribution: dict[str, int] | None = None
     execution_time_ms: int = Field(default=0)
