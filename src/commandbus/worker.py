@@ -631,6 +631,9 @@ class Worker:
 
         This tight loop ensures high throughput when many messages are
         pending. It only exits when receive() returns no commands.
+
+        A small yield between iterations allows other workers to fairly
+        compete for messages when multiple workers are running.
         """
         assert self._stop_event is not None
 
@@ -653,6 +656,10 @@ class Worker:
                 task = asyncio.create_task(self._process_command(cmd, semaphore))
                 self._in_flight.add(task)
                 task.add_done_callback(self._in_flight.discard)
+
+            # Yield to allow other workers to compete for messages
+            # This prevents one worker from monopolizing all queue reads
+            await asyncio.sleep(0)
 
     async def _wait_for_slot(self) -> None:
         """Wait for at least one in-flight task to complete."""
