@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -753,8 +754,6 @@ class PostgresCommandRepository:
         Returns:
             True if command was found and updated, False otherwise
         """
-        import json
-
         details_json = json.dumps(details) if details else None
 
         if conn is not None:
