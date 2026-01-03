@@ -275,6 +275,95 @@ class AuditSearchResponse(BaseModel):
 
 
 # =============================================================================
+# Batch Schemas
+# =============================================================================
+
+
+class CreateBatchRequest(BaseModel):
+    """Request to create a batch of test commands."""
+
+    name: str = Field(default="Test Batch", description="Batch name")
+    command_count: int = Field(default=10, ge=1, le=10000)
+    behavior: CommandBehavior = Field(default_factory=CommandBehavior)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+
+
+class CreateBatchResponse(BaseModel):
+    """Response after creating a batch."""
+
+    batch_id: UUID
+    total_commands: int
+    message: str
+
+
+class BatchSummary(BaseModel):
+    """Batch summary for list view."""
+
+    batch_id: UUID
+    name: str | None
+    status: str
+    total_count: int
+    completed_count: int
+    failed_count: int
+    canceled_count: int
+    in_troubleshooting_count: int
+    progress_percent: float
+    created_at: datetime | None
+
+
+class BatchListResponse(BaseModel):
+    """Paginated list of batches."""
+
+    batches: list[BatchSummary]
+    total: int
+    limit: int
+    offset: int
+    error: str | None = None
+
+
+class BatchDetailResponse(BaseModel):
+    """Batch detail with full info."""
+
+    batch_id: UUID
+    name: str | None
+    status: str
+    total_count: int
+    completed_count: int
+    failed_count: int
+    canceled_count: int
+    in_troubleshooting_count: int
+    progress_percent: float
+    created_at: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    custom_data: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class BatchCommandResponse(BaseModel):
+    """Command in a batch."""
+
+    command_id: UUID
+    command_type: str
+    status: str
+    attempts: int
+    max_attempts: int
+    created_at: datetime | None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+
+
+class BatchCommandsListResponse(BaseModel):
+    """Paginated list of commands in a batch."""
+
+    commands: list[BatchCommandResponse]
+    total: int
+    limit: int
+    offset: int
+    error: str | None = None
+
+
+# =============================================================================
 # Config Schemas
 # =============================================================================
 

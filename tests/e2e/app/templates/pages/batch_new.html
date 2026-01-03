@@ -1,0 +1,177 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Create Batch - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <nav class="flex mb-2" aria-label="Breadcrumb">
+        <ol class="inline-flex items-center space-x-1 text-sm text-gray-500 dark:text-gray-400">
+            <li><a href="/batches" class="hover:text-blue-600 dark:hover:text-blue-400">Batches</a></li>
+            <li><span class="mx-2">/</span></li>
+            <li class="text-gray-700 dark:text-gray-300">Create New</li>
+        </ol>
+    </nav>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Create New Batch</h1>
+    <p class="text-gray-500 dark:text-gray-400">Create a batch of test commands with configurable behavior</p>
+</div>
+
+<!-- Batch Form -->
+<div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+    <form id="batch-form" class="space-y-6">
+        <!-- Batch Name -->
+        <div>
+            <label for="batch-name" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Batch Name</label>
+            <input type="text" id="batch-name" value="Test Batch" placeholder="e.g., Load Test Run 1" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+        </div>
+
+        <!-- Command Count -->
+        <div>
+            <label for="command-count" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Number of Commands</label>
+            <input type="number" id="command-count" min="1" max="10000" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Maximum 10,000 commands per batch</p>
+        </div>
+
+        <!-- Behavior Type -->
+        <div>
+            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Command Behavior</label>
+            <div class="space-y-2">
+                <div class="flex items-center">
+                    <input id="behavior-success" type="radio" name="behavior" value="success" checked class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600">
+                    <label for="behavior-success" class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">
+                        Success
+                        <span class="text-gray-500 dark:text-gray-400 font-normal">- Commands complete successfully</span>
+                    </label>
+                </div>
+                <div class="flex items-center">
+                    <input id="behavior-permanent" type="radio" name="behavior" value="fail_permanent" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600">
+                    <label for="behavior-permanent" class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">
+                        Fail Permanent
+                        <span class="text-gray-500 dark:text-gray-400 font-normal">- Commands fail immediately and move to TSQ</span>
+                    </label>
+                </div>
+                <div class="flex items-center">
+                    <input id="behavior-transient" type="radio" name="behavior" value="fail_transient_then_succeed" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600">
+                    <label for="behavior-transient" class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">
+                        Fail Transient Then Succeed
+                        <span class="text-gray-500 dark:text-gray-400 font-normal">- Commands fail a few times then succeed</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Transient Failures (shown conditionally) -->
+        <div id="transient-settings" class="hidden p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <label for="transient-failures" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Transient Failures Before Success</label>
+            <input type="number" id="transient-failures" min="1" max="10" value="2" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+        </div>
+
+        <!-- Execution Time -->
+        <div>
+            <label for="execution-time" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Execution Time (ms)</label>
+            <input type="number" id="execution-time" min="0" max="120000" value="100" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">How long each command handler takes to execute (simulated)</p>
+        </div>
+
+        <!-- Max Attempts -->
+        <div>
+            <label for="max-attempts" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Max Attempts</label>
+            <input type="number" id="max-attempts" min="1" max="10" value="3" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Maximum retry attempts before moving to TSQ</p>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="flex gap-3">
+            <button type="submit" id="create-btn" class="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+                Create Batch
+            </button>
+            <a href="/batches" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:ring-4 focus:ring-gray-300 dark:text-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600">
+                Cancel
+            </a>
+        </div>
+    </form>
+
+    <!-- Result Message -->
+    <div id="result-message" class="hidden mt-4 p-4 rounded-lg"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '/static/src/api.js';
+
+    const api = new ApiClient();
+    const transientSettings = document.getElementById('transient-settings');
+
+    // Show/hide transient settings based on behavior type
+    document.querySelectorAll('input[name="behavior"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            const showTransient = document.getElementById('behavior-transient').checked;
+            transientSettings.classList.toggle('hidden', !showTransient);
+        });
+    });
+
+    // Show result message
+    function showResult(success, message) {
+        const resultDiv = document.getElementById('result-message');
+        if (success) {
+            resultDiv.className = 'mt-4 p-4 rounded-lg bg-green-50 text-green-800 dark:bg-green-900 dark:text-green-300';
+        } else {
+            resultDiv.className = 'mt-4 p-4 rounded-lg bg-red-50 text-red-800 dark:bg-red-900 dark:text-red-300';
+        }
+        resultDiv.innerHTML = message;
+        resultDiv.classList.remove('hidden');
+    }
+
+    // Form submission
+    document.getElementById('batch-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const createBtn = document.getElementById('create-btn');
+        createBtn.disabled = true;
+        createBtn.textContent = 'Creating...';
+
+        const name = document.getElementById('batch-name').value.trim() || 'Test Batch';
+        const commandCount = parseInt(document.getElementById('command-count').value) || 10;
+        const behaviorType = document.querySelector('input[name="behavior"]:checked').value;
+        const executionTime = parseInt(document.getElementById('execution-time').value) || 0;
+        const maxAttempts = parseInt(document.getElementById('max-attempts').value) || 3;
+
+        // Build behavior object
+        const behavior = { type: behaviorType };
+        if (executionTime > 0) {
+            behavior.execution_time_ms = executionTime;
+        }
+        if (behaviorType === 'fail_transient_then_succeed') {
+            behavior.transient_failures = parseInt(document.getElementById('transient-failures').value) || 2;
+        }
+
+        const requestData = {
+            name,
+            command_count: commandCount,
+            behavior,
+            max_attempts: maxAttempts
+        };
+
+        try {
+            const result = await api.post('/batches', requestData);
+            if (result) {
+                showResult(true, `
+                    <div class="font-medium">Batch created successfully!</div>
+                    <div class="mt-2 text-sm">
+                        <div>Batch ID: <code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">${result.batch_id}</code></div>
+                        <div>Commands: <span class="font-medium">${result.total_commands}</span></div>
+                    </div>
+                    <div class="mt-3">
+                        <a href="/batches/${result.batch_id}" class="text-blue-600 hover:underline dark:text-blue-400">View Batch Details →</a>
+                    </div>
+                `);
+            }
+        } catch (err) {
+            showResult(false, `Error: ${err.message}`);
+        } finally {
+            createBtn.disabled = false;
+            createBtn.textContent = 'Create Batch';
+        }
+    });
+</script>
+{% endblock %}

@@ -47,3 +47,21 @@ async def audit(request: Request) -> HTMLResponse:
 async def settings(request: Request) -> HTMLResponse:
     """Settings page."""
     return templates.TemplateResponse(request, "pages/settings.html")
+
+
+@web_router.get("/batches", response_class=HTMLResponse)
+async def batches(request: Request) -> HTMLResponse:
+    """Batches list page."""
+    return templates.TemplateResponse(request, "pages/batches.html")
+
+
+@web_router.get("/batches/new", response_class=HTMLResponse)
+async def batch_new(request: Request) -> HTMLResponse:
+    """Create batch page."""
+    return templates.TemplateResponse(request, "pages/batch_new.html")
+
+
+@web_router.get("/batches/{batch_id}", response_class=HTMLResponse)
+async def batch_detail(request: Request, batch_id: str) -> HTMLResponse:
+    """Batch detail page."""
+    return templates.TemplateResponse(request, "pages/batch_detail.html", {"batch_id": batch_id})
