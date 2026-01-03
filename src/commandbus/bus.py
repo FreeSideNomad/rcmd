@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Default chunk size for batch operations
-DEFAULT_BATCH_CHUNK_SIZE = 10_000
+DEFAULT_BATCH_CHUNK_SIZE = 1_000
 
 
 def _make_queue_name(domain: str, suffix: str = "commands") -> str:
