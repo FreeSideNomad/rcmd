@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dotenv import load_dotenv
+from psycopg.types.json import Json
 
 load_dotenv()
 
@@ -104,7 +105,7 @@ class ConfigStore:
                     VALUES ('worker', %s, NOW())
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
-                (self._worker_config.to_dict(),),
+                (Json(self._worker_config.to_dict()),),
             )
             await cur.execute(
                 """
@@ -112,7 +113,7 @@ class ConfigStore:
                     VALUES ('retry', %s, NOW())
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
-                (self._retry_config.to_dict(),),
+                (Json(self._retry_config.to_dict()),),
             )
 
     @property
