@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import os
 from uuid import uuid4
 
 import pytest
@@ -23,33 +22,7 @@ from commandbus import (
 from commandbus.repositories.audit import AuditEventType
 
 
-@pytest.fixture
-def database_url() -> str:
-    """Get database URL from environment."""
-    return os.environ.get(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/commandbus"
-    )
-
-
-@pytest.fixture
-async def pool(database_url: str) -> AsyncConnectionPool:
-    """Create a connection pool for testing."""
-    async with AsyncConnectionPool(conninfo=database_url, min_size=1, max_size=5, open=False) as p:
-        yield p
-
-
-@pytest.fixture
-async def command_bus(pool: AsyncConnectionPool) -> CommandBus:
-    """Create a CommandBus with real database connection."""
-    return CommandBus(pool)
-
-
-@pytest.fixture
-def handler_registry() -> HandlerRegistry:
-    """Create handler registry."""
-    return HandlerRegistry()
-
-
+@pytest.mark.integration
 class TestTransientRetryFlow:
     """Integration tests for transient error retry flow."""
 
@@ -59,6 +32,7 @@ class TestTransientRetryFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that transient error updates last_error fields in metadata."""
         command_id = uuid4()
@@ -108,6 +82,7 @@ class TestTransientRetryFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that transient error records FAILED audit event."""
         command_id = uuid4()
@@ -141,15 +116,15 @@ class TestTransientRetryFlow:
         events = await audit_logger.get_events(command_id, domain="payments")
 
         # Should have SENT, RECEIVED, and FAILED events
-        event_types = [e["event_type"] for e in events]
+        event_types = [e.event_type for e in events]
         assert AuditEventType.SENT.value in event_types
         assert AuditEventType.RECEIVED.value in event_types
         assert AuditEventType.FAILED.value in event_types
 
         # Check FAILED event details
-        failed_event = next(e for e in events if e["event_type"] == AuditEventType.FAILED.value)
-        assert failed_event["details"]["error_type"] == "TRANSIENT"
-        assert failed_event["details"]["error_code"] == "RATE_LIMIT"
+        failed_event = next(e for e in events if e.event_type == AuditEventType.FAILED.value)
+        assert failed_event.details["error_type"] == "TRANSIENT"
+        assert failed_event.details["error_code"] == "RATE_LIMIT"
 
     @pytest.mark.asyncio
     async def test_message_reappears_after_visibility_timeout(
@@ -157,6 +132,7 @@ class TestTransientRetryFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that message reappears after visibility timeout for retry."""
         command_id = uuid4()
@@ -211,6 +187,7 @@ class TestTransientRetryFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that unknown exceptions are treated as transient errors."""
         command_id = uuid4()
@@ -249,6 +226,7 @@ class TestTransientRetryFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that backoff schedule is correctly applied to retries."""
         command_id = uuid4()
@@ -301,6 +279,7 @@ class TestTransientRetryFlow:
         pool: AsyncConnectionPool,
         command_bus: CommandBus,
         handler_registry: HandlerRegistry,
+        cleanup_payments_domain: None,
     ) -> None:
         """Test that worker.run() properly handles transient errors."""
         command_id = uuid4()
@@ -339,6 +318,9 @@ class TestTransientRetryFlow:
         try:
             # Wait for successful processing or timeout
             await asyncio.wait_for(processed.wait(), timeout=5.0)
+
+            # Give worker time to finish processing and update status
+            await asyncio.sleep(0.5)
 
             # Should have seen at least 2 attempts (first failed, second succeeded)
             assert len(attempts_seen) >= 2
