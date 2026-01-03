@@ -95,9 +95,10 @@ async def cleanup_payments_domain(pool: AsyncConnectionPool) -> AsyncGenerator[N
         await conn.execute("SELECT pgmq.create('payments__replies')")
         await conn.execute("SELECT pgmq.create('reports__replies')")
 
-        # Clean up before test
+        # Clean up before test (commands must be deleted before batches due to FK)
         await conn.execute("DELETE FROM command_bus_audit WHERE domain = 'payments'")
         await conn.execute("DELETE FROM command_bus_command WHERE domain = 'payments'")
+        await conn.execute("DELETE FROM command_bus_batch WHERE domain = 'payments'")
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
         await conn.execute("DELETE FROM pgmq.q_payments__replies")
         await conn.execute("DELETE FROM pgmq.q_reports__replies")
@@ -108,6 +109,7 @@ async def cleanup_payments_domain(pool: AsyncConnectionPool) -> AsyncGenerator[N
     async with pool.connection() as conn:
         await conn.execute("DELETE FROM command_bus_audit WHERE domain = 'payments'")
         await conn.execute("DELETE FROM command_bus_command WHERE domain = 'payments'")
+        await conn.execute("DELETE FROM command_bus_batch WHERE domain = 'payments'")
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
         await conn.execute("DELETE FROM pgmq.q_payments__replies")
         await conn.execute("DELETE FROM pgmq.q_reports__replies")

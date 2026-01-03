@@ -10,14 +10,19 @@ from uuid import UUID, uuid4
 from commandbus.exceptions import DuplicateCommandError
 from commandbus.models import (
     AuditEvent,
+    BatchCommand,
+    BatchMetadata,
     BatchSendResult,
+    BatchStatus,
     CommandMetadata,
     CommandStatus,
+    CreateBatchResult,
     SendRequest,
     SendResult,
 )
 from commandbus.pgmq.client import PgmqClient
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
+from commandbus.repositories.batch import PostgresBatchRepository
 from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
@@ -91,6 +96,7 @@ class CommandBus:
         self._default_max_attempts = default_max_attempts
         self._pgmq = PgmqClient(pool)
         self._command_repo = PostgresCommandRepository(pool)
+        self._batch_repo = PostgresBatchRepository(pool)
         self._audit_logger = PostgresAuditLogger(pool)
 
     async def send(
@@ -485,3 +491,191 @@ class CommandBus:
             limit=limit,
             offset=offset,
         )
+
+    async def create_batch(
+        self,
+        domain: str,
+        commands: list[BatchCommand],
+        *,
+        batch_id: UUID | None = None,
+        name: str | None = None,
+        custom_data: dict[str, Any] | None = None,
+    ) -> CreateBatchResult:
+        """Create a batch containing multiple commands atomically.
+
+        All commands are created in a single transaction - either all succeed or none.
+        The batch is closed immediately after creation (no commands can be added later).
+
+        Args:
+            domain: The domain for this batch (all commands inherit this)
+            commands: List of BatchCommand objects to include in the batch
+            batch_id: Optional batch ID (auto-generated if not provided)
+            name: Optional human-readable name for the batch
+            custom_data: Optional custom metadata
+
+        Returns:
+            CreateBatchResult with batch_id and individual command results
+
+        Raises:
+            ValueError: If commands list is empty
+            DuplicateCommandError: If any command_id already exists
+
+        Example:
+            result = await bus.create_batch(
+                domain="payments",
+                commands=[
+                    BatchCommand(
+                        command_type="DebitAccount",
+                        command_id=uuid4(),
+                        data={"account_id": "123", "amount": 100},
+                    ),
+                    BatchCommand(
+                        command_type="DebitAccount",
+                        command_id=uuid4(),
+                        data={"account_id": "456", "amount": 200},
+                    ),
+                ],
+                name="Monthly billing run",
+            )
+        """
+        if not commands:
+            raise ValueError("Batch must contain at least one command")
+
+        # Check for duplicate command_ids within the batch
+        command_ids = [cmd.command_id for cmd in commands]
+        if len(command_ids) != len(set(command_ids)):
+            # Find the duplicate
+            seen: set[UUID] = set()
+            for cmd_id in command_ids:
+                if cmd_id in seen:
+                    raise DuplicateCommandError(domain, str(cmd_id))
+                seen.add(cmd_id)
+
+        effective_batch_id = batch_id or uuid4()
+        queue_name = _make_queue_name(domain)
+        now = datetime.now(UTC)
+
+        command_results: list[SendResult] = []
+
+        async with self._pool.connection() as conn, conn.transaction():
+            # Check for duplicate command_ids in database
+            existing = await self._command_repo.exists_batch(domain, command_ids, conn)
+            if existing:
+                first_dup = next(cmd for cmd in commands if cmd.command_id in existing)
+                raise DuplicateCommandError(domain, str(first_dup.command_id))
+
+            # Create batch metadata
+            batch_metadata = BatchMetadata(
+                domain=domain,
+                batch_id=effective_batch_id,
+                name=name,
+                custom_data=custom_data,
+                status=BatchStatus.PENDING,
+                total_count=len(commands),
+                completed_count=0,
+                failed_count=0,
+                canceled_count=0,
+                in_troubleshooting_count=0,
+                created_at=now,
+                started_at=None,
+                completed_at=None,
+            )
+            await self._batch_repo.save(batch_metadata, conn)
+
+            # Build messages for PGMQ
+            messages: list[dict[str, Any]] = []
+            for cmd in commands:
+                effective_correlation_id = (
+                    cmd.correlation_id if cmd.correlation_id is not None else uuid4()
+                )
+                message = self._build_message(
+                    domain=domain,
+                    command_type=cmd.command_type,
+                    command_id=cmd.command_id,
+                    data=cmd.data,
+                    correlation_id=effective_correlation_id,
+                    reply_to=cmd.reply_to,
+                )
+                messages.append(message)
+
+            # Batch send to PGMQ
+            msg_ids = await self._pgmq.send_batch(queue_name, messages, conn=conn)
+
+            # Build command metadata and audit events
+            metadata_list: list[CommandMetadata] = []
+            audit_events: list[tuple[str, UUID, AuditEventType, dict[str, Any] | None]] = []
+
+            for i, cmd in enumerate(commands):
+                msg_id = msg_ids[i]
+                effective_max_attempts = cmd.max_attempts or self._default_max_attempts
+                effective_correlation_id = (
+                    cmd.correlation_id if cmd.correlation_id is not None else uuid4()
+                )
+
+                metadata = CommandMetadata(
+                    domain=domain,
+                    command_id=cmd.command_id,
+                    command_type=cmd.command_type,
+                    status=CommandStatus.PENDING,
+                    attempts=0,
+                    max_attempts=effective_max_attempts,
+                    msg_id=msg_id,
+                    correlation_id=effective_correlation_id,
+                    reply_to=cmd.reply_to,
+                    created_at=now,
+                    updated_at=now,
+                    batch_id=effective_batch_id,
+                )
+                metadata_list.append(metadata)
+
+                audit_events.append(
+                    (
+                        domain,
+                        cmd.command_id,
+                        AuditEventType.SENT,
+                        {
+                            "command_type": cmd.command_type,
+                            "correlation_id": str(effective_correlation_id),
+                            "reply_to": cmd.reply_to,
+                            "msg_id": msg_id,
+                            "batch_id": str(effective_batch_id),
+                        },
+                    )
+                )
+
+                command_results.append(SendResult(command_id=cmd.command_id, msg_id=msg_id))
+
+            # Batch save command metadata
+            await self._command_repo.save_batch(metadata_list, queue_name, conn)
+
+            # Batch log audit events
+            await self._audit_logger.log_batch(audit_events, conn)
+
+            # Send NOTIFY
+            await self._pgmq.notify(queue_name, conn)
+
+        logger.info(
+            f"Created batch {effective_batch_id} in domain {domain} with {len(commands)} commands"
+        )
+
+        return CreateBatchResult(
+            batch_id=effective_batch_id,
+            command_results=command_results,
+            total_commands=len(commands),
+        )
+
+    async def get_batch(
+        self,
+        domain: str,
+        batch_id: UUID,
+    ) -> BatchMetadata | None:
+        """Get batch metadata by domain and batch_id.
+
+        Args:
+            domain: The domain
+            batch_id: The batch ID
+
+        Returns:
+            BatchMetadata if found, None otherwise
+        """
+        return await self._batch_repo.get(domain, batch_id)

@@ -114,8 +114,8 @@ class PostgresCommandRepository:
             INSERT INTO command_bus_command (
                 domain, queue_name, msg_id, command_id, command_type,
                 status, attempts, max_attempts, correlation_id, reply_queue,
-                created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                created_at, updated_at, batch_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 metadata.domain,
@@ -130,6 +130,7 @@ class PostgresCommandRepository:
                 metadata.reply_to or "",
                 metadata.created_at,
                 metadata.updated_at,
+                metadata.batch_id,
             ),
         )
         logger.debug(f"Saved command metadata: {metadata.domain}.{metadata.command_id}")
@@ -158,8 +159,8 @@ class PostgresCommandRepository:
                 INSERT INTO command_bus_command (
                     domain, queue_name, msg_id, command_id, command_type,
                     status, attempts, max_attempts, correlation_id, reply_queue,
-                    created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    created_at, updated_at, batch_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
@@ -175,6 +176,7 @@ class PostgresCommandRepository:
                         m.reply_to or "",
                         m.created_at,
                         m.updated_at,
+                        m.batch_id,
                     )
                     for m in metadata_list
                 ],
@@ -246,7 +248,7 @@ class PostgresCommandRepository:
                 SELECT domain, command_id, command_type, status, attempts,
                        max_attempts, msg_id, correlation_id, reply_queue,
                        last_error_type, last_error_code, last_error_msg,
-                       created_at, updated_at
+                       created_at, updated_at, batch_id
                 FROM command_bus_command
                 WHERE domain = %s AND command_id = %s
                 """,
@@ -272,6 +274,7 @@ class PostgresCommandRepository:
             last_error_msg=row[11],
             created_at=row[12],
             updated_at=row[13],
+            batch_id=row[14],
         )
 
     async def update_status(
@@ -449,7 +452,7 @@ class PostgresCommandRepository:
                 RETURNING domain, command_id, command_type, status, attempts,
                           max_attempts, msg_id, correlation_id, reply_queue,
                           last_error_type, last_error_code, last_error_msg,
-                          created_at, updated_at
+                          created_at, updated_at, batch_id
                 """,
                 (new_status.value, domain, command_id),
             )
@@ -473,6 +476,7 @@ class PostgresCommandRepository:
             last_error_msg=row[11],
             created_at=row[12],
             updated_at=row[13],
+            batch_id=row[14],
         )
         # attempts is already incremented in the UPDATE
         return metadata, metadata.attempts
@@ -943,7 +947,7 @@ class PostgresCommandRepository:
                 SELECT domain, command_id, command_type, status, attempts,
                        max_attempts, msg_id, correlation_id, reply_queue,
                        last_error_type, last_error_code, last_error_msg,
-                       created_at, updated_at
+                       created_at, updated_at, batch_id
                 FROM command_bus_command
                 WHERE {where_clause}
                 ORDER BY created_at DESC
@@ -969,6 +973,7 @@ class PostgresCommandRepository:
                 last_error_msg=row[11],
                 created_at=row[12],
                 updated_at=row[13],
+                batch_id=row[14],
             )
             for row in rows
         ]

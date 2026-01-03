@@ -98,6 +98,7 @@ class TestPostgresCommandRepositoryGet:
                 None,  # last_error_msg
                 now,  # created_at
                 now,  # updated_at
+                None,  # batch_id
             )
         )
 
@@ -487,6 +488,7 @@ class TestPostgresCommandRepositoryQuery:
                     None,  # last_error_msg
                     now,  # created_at
                     now,  # updated_at
+                    None,  # batch_id
                 ),
             ]
         )
