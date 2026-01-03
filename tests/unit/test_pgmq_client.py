@@ -98,7 +98,11 @@ class TestPgmqClientSend:
         result = await client.send("test_queue", {"key": "value"})
 
         assert result == 42
-        mock_pool._mock_cursor.execute.assert_called_once()
+        # Should call both pgmq.send and NOTIFY
+        assert mock_pool._mock_cursor.execute.call_count == 2
+        calls = mock_pool._mock_cursor.execute.call_args_list
+        assert "pgmq.send" in str(calls[0])
+        assert "NOTIFY pgmq_notify_test_queue" in str(calls[1])
 
     @pytest.mark.asyncio
     async def test_send_with_external_conn(self, client: PgmqClient) -> None:
@@ -123,8 +127,9 @@ class TestPgmqClientSend:
         """Test sending a message with delay."""
         await client.send("test_queue", {"key": "value"}, delay=10)
 
-        call_args = mock_pool._mock_cursor.execute.call_args
-        assert call_args[0][1][2] == 10  # delay parameter
+        # First call is pgmq.send with delay, second is NOTIFY
+        calls = mock_pool._mock_cursor.execute.call_args_list
+        assert calls[0][0][1][2] == 10  # delay parameter in first call
 
     @pytest.mark.asyncio
     async def test_send_failure_raises_error(self, client: PgmqClient) -> None:

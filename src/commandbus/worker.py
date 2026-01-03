@@ -17,7 +17,7 @@ from commandbus.models import (
     HandlerContext,
     ReplyOutcome,
 )
-from commandbus.pgmq.client import PgmqClient
+from commandbus.pgmq.client import PGMQ_NOTIFY_CHANNEL, PgmqClient
 from commandbus.policies import DEFAULT_RETRY_POLICY, RetryPolicy
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
@@ -28,9 +28,6 @@ if TYPE_CHECKING:
     from commandbus.handler import HandlerRegistry
 
 logger = logging.getLogger(__name__)
-
-# Channel name for PGMQ notifications
-PGMQ_NOTIFY_CHANNEL = "pgmq_notify"
 
 
 def _make_queue_name(domain: str, suffix: str = "commands") -> str:
