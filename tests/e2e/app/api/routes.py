@@ -580,7 +580,7 @@ async def list_tsq_commands(
     limit = min(limit, 100)
 
     try:
-        commands = await tsq.list_commands(E2E_DOMAIN, limit=limit, offset=offset)
+        commands = await tsq.list_troubleshooting(E2E_DOMAIN, limit=limit, offset=offset)
 
         result = [
             TSQCommandResponse(
