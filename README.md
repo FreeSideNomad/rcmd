@@ -1,4 +1,4 @@
-# Command Bus
+# rcmd - Reliable Commands
 
 A Python library providing Command Bus abstraction over PostgreSQL + PGMQ.
 
