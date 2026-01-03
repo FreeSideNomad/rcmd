@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from psycopg.types.json import Json
+
 
 @dataclass
 class TestCommand:
@@ -69,7 +71,7 @@ class TestCommandRepository:
                 RETURNING id, command_id, payload, behavior,
                           created_at, processed_at, attempts, result
                 """,
-                (command_id, payload or {}, behavior),
+                (command_id, Json(payload or {}), Json(behavior)),
             )
             row = await cur.fetchone()
             return TestCommand.from_row(row)
@@ -113,7 +115,7 @@ class TestCommandRepository:
                     SET processed_at = NOW(), result = %s
                     WHERE command_id = %s
                     """,
-                (result, command_id),
+                (Json(result) if result else None, command_id),
             )
 
     async def update_behavior(self, command_id: UUID, behavior: dict[str, Any]) -> None:
@@ -125,7 +127,7 @@ class TestCommandRepository:
                     SET behavior = %s
                     WHERE command_id = %s
                     """,
-                (behavior, command_id),
+                (Json(behavior), command_id),
             )
 
     async def list_all(self, limit: int = 100, offset: int = 0) -> list[TestCommand]:
