@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException
+from psycopg.types.json import Json
 
 from ..dependencies import TSQ, Bus, Pool
 from ..models import TestCommandRepository
@@ -564,7 +565,7 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
                         VALUES ('worker', %s, NOW())
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
-                    (request.worker.model_dump(),),
+                    (Json(request.worker.model_dump()),),
                 )
             if request.retry:
                 await cur.execute(
@@ -573,7 +574,7 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
                         VALUES ('retry', %s, NOW())
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
-                    (request.retry.model_dump(),),
+                    (Json(request.retry.model_dump()),),
                 )
 
         return ConfigUpdateResponse(status="ok", config=request)
