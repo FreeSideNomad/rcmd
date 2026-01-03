@@ -11,6 +11,23 @@ from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from .models import TestCommandRepository
 
 
+class NoOpHandlers:
+    """No-operation handlers for performance benchmarking.
+
+    These handlers do nothing except return immediately, allowing measurement
+    of raw command bus throughput without handler overhead.
+    """
+
+    def __init__(self, pool: AsyncConnectionPool) -> None:
+        """Initialize with database pool dependency (unused but required for consistency)."""
+        self._pool = pool
+
+    @handler(domain="e2e", command_type="NoOp")
+    async def handle_no_op(self, cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
+        """Handle NoOp command - immediately returns success with no processing."""
+        return {"status": "success", "no_op": True}
+
+
 class TestCommandHandlers:
     """E2E test command handlers using @handler decorator.
 

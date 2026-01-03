@@ -93,13 +93,16 @@ async def create_bulk_commands(
 
     Uses batch operations for efficient bulk creation:
     - bus.send_batch() for PGMQ messages and command metadata
-    - repo.create_batch() for test command records
+    - repo.create_batch() for test command records (skipped for no_op)
     """
     start_time = time.time()
 
     count = request.count  # No artificial limit - let the bus handle chunking
     behaviors_assigned: dict[str, int] = {}
     repo = TestCommandRepository(pool)
+
+    # Check if this is a no_op bulk request (performance testing)
+    is_no_op = request.behavior and request.behavior.type == "no_op"
 
     # Build all commands first
     send_requests: list[SendRequest] = []
@@ -108,33 +111,46 @@ async def create_bulk_commands(
     for _ in range(count):
         cmd_id = uuid4()
 
-        if request.behavior_distribution:
-            behavior = _select_behavior_from_distribution(
-                request.behavior_distribution, request.execution_time_ms
+        if is_no_op:
+            # NoOp commands don't need behavior configuration or test_command records
+            send_requests.append(
+                SendRequest(
+                    domain=E2E_DOMAIN,
+                    command_type="NoOp",
+                    command_id=cmd_id,
+                    data={},
+                    max_attempts=request.max_attempts,
+                )
             )
-            btype = behavior["type"]
-            behaviors_assigned[btype] = behaviors_assigned.get(btype, 0) + 1
-        elif request.behavior:
-            behavior = request.behavior.model_dump()
         else:
-            behavior = {"type": "success", "execution_time_ms": request.execution_time_ms}
+            if request.behavior_distribution:
+                behavior = _select_behavior_from_distribution(
+                    request.behavior_distribution, request.execution_time_ms
+                )
+                btype = behavior["type"]
+                behaviors_assigned[btype] = behaviors_assigned.get(btype, 0) + 1
+            elif request.behavior:
+                behavior = request.behavior.model_dump()
+            else:
+                behavior = {"type": "success", "execution_time_ms": request.execution_time_ms}
 
-        # Prepare test command record
-        test_commands.append((cmd_id, behavior, {}))
+            # Prepare test command record
+            test_commands.append((cmd_id, behavior, {}))
 
-        # Prepare send request
-        send_requests.append(
-            SendRequest(
-                domain=E2E_DOMAIN,
-                command_type="TestCommand",
-                command_id=cmd_id,
-                data={"behavior": behavior},
-                max_attempts=request.max_attempts,
+            # Prepare send request
+            send_requests.append(
+                SendRequest(
+                    domain=E2E_DOMAIN,
+                    command_type="TestCommand",
+                    command_id=cmd_id,
+                    data={"behavior": behavior},
+                    max_attempts=request.max_attempts,
+                )
             )
-        )
 
-    # Batch insert test commands
-    await repo.create_batch(test_commands)
+    # Batch insert test commands (skip for no_op)
+    if test_commands:
+        await repo.create_batch(test_commands)
 
     # Batch send to command bus
     batch_result = await bus.send_batch(send_requests)
