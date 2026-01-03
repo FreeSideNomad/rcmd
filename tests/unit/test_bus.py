@@ -7,9 +7,9 @@ from uuid import uuid4
 
 import pytest
 
-from commandbus.bus import CommandBus, SendResult, _make_queue_name
+from commandbus.bus import CommandBus, _chunked, _make_queue_name
 from commandbus.exceptions import DuplicateCommandError
-from commandbus.models import AuditEvent, CommandStatus
+from commandbus.models import AuditEvent, BatchSendResult, CommandStatus, SendRequest, SendResult
 from commandbus.repositories.audit import AuditEventType
 
 
@@ -756,3 +756,439 @@ class TestCommandBusQueryCommands:
             assert call_kwargs["domain"] == "payments"
             assert call_kwargs["command_type"] == "DebitAccount"
             assert call_kwargs["limit"] == 50
+
+
+class TestChunked:
+    """Tests for _chunked helper function."""
+
+    def test_chunked_exact_division(self) -> None:
+        """Test chunking when items divide evenly."""
+        items = [1, 2, 3, 4, 5, 6]
+        result = _chunked(items, 2)
+        assert result == [[1, 2], [3, 4], [5, 6]]
+
+    def test_chunked_with_remainder(self) -> None:
+        """Test chunking when items don't divide evenly."""
+        items = [1, 2, 3, 4, 5]
+        result = _chunked(items, 2)
+        assert result == [[1, 2], [3, 4], [5]]
+
+    def test_chunked_single_chunk(self) -> None:
+        """Test chunking when chunk size >= list size."""
+        items = [1, 2, 3]
+        result = _chunked(items, 10)
+        assert result == [[1, 2, 3]]
+
+    def test_chunked_empty_list(self) -> None:
+        """Test chunking an empty list."""
+        items: list[int] = []
+        result = _chunked(items, 5)
+        assert result == []
+
+    def test_chunked_size_one(self) -> None:
+        """Test chunking with size 1."""
+        items = [1, 2, 3]
+        result = _chunked(items, 1)
+        assert result == [[1], [2], [3]]
+
+
+class TestSendRequest:
+    """Tests for SendRequest dataclass."""
+
+    def test_send_request_creation(self) -> None:
+        """Test creating a SendRequest."""
+        cmd_id = uuid4()
+        req = SendRequest(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=cmd_id,
+            data={"amount": 100},
+        )
+
+        assert req.domain == "payments"
+        assert req.command_type == "DebitAccount"
+        assert req.command_id == cmd_id
+        assert req.data == {"amount": 100}
+        assert req.correlation_id is None
+        assert req.reply_to is None
+        assert req.max_attempts is None
+
+    def test_send_request_with_all_fields(self) -> None:
+        """Test creating a SendRequest with all optional fields."""
+        cmd_id = uuid4()
+        corr_id = uuid4()
+        req = SendRequest(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=cmd_id,
+            data={"amount": 100},
+            correlation_id=corr_id,
+            reply_to="payments__replies",
+            max_attempts=5,
+        )
+
+        assert req.correlation_id == corr_id
+        assert req.reply_to == "payments__replies"
+        assert req.max_attempts == 5
+
+
+class TestBatchSendResult:
+    """Tests for BatchSendResult dataclass."""
+
+    def test_batch_send_result_creation(self) -> None:
+        """Test creating a BatchSendResult."""
+        cmd_id1 = uuid4()
+        cmd_id2 = uuid4()
+        results = [
+            SendResult(command_id=cmd_id1, msg_id=1),
+            SendResult(command_id=cmd_id2, msg_id=2),
+        ]
+
+        batch_result = BatchSendResult(
+            results=results,
+            chunks_processed=1,
+            total_commands=2,
+        )
+
+        assert len(batch_result.results) == 2
+        assert batch_result.chunks_processed == 1
+        assert batch_result.total_commands == 2
+
+
+class TestCommandBusSendBatch:
+    """Tests for CommandBus.send_batch() method."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with proper async context managers."""
+        pool = MagicMock()
+        conn = MagicMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield None
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+
+        return pool
+
+    @pytest.fixture
+    def command_bus(self, mock_pool: MagicMock) -> CommandBus:
+        """Create a CommandBus with mocked dependencies."""
+        return CommandBus(mock_pool, default_max_attempts=3)
+
+    @pytest.mark.asyncio
+    async def test_send_batch_empty_list(self, command_bus: CommandBus) -> None:
+        """Test send_batch with empty list returns empty result."""
+        result = await command_bus.send_batch([])
+
+        assert result.results == []
+        assert result.chunks_processed == 0
+        assert result.total_commands == 0
+
+    @pytest.mark.asyncio
+    async def test_send_batch_single_request(self, command_bus: CommandBus) -> None:
+        """Test send_batch with a single request."""
+        command_id = uuid4()
+        request = SendRequest(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=command_id,
+            data={"amount": 100},
+        )
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(
+                command_bus._command_repo, "save_batch", new_callable=AsyncMock
+            ) as mock_save_batch,
+            patch.object(
+                command_bus._audit_logger, "log_batch", new_callable=AsyncMock
+            ) as mock_audit_batch,
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock) as mock_notify,
+        ):
+            mock_exists_batch.return_value = set()
+            mock_pgmq_send_batch.return_value = [42]
+
+            result = await command_bus.send_batch([request])
+
+            assert result.total_commands == 1
+            assert result.chunks_processed == 1
+            assert result.results[0].command_id == command_id
+            assert result.results[0].msg_id == 42
+
+            mock_exists_batch.assert_called_once()
+            mock_pgmq_send_batch.assert_called_once()
+            mock_save_batch.assert_called_once()
+            mock_audit_batch.assert_called_once()
+            mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_batch_multiple_requests_same_domain(self, command_bus: CommandBus) -> None:
+        """Test send_batch with multiple requests in the same domain."""
+        requests = [
+            SendRequest(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=uuid4(),
+                data={"amount": i * 100},
+            )
+            for i in range(3)
+        ]
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(command_bus._command_repo, "save_batch", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists_batch.return_value = set()
+            mock_pgmq_send_batch.return_value = [1, 2, 3]
+
+            result = await command_bus.send_batch(requests)
+
+            assert result.total_commands == 3
+            assert result.chunks_processed == 1
+            assert len(result.results) == 3
+
+    @pytest.mark.asyncio
+    async def test_send_batch_multiple_domains(self, command_bus: CommandBus) -> None:
+        """Test send_batch with requests across different domains."""
+        requests = [
+            SendRequest(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=uuid4(),
+                data={"amount": 100},
+            ),
+            SendRequest(
+                domain="notifications",
+                command_type="SendEmail",
+                command_id=uuid4(),
+                data={"email": "test@example.com"},
+            ),
+        ]
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(command_bus._command_repo, "save_batch", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock) as mock_notify,
+        ):
+            mock_exists_batch.return_value = set()
+            mock_pgmq_send_batch.return_value = [1]
+
+            result = await command_bus.send_batch(requests)
+
+            assert result.total_commands == 2
+            # NOTIFY should be called once per domain
+            assert mock_notify.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_send_batch_duplicate_raises_error(self, command_bus: CommandBus) -> None:
+        """Test send_batch raises DuplicateCommandError for existing command."""
+        command_id = uuid4()
+        requests = [
+            SendRequest(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=command_id,
+                data={"amount": 100},
+            ),
+        ]
+
+        with patch.object(
+            command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+        ) as mock_exists_batch:
+            mock_exists_batch.return_value = {command_id}
+
+            with pytest.raises(DuplicateCommandError) as exc_info:
+                await command_bus.send_batch(requests)
+
+            assert exc_info.value.domain == "payments"
+            assert str(command_id) in exc_info.value.command_id
+
+    @pytest.mark.asyncio
+    async def test_send_batch_with_custom_chunk_size(self, command_bus: CommandBus) -> None:
+        """Test send_batch with custom chunk size processes in multiple chunks."""
+        requests = [
+            SendRequest(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=uuid4(),
+                data={"amount": i * 100},
+            )
+            for i in range(5)
+        ]
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(command_bus._command_repo, "save_batch", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists_batch.return_value = set()
+            # Return different msg_ids for each chunk
+            mock_pgmq_send_batch.side_effect = [[1, 2], [3, 4], [5]]
+
+            result = await command_bus.send_batch(requests, chunk_size=2)
+
+            assert result.total_commands == 5
+            assert result.chunks_processed == 3
+            # exists_batch called once per chunk
+            assert mock_exists_batch.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_send_batch_uses_default_max_attempts(self, command_bus: CommandBus) -> None:
+        """Test that default max_attempts is used when not specified."""
+        request = SendRequest(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=uuid4(),
+            data={"amount": 100},
+        )
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(
+                command_bus._command_repo, "save_batch", new_callable=AsyncMock
+            ) as mock_save_batch,
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists_batch.return_value = set()
+            mock_pgmq_send_batch.return_value = [42]
+
+            await command_bus.send_batch([request])
+
+            # Check metadata in save_batch call
+            save_call = mock_save_batch.call_args
+            metadata_list = save_call[0][0]
+            assert metadata_list[0].max_attempts == 3  # default
+
+    @pytest.mark.asyncio
+    async def test_send_batch_uses_custom_max_attempts(self, command_bus: CommandBus) -> None:
+        """Test that custom max_attempts is used when specified."""
+        request = SendRequest(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=uuid4(),
+            data={"amount": 100},
+            max_attempts=7,
+        )
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(
+                command_bus._command_repo, "save_batch", new_callable=AsyncMock
+            ) as mock_save_batch,
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists_batch.return_value = set()
+            mock_pgmq_send_batch.return_value = [42]
+
+            await command_bus.send_batch([request])
+
+            save_call = mock_save_batch.call_args
+            metadata_list = save_call[0][0]
+            assert metadata_list[0].max_attempts == 7
+
+    @pytest.mark.asyncio
+    async def test_send_batch_generates_correlation_id(self, command_bus: CommandBus) -> None:
+        """Test that correlation_id is auto-generated when not provided."""
+        request = SendRequest(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=uuid4(),
+            data={"amount": 100},
+        )
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(
+                command_bus._command_repo, "save_batch", new_callable=AsyncMock
+            ) as mock_save_batch,
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists_batch.return_value = set()
+            mock_pgmq_send_batch.return_value = [42]
+
+            await command_bus.send_batch([request])
+
+            save_call = mock_save_batch.call_args
+            metadata_list = save_call[0][0]
+            assert metadata_list[0].correlation_id is not None
+
+    @pytest.mark.asyncio
+    async def test_send_batch_stores_pending_status(self, command_bus: CommandBus) -> None:
+        """Test that commands are stored with PENDING status."""
+        request = SendRequest(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=uuid4(),
+            data={"amount": 100},
+        )
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists_batch,
+            patch.object(
+                command_bus._pgmq, "send_batch", new_callable=AsyncMock
+            ) as mock_pgmq_send_batch,
+            patch.object(
+                command_bus._command_repo, "save_batch", new_callable=AsyncMock
+            ) as mock_save_batch,
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists_batch.return_value = set()
+            mock_pgmq_send_batch.return_value = [42]
+
+            await command_bus.send_batch([request])
+
+            save_call = mock_save_batch.call_args
+            metadata_list = save_call[0][0]
+            assert metadata_list[0].status == CommandStatus.PENDING

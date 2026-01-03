@@ -204,3 +204,54 @@ class AuditEvent:
     event_type: str
     timestamp: datetime
     details: dict[str, Any] | None = None
+
+
+@dataclass
+class SendRequest:
+    """Request to send a single command (used in batch operations).
+
+    Attributes:
+        domain: The domain to send to (e.g., "payments")
+        command_type: The type of command (e.g., "DebitAccount")
+        command_id: Unique identifier for this command
+        data: The command payload
+        correlation_id: Optional correlation ID for tracing
+        reply_to: Optional reply queue name
+        max_attempts: Max retry attempts (defaults to bus default)
+    """
+
+    domain: str
+    command_type: str
+    command_id: UUID
+    data: dict[str, Any]
+    correlation_id: UUID | None = None
+    reply_to: str | None = None
+    max_attempts: int | None = None
+
+
+@dataclass
+class SendResult:
+    """Result of sending a command.
+
+    Attributes:
+        command_id: The unique ID of the sent command
+        msg_id: The PGMQ message ID assigned
+    """
+
+    command_id: UUID
+    msg_id: int
+
+
+@dataclass
+class BatchSendResult:
+    """Result of a batch send operation.
+
+    Attributes:
+        results: Individual results for each command sent
+        chunks_processed: Number of transaction chunks processed
+        total_commands: Total number of commands sent
+    """
+
+    results: list[SendResult]
+    chunks_processed: int
+    total_commands: int

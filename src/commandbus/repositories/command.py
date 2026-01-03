@@ -133,6 +133,83 @@ class PostgresCommandRepository:
         )
         logger.debug(f"Saved command metadata: {metadata.domain}.{metadata.command_id}")
 
+    async def save_batch(
+        self,
+        metadata_list: list[CommandMetadata],
+        queue_name: str,
+        conn: AsyncConnection[Any],
+    ) -> None:
+        """Save multiple command metadata records in a single operation.
+
+        This is more efficient than calling save() multiple times.
+
+        Args:
+            metadata_list: List of command metadata to save
+            queue_name: The queue name for these commands
+            conn: Database connection (required for batch operation)
+        """
+        if not metadata_list:
+            return
+
+        async with conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO command_bus_command (
+                    domain, queue_name, msg_id, command_id, command_type,
+                    status, attempts, max_attempts, correlation_id, reply_queue,
+                    created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        m.domain,
+                        queue_name,
+                        m.msg_id,
+                        m.command_id,
+                        m.command_type,
+                        m.status.value,
+                        m.attempts,
+                        m.max_attempts,
+                        m.correlation_id,
+                        m.reply_to or "",
+                        m.created_at,
+                        m.updated_at,
+                    )
+                    for m in metadata_list
+                ],
+            )
+        logger.debug(f"Saved {len(metadata_list)} command metadata records")
+
+    async def exists_batch(
+        self,
+        domain: str,
+        command_ids: list[UUID],
+        conn: AsyncConnection[Any],
+    ) -> set[UUID]:
+        """Check which command IDs already exist.
+
+        Args:
+            domain: The domain
+            command_ids: List of command IDs to check
+            conn: Database connection
+
+        Returns:
+            Set of command IDs that already exist
+        """
+        if not command_ids:
+            return set()
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT command_id FROM command_bus_command
+                WHERE domain = %s AND command_id = ANY(%s)
+                """,
+                (domain, command_ids),
+            )
+            rows = await cur.fetchall()
+            return {row[0] for row in rows}
+
     async def get(
         self,
         domain: str,

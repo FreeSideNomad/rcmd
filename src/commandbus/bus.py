@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from commandbus.exceptions import DuplicateCommandError
-from commandbus.models import AuditEvent, CommandMetadata, CommandStatus
+from commandbus.models import (
+    AuditEvent,
+    BatchSendResult,
+    CommandMetadata,
+    CommandStatus,
+    SendRequest,
+    SendResult,
+)
 from commandbus.pgmq.client import PgmqClient
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.command import PostgresCommandRepository
@@ -18,6 +24,9 @@ if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
+
+# Default chunk size for batch operations
+DEFAULT_BATCH_CHUNK_SIZE = 10_000
 
 
 def _make_queue_name(domain: str, suffix: str = "commands") -> str:
@@ -33,17 +42,17 @@ def _make_queue_name(domain: str, suffix: str = "commands") -> str:
     return f"{domain}__{suffix}"
 
 
-@dataclass
-class SendResult:
-    """Result of sending a command.
+def _chunked(items: list[Any], size: int) -> list[list[Any]]:
+    """Split a list into chunks of specified size.
 
-    Attributes:
-        command_id: The command ID
-        msg_id: The PGMQ message ID
+    Args:
+        items: List to split
+        size: Maximum chunk size
+
+    Returns:
+        List of chunks
     """
-
-    command_id: UUID
-    msg_id: int
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 class CommandBus:
@@ -175,6 +184,171 @@ class CommandBus:
             )
 
             return SendResult(command_id=command_id, msg_id=msg_id)
+
+    async def send_batch(
+        self,
+        requests: list[SendRequest],
+        chunk_size: int = DEFAULT_BATCH_CHUNK_SIZE,
+    ) -> BatchSendResult:
+        """Send multiple commands efficiently in batched transactions.
+
+        Each chunk is processed in a single transaction with one NOTIFY at the end.
+        This is significantly faster than calling send() repeatedly.
+
+        Args:
+            requests: List of SendRequest objects
+            chunk_size: Max commands per transaction (default 10,000)
+
+        Returns:
+            BatchSendResult with all results and stats
+
+        Raises:
+            DuplicateCommandError: If any command_id already exists
+
+        Example:
+            requests = [
+                SendRequest(
+                    domain="payments",
+                    command_type="DebitAccount",
+                    command_id=uuid4(),
+                    data={"amount": 100},
+                )
+                for _ in range(1000)
+            ]
+            result = await bus.send_batch(requests)
+            print(f"Sent {result.total_commands} in {result.chunks_processed} chunks")
+        """
+        if not requests:
+            return BatchSendResult(results=[], chunks_processed=0, total_commands=0)
+
+        all_results: list[SendResult] = []
+        chunks_processed = 0
+
+        # Group requests by domain for efficient processing
+        domain_chunks = _chunked(requests, chunk_size)
+
+        for chunk in domain_chunks:
+            chunk_results = await self._send_batch_chunk(chunk)
+            all_results.extend(chunk_results)
+            chunks_processed += 1
+
+        logger.info(f"Sent {len(all_results)} commands in {chunks_processed} chunks")
+
+        return BatchSendResult(
+            results=all_results,
+            chunks_processed=chunks_processed,
+            total_commands=len(all_results),
+        )
+
+    async def _send_batch_chunk(
+        self,
+        requests: list[SendRequest],
+    ) -> list[SendResult]:
+        """Process a single chunk of send requests in one transaction.
+
+        Args:
+            requests: List of requests to process
+
+        Returns:
+            List of SendResult for each command
+        """
+        if not requests:
+            return []
+
+        # All requests in a chunk must have the same domain for PGMQ batch
+        # Group by domain
+        by_domain: dict[str, list[SendRequest]] = {}
+        for req in requests:
+            by_domain.setdefault(req.domain, []).append(req)
+
+        all_results: list[SendResult] = []
+        now = datetime.now(UTC)
+
+        async with self._pool.connection() as conn, conn.transaction():
+            for domain, domain_requests in by_domain.items():
+                queue_name = _make_queue_name(domain)
+
+                # Check for duplicates
+                command_ids = [r.command_id for r in domain_requests]
+                existing = await self._command_repo.exists_batch(domain, command_ids, conn)
+                if existing:
+                    # Find first duplicate for error message
+                    first_dup = next(r for r in domain_requests if r.command_id in existing)
+                    raise DuplicateCommandError(domain, str(first_dup.command_id))
+
+                # Build all messages
+                messages: list[dict[str, Any]] = []
+                metadata_list: list[CommandMetadata] = []
+                audit_events: list[tuple[str, UUID, AuditEventType, dict[str, Any] | None]] = []
+
+                for req in domain_requests:
+                    effective_max_attempts = req.max_attempts or self._default_max_attempts
+                    effective_correlation_id = (
+                        req.correlation_id if req.correlation_id is not None else uuid4()
+                    )
+
+                    message = self._build_message(
+                        domain=req.domain,
+                        command_type=req.command_type,
+                        command_id=req.command_id,
+                        data=req.data,
+                        correlation_id=effective_correlation_id,
+                        reply_to=req.reply_to,
+                    )
+                    messages.append(message)
+
+                # Batch send to PGMQ (no NOTIFY yet)
+                msg_ids = await self._pgmq.send_batch(queue_name, messages, conn=conn)
+
+                # Build metadata and audit events with msg_ids
+                for i, req in enumerate(domain_requests):
+                    msg_id = msg_ids[i]
+                    effective_max_attempts = req.max_attempts or self._default_max_attempts
+                    effective_correlation_id = (
+                        req.correlation_id if req.correlation_id is not None else uuid4()
+                    )
+
+                    metadata = CommandMetadata(
+                        domain=req.domain,
+                        command_id=req.command_id,
+                        command_type=req.command_type,
+                        status=CommandStatus.PENDING,
+                        attempts=0,
+                        max_attempts=effective_max_attempts,
+                        msg_id=msg_id,
+                        correlation_id=effective_correlation_id,
+                        reply_to=req.reply_to,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    metadata_list.append(metadata)
+
+                    audit_events.append(
+                        (
+                            req.domain,
+                            req.command_id,
+                            AuditEventType.SENT,
+                            {
+                                "command_type": req.command_type,
+                                "correlation_id": str(effective_correlation_id),
+                                "reply_to": req.reply_to,
+                                "msg_id": msg_id,
+                            },
+                        )
+                    )
+
+                    all_results.append(SendResult(command_id=req.command_id, msg_id=msg_id))
+
+                # Batch save metadata
+                await self._command_repo.save_batch(metadata_list, queue_name, conn)
+
+                # Batch log audit events
+                await self._audit_logger.log_batch(audit_events, conn)
+
+                # Send NOTIFY for this domain (once per chunk per domain)
+                await self._pgmq.notify(queue_name, conn)
+
+        return all_results
 
     def _build_message(
         self,
