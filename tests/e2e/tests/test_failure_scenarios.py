@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
 
 from commandbus.models import CommandStatus
+from commandbus.policies import RetryPolicy
 from commandbus.worker import Worker
 
 if TYPE_CHECKING:
@@ -57,8 +57,7 @@ class TestPermanentFailure:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=1,
-            max_attempts=3,
+            retry_policy=RetryPolicy(max_attempts=3, backoff_schedule=[1, 2, 5]),
         )
 
         worker_task = asyncio.create_task(worker.run())
@@ -93,7 +92,7 @@ class TestPermanentFailure:
             assert "MOVED_TO_TSQ" in event_types
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:
@@ -125,8 +124,7 @@ class TestPermanentFailure:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=1,
-            max_attempts=1,
+            retry_policy=RetryPolicy(max_attempts=1, backoff_schedule=[1]),
         )
 
         worker_task = asyncio.create_task(worker.run())
@@ -155,7 +153,7 @@ class TestPermanentFailure:
             assert cmd.last_error_msg == "Missing required field: email"
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:
@@ -194,8 +192,7 @@ class TestTransientFailure:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=1,
-            max_attempts=5,
+            retry_policy=RetryPolicy(max_attempts=5, backoff_schedule=[1, 1, 1, 1]),
         )
 
         worker_task = asyncio.create_task(worker.run())
@@ -224,7 +221,7 @@ class TestTransientFailure:
             assert cmd.attempts == 3
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:
@@ -256,8 +253,7 @@ class TestTransientFailure:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=1,
-            max_attempts=3,
+            retry_policy=RetryPolicy(max_attempts=3, backoff_schedule=[1, 2, 5]),
         )
 
         worker_task = asyncio.create_task(worker.run())
@@ -286,10 +282,10 @@ class TestTransientFailure:
             # Verify audit trail
             events = await command_bus.get_audit_trail(command_id, domain="e2e")
             event_types = [e.event_type for e in events]
-            assert "RETRY_EXHAUSTED" in event_types
+            assert "MOVED_TO_TSQ" in event_types
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:
@@ -311,6 +307,7 @@ class TestTSQOperations:
         tsq: TroubleshootingQueue,
         wait_for_tsq: Callable[[UUID, float], Any],
         wait_for_completion: Callable[[UUID, float], Any],
+        reset_failure_counts: Callable[[], None],
         cleanup_db: None,
     ) -> None:
         """Test operator retry from TSQ.
@@ -321,6 +318,7 @@ class TestTSQOperations:
         - Audit trail shows OPERATOR_RETRY event
         """
         command_id = uuid4()
+        reset_failure_counts()
 
         registry = create_handler_registry({"type": "success"})
         worker = Worker(
@@ -328,49 +326,31 @@ class TestTSQOperations:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=1,
-            max_attempts=1,
+            retry_policy=RetryPolicy(max_attempts=1, backoff_schedule=[1]),
         )
 
         worker_task = asyncio.create_task(worker.run())
         await asyncio.sleep(0.1)
 
         try:
-            # Send command that will fail permanently
+            # Send command that will fail once then succeed (simulating a fixed issue)
             await command_bus.send(
                 domain="e2e",
                 command_type="TestCommand",
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_permanent",
+                        "type": "fail_transient_then_succeed",
+                        "transient_failures": 1,
                         "error_code": "TEMP_ISSUE",
                     }
                 },
             )
 
+            # First attempt will fail and go to TSQ (max_attempts=1)
             await wait_for_tsq(command_id, timeout=10)
 
-            # Update the command data to succeed on retry
-            async with pool.connection() as conn:
-                new_data = json.dumps({"behavior": {"type": "success"}})
-                await conn.execute(
-                    "UPDATE command_bus_command SET data = %s WHERE command_id = %s",
-                    (new_data, command_id),
-                )
-
-            # Also update the archived message to succeed
-            async with pool.connection() as conn:
-                await conn.execute(
-                    """
-                    UPDATE pgmq.a_e2e__commands
-                    SET message = jsonb_set(message, '{data}', %s::jsonb)
-                    WHERE message->>'command_id' = %s
-                    """,
-                    ('{"behavior": {"type": "success"}}', str(command_id)),
-                )
-
-            # Operator retries the command
+            # Operator retries the command (second attempt will succeed)
             await tsq.operator_retry(
                 domain="e2e",
                 command_id=command_id,
@@ -389,7 +369,7 @@ class TestTSQOperations:
             assert "OPERATOR_RETRY" in event_types
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:
@@ -422,8 +402,7 @@ class TestTSQOperations:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=1,
-            max_attempts=1,
+            retry_policy=RetryPolicy(max_attempts=1, backoff_schedule=[1]),
         )
 
         worker_task = asyncio.create_task(worker.run())
@@ -462,7 +441,7 @@ class TestTSQOperations:
             assert "OPERATOR_CANCEL" in event_types
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:
@@ -495,8 +474,7 @@ class TestTSQOperations:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=1,
-            max_attempts=1,
+            retry_policy=RetryPolicy(max_attempts=1, backoff_schedule=[1]),
         )
 
         worker_task = asyncio.create_task(worker.run())
@@ -535,7 +513,7 @@ class TestTSQOperations:
             assert "OPERATOR_COMPLETE" in event_types
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:
@@ -567,8 +545,7 @@ class TestTSQOperations:
             domain="e2e",
             registry=registry,
             visibility_timeout=30,
-            concurrency=2,
-            max_attempts=1,
+            retry_policy=RetryPolicy(max_attempts=1, backoff_schedule=[1]),
         )
 
         worker_task = asyncio.create_task(worker.run())
@@ -602,7 +579,7 @@ class TestTSQOperations:
                 assert cmd_id in tsq_cmd_ids
 
         finally:
-            worker.stop()
+            await worker.stop()
             try:
                 await asyncio.wait_for(worker_task, timeout=5.0)
             except TimeoutError:

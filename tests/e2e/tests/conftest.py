@@ -16,6 +16,7 @@ from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from commandbus.handler import HandlerRegistry
 from commandbus.models import Command, CommandStatus, HandlerContext
 from commandbus.ops.troubleshooting import TroubleshootingQueue
+from commandbus.policies import RetryPolicy
 from commandbus.worker import Worker
 
 if TYPE_CHECKING:
@@ -167,7 +168,6 @@ async def worker(
         domain="e2e",
         registry=registry,
         visibility_timeout=30,
-        concurrency=2,
     )
 
 
@@ -178,7 +178,7 @@ async def worker_task(worker: Worker) -> AsyncGenerator[asyncio.Task[None], None
     # Give worker time to start
     await asyncio.sleep(0.1)
     yield task
-    worker.stop()
+    await worker.stop()
     try:
         await asyncio.wait_for(task, timeout=5.0)
     except TimeoutError:
@@ -255,8 +255,7 @@ def create_failure_worker(
             domain="e2e",
             registry=registry,
             visibility_timeout=visibility_timeout,
-            concurrency=1,
-            max_attempts=max_attempts,
+            retry_policy=RetryPolicy(max_attempts=max_attempts, backoff_schedule=[1, 2, 5]),
         )
 
     return _create
