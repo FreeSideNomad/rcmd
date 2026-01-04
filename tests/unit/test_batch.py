@@ -16,11 +16,13 @@ from commandbus.batch import (
     remove_batch_callback,
 )
 from commandbus.bus import CommandBus
-from commandbus.exceptions import DuplicateCommandError
+from commandbus.exceptions import BatchNotFoundError, DuplicateCommandError
 from commandbus.models import (
     BatchCommand,
     BatchMetadata,
     BatchStatus,
+    CommandMetadata,
+    CommandStatus,
     CreateBatchResult,
     SendResult,
 )
@@ -933,3 +935,367 @@ class TestBatchCompletionCallbackRegistry:
         callback.assert_called_once()
         # Callback should still be removed after failure
         assert get_batch_callback("payments", batch_id) is None
+
+
+class TestCommandBusBatchQueries:
+    """Tests for S044: Query Batches and Their Commands."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with proper async context managers."""
+        pool = MagicMock()
+        conn = MagicMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield None
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+
+        return pool
+
+    @pytest.fixture
+    def command_bus(self, mock_pool: MagicMock) -> CommandBus:
+        """Create a CommandBus with mocked dependencies."""
+        return CommandBus(mock_pool, default_max_attempts=3)
+
+    @pytest.mark.asyncio
+    async def test_get_batch_returns_metadata(self, command_bus: CommandBus) -> None:
+        """Test get_batch returns BatchMetadata when found."""
+        batch_id = uuid4()
+        expected = BatchMetadata(
+            domain="payments",
+            batch_id=batch_id,
+            status=BatchStatus.IN_PROGRESS,
+            total_count=5,
+        )
+
+        with patch.object(command_bus._batch_repo, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = expected
+
+            result = await command_bus.get_batch("payments", batch_id)
+
+            assert result == expected
+            mock_get.assert_called_once_with("payments", batch_id)
+
+    @pytest.mark.asyncio
+    async def test_get_batch_returns_none(self, command_bus: CommandBus) -> None:
+        """Test get_batch returns None when not found."""
+        with patch.object(command_bus._batch_repo, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = None
+
+            result = await command_bus.get_batch("payments", uuid4())
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_batch_domain_scoped(self, command_bus: CommandBus) -> None:
+        """Test get_batch is domain-scoped."""
+        batch_id = uuid4()
+
+        with patch.object(command_bus._batch_repo, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = None
+
+            # Batch exists in "payments" but we query "orders"
+            await command_bus.get_batch("orders", batch_id)
+
+            mock_get.assert_called_once_with("orders", batch_id)
+
+    @pytest.mark.asyncio
+    async def test_list_batches(self, command_bus: CommandBus) -> None:
+        """Test list_batches returns list of BatchMetadata."""
+        batches = [
+            BatchMetadata(domain="payments", batch_id=uuid4(), status=BatchStatus.PENDING),
+            BatchMetadata(domain="payments", batch_id=uuid4(), status=BatchStatus.IN_PROGRESS),
+        ]
+
+        with patch.object(
+            command_bus._batch_repo, "list_batches", new_callable=AsyncMock
+        ) as mock_list:
+            mock_list.return_value = batches
+
+            result = await command_bus.list_batches("payments")
+
+            assert result == batches
+            mock_list.assert_called_once_with(domain="payments", status=None, limit=100, offset=0)
+
+    @pytest.mark.asyncio
+    async def test_list_batches_status_filter(self, command_bus: CommandBus) -> None:
+        """Test list_batches with status filter."""
+        batches = [
+            BatchMetadata(domain="payments", batch_id=uuid4(), status=BatchStatus.IN_PROGRESS),
+        ]
+
+        with patch.object(
+            command_bus._batch_repo, "list_batches", new_callable=AsyncMock
+        ) as mock_list:
+            mock_list.return_value = batches
+
+            result = await command_bus.list_batches("payments", status=BatchStatus.IN_PROGRESS)
+
+            assert result == batches
+            mock_list.assert_called_once_with(
+                domain="payments", status=BatchStatus.IN_PROGRESS, limit=100, offset=0
+            )
+
+    @pytest.mark.asyncio
+    async def test_list_batches_pagination(self, command_bus: CommandBus) -> None:
+        """Test list_batches with pagination."""
+        batches = [
+            BatchMetadata(domain="payments", batch_id=uuid4(), status=BatchStatus.PENDING)
+            for _ in range(10)
+        ]
+
+        with patch.object(
+            command_bus._batch_repo, "list_batches", new_callable=AsyncMock
+        ) as mock_list:
+            mock_list.return_value = batches
+
+            result = await command_bus.list_batches("payments", limit=10, offset=10)
+
+            assert len(result) == 10
+            mock_list.assert_called_once_with(domain="payments", status=None, limit=10, offset=10)
+
+    @pytest.mark.asyncio
+    async def test_list_batch_commands(self, command_bus: CommandBus) -> None:
+        """Test list_batch_commands returns list of CommandMetadata."""
+        batch_id = uuid4()
+        now = datetime.now(UTC)
+        commands = [
+            CommandMetadata(
+                domain="payments",
+                command_id=uuid4(),
+                command_type="DebitAccount",
+                status=CommandStatus.PENDING,
+                batch_id=batch_id,
+                created_at=now,
+                updated_at=now,
+            ),
+            CommandMetadata(
+                domain="payments",
+                command_id=uuid4(),
+                command_type="DebitAccount",
+                status=CommandStatus.COMPLETED,
+                batch_id=batch_id,
+                created_at=now,
+                updated_at=now,
+            ),
+        ]
+
+        with patch.object(
+            command_bus._command_repo, "list_by_batch", new_callable=AsyncMock
+        ) as mock_list:
+            mock_list.return_value = commands
+
+            result = await command_bus.list_batch_commands("payments", batch_id)
+
+            assert result == commands
+            mock_list.assert_called_once_with(
+                domain="payments", batch_id=batch_id, status=None, limit=100, offset=0
+            )
+
+    @pytest.mark.asyncio
+    async def test_list_batch_commands_filter(self, command_bus: CommandBus) -> None:
+        """Test list_batch_commands with status filter."""
+        batch_id = uuid4()
+        now = datetime.now(UTC)
+        commands = [
+            CommandMetadata(
+                domain="payments",
+                command_id=uuid4(),
+                command_type="DebitAccount",
+                status=CommandStatus.COMPLETED,
+                batch_id=batch_id,
+                created_at=now,
+                updated_at=now,
+            ),
+        ]
+
+        with patch.object(
+            command_bus._command_repo, "list_by_batch", new_callable=AsyncMock
+        ) as mock_list:
+            mock_list.return_value = commands
+
+            result = await command_bus.list_batch_commands(
+                "payments", batch_id, status=CommandStatus.COMPLETED
+            )
+
+            assert result == commands
+            mock_list.assert_called_once_with(
+                domain="payments",
+                batch_id=batch_id,
+                status=CommandStatus.COMPLETED,
+                limit=100,
+                offset=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_list_batch_commands_empty(self, command_bus: CommandBus) -> None:
+        """Test list_batch_commands returns empty list for non-existent batch."""
+        with patch.object(
+            command_bus._command_repo, "list_by_batch", new_callable=AsyncMock
+        ) as mock_list:
+            mock_list.return_value = []
+
+            result = await command_bus.list_batch_commands("payments", uuid4())
+
+            assert result == []
+
+
+class TestCommandBusSendWithBatchId:
+    """Tests for S044: Send with batch_id validation."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with proper async context managers."""
+        pool = MagicMock()
+        conn = MagicMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield None
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+
+        return pool
+
+    @pytest.fixture
+    def command_bus(self, mock_pool: MagicMock) -> CommandBus:
+        """Create a CommandBus with mocked dependencies."""
+        return CommandBus(mock_pool, default_max_attempts=3)
+
+    @pytest.mark.asyncio
+    async def test_send_with_nonexistent_batch_raises_error(self, command_bus: CommandBus) -> None:
+        """Test send with non-existent batch_id raises BatchNotFoundError."""
+        batch_id = uuid4()
+        command_id = uuid4()
+
+        with (
+            patch.object(command_bus._batch_repo, "exists", new_callable=AsyncMock) as mock_exists,
+        ):
+            mock_exists.return_value = False
+
+            with pytest.raises(BatchNotFoundError) as exc_info:
+                await command_bus.send(
+                    domain="payments",
+                    command_type="DebitAccount",
+                    command_id=command_id,
+                    data={"amount": 100},
+                    batch_id=batch_id,
+                )
+
+            assert str(batch_id) in str(exc_info.value)
+            assert "payments" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_send_with_valid_batch_succeeds(self, command_bus: CommandBus) -> None:
+        """Test send with valid batch_id succeeds."""
+        batch_id = uuid4()
+        command_id = uuid4()
+
+        with (
+            patch.object(
+                command_bus._batch_repo, "exists", new_callable=AsyncMock
+            ) as mock_batch_exists,
+            patch.object(
+                command_bus._command_repo, "exists", new_callable=AsyncMock
+            ) as mock_cmd_exists,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock) as mock_save,
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            mock_batch_exists.return_value = True
+            mock_cmd_exists.return_value = False
+            mock_send.return_value = 123
+
+            result = await command_bus.send(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=command_id,
+                data={"amount": 100},
+                batch_id=batch_id,
+            )
+
+            assert result.command_id == command_id
+            assert result.msg_id == 123
+            mock_batch_exists.assert_called_once()
+            mock_save.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_without_batch_id_skips_validation(self, command_bus: CommandBus) -> None:
+        """Test send without batch_id does not validate batch."""
+        command_id = uuid4()
+
+        with (
+            patch.object(
+                command_bus._batch_repo, "exists", new_callable=AsyncMock
+            ) as mock_batch_exists,
+            patch.object(
+                command_bus._command_repo, "exists", new_callable=AsyncMock
+            ) as mock_cmd_exists,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_send,
+            patch.object(command_bus._command_repo, "save", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            mock_cmd_exists.return_value = False
+            mock_send.return_value = 123
+
+            await command_bus.send(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=command_id,
+                data={"amount": 100},
+            )
+
+            mock_batch_exists.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_with_batch_includes_batch_id_in_metadata(
+        self, command_bus: CommandBus
+    ) -> None:
+        """Test send with batch_id stores batch_id in command metadata."""
+        batch_id = uuid4()
+        command_id = uuid4()
+        saved_metadata: CommandMetadata | None = None
+
+        async def capture_metadata(
+            metadata: CommandMetadata, queue_name: str, conn: MagicMock
+        ) -> None:
+            nonlocal saved_metadata
+            saved_metadata = metadata
+
+        with (
+            patch.object(
+                command_bus._batch_repo, "exists", new_callable=AsyncMock
+            ) as mock_batch_exists,
+            patch.object(
+                command_bus._command_repo, "exists", new_callable=AsyncMock
+            ) as mock_cmd_exists,
+            patch.object(command_bus._pgmq, "send", new_callable=AsyncMock) as mock_send,
+            patch.object(command_bus._command_repo, "save", side_effect=capture_metadata),
+            patch.object(command_bus._audit_logger, "log", new_callable=AsyncMock),
+        ):
+            mock_batch_exists.return_value = True
+            mock_cmd_exists.return_value = False
+            mock_send.return_value = 123
+
+            await command_bus.send(
+                domain="payments",
+                command_type="DebitAccount",
+                command_id=command_id,
+                data={"amount": 100},
+                batch_id=batch_id,
+            )
+
+            assert saved_metadata is not None
+            assert saved_metadata.batch_id == batch_id

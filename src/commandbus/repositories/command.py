@@ -630,6 +630,87 @@ class PostgresCommandRepository:
             row = await cur.fetchone()
             return bool(row[0]) if row else False
 
+    async def list_by_batch(
+        self,
+        domain: str,
+        batch_id: UUID,
+        *,
+        status: CommandStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CommandMetadata]:
+        """List commands belonging to a specific batch.
+
+        Args:
+            domain: The domain
+            batch_id: The batch ID to filter by
+            status: Optional filter by command status
+            limit: Maximum number of results (default 100)
+            offset: Number of results to skip (default 0)
+
+        Returns:
+            List of CommandMetadata for commands in the batch
+        """
+        async with self._pool.connection() as conn:
+            return await self._list_by_batch(conn, domain, batch_id, status, limit, offset)
+
+    async def _list_by_batch(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        batch_id: UUID,
+        status: CommandStatus | None,
+        limit: int,
+        offset: int,
+    ) -> list[CommandMetadata]:
+        """List commands by batch using an existing connection."""
+        conditions = ["domain = %s", "batch_id = %s"]
+        params: list[Any] = [domain, batch_id]
+
+        if status is not None:
+            conditions.append("status = %s")
+            params.append(status.value)
+
+        where_clause = " AND ".join(conditions)
+        params.extend([limit, offset])
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT domain, command_id, command_type, status, attempts,
+                       max_attempts, msg_id, correlation_id, reply_queue,
+                       last_error_type, last_error_code, last_error_msg,
+                       created_at, updated_at, batch_id
+                FROM command_bus_command
+                WHERE {where_clause}
+                ORDER BY created_at ASC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            CommandMetadata(
+                domain=row[0],
+                command_id=row[1],
+                command_type=row[2],
+                status=CommandStatus(row[3]),
+                attempts=row[4],
+                max_attempts=row[5],
+                msg_id=row[6],
+                correlation_id=row[7],
+                reply_to=row[8] if row[8] else None,
+                last_error_type=row[9],
+                last_error_code=row[10],
+                last_error_msg=row[11],
+                created_at=row[12],
+                updated_at=row[13],
+                batch_id=row[14],
+            )
+            for row in rows
+        ]
+
     async def query(
         self,
         status: CommandStatus | None = None,
