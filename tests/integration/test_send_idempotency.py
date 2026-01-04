@@ -15,7 +15,8 @@ from commandbus.models import CommandStatus
 def database_url() -> str:
     """Get database URL from environment."""
     return os.environ.get(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/commandbus"
+        "DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/commandbus",  # pragma: allowlist secret
     )
 
 
@@ -39,8 +40,8 @@ async def cleanup_db(pool: AsyncConnectionPool):
     """Clean up test data after each test."""
     yield
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
 
 
 @pytest.mark.integration
@@ -150,7 +151,7 @@ async def test_no_duplicate_metadata_created(
     # Count rows
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT COUNT(*) FROM command_bus_command WHERE command_id = %s",
+            "SELECT COUNT(*) FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
@@ -168,7 +169,7 @@ async def test_no_duplicate_metadata_created(
     # Count rows again - should be unchanged
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT COUNT(*) FROM command_bus_command WHERE command_id = %s",
+            "SELECT COUNT(*) FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()

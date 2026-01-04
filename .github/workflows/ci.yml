@@ -92,7 +92,7 @@ jobs:
         image: ghcr.io/pgmq/pg17-pgmq:latest
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: postgres  # pragma: allowlist secret
           POSTGRES_DB: commandbus
         ports:
           - 5432:5432
@@ -116,13 +116,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Initialize database
-        run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d commandbus -f scripts/init-db.sql
+      - name: Initialize database with Flyway
+        run: |  # pragma: allowlist secret
+          docker run --rm --network host \
+            -v ${{ github.workspace }}/migrations:/flyway/sql:ro \
+            flyway/flyway:10 \
+            -url=jdbc:postgresql://localhost:5432/commandbus \
+            -user=postgres \
+            -password=postgres \
+            -connectRetries=10 \
+            migrate
 
       - name: Run integration tests
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/commandbus
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/commandbus  # pragma: allowlist secret
         run: |
           # Allow exit code 5 (no tests collected) since integration tests may not exist yet
           uv run pytest tests/integration -v --tb=short -m integration || test $? -eq 5

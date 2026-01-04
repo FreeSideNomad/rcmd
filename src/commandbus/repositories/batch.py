@@ -54,7 +54,7 @@ class PostgresBatchRepository:
         custom_data_json = json.dumps(metadata.custom_data) if metadata.custom_data else None
         await conn.execute(
             """
-            INSERT INTO command_bus_batch (
+            INSERT INTO commandbus.batch (
                 domain, batch_id, name, custom_data, status,
                 total_count, completed_count,
                 canceled_count, in_troubleshooting_count,
@@ -114,7 +114,7 @@ class PostgresBatchRepository:
                        total_count, completed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
-                FROM command_bus_batch
+                FROM commandbus.batch
                 WHERE domain = %s AND batch_id = %s
                 """,
                 (domain, batch_id),
@@ -159,7 +159,7 @@ class PostgresBatchRepository:
             await cur.execute(
                 """
                 SELECT EXISTS(
-                    SELECT 1 FROM command_bus_batch
+                    SELECT 1 FROM commandbus.batch
                     WHERE domain = %s AND batch_id = %s
                 )
                 """,
@@ -222,7 +222,7 @@ class PostgresBatchRepository:
                        total_count, completed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
-                FROM command_bus_batch
+                FROM commandbus.batch
                 WHERE {where_clause}
                 ORDER BY created_at DESC
                 LIMIT %s OFFSET %s
@@ -295,7 +295,7 @@ class PostgresBatchRepository:
         """TSQ complete using stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_tsq_complete(%s, %s)",
+                "SELECT commandbus.sp_tsq_complete(%s, %s)",
                 (domain, batch_id),
             )
             row = await cur.fetchone()
@@ -337,7 +337,7 @@ class PostgresBatchRepository:
         """TSQ cancel using stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_tsq_cancel(%s, %s)",
+                "SELECT commandbus.sp_tsq_cancel(%s, %s)",
                 (domain, batch_id),
             )
             row = await cur.fetchone()
@@ -376,7 +376,7 @@ class PostgresBatchRepository:
         """TSQ retry using stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_tsq_retry(%s, %s)",
+                "SELECT commandbus.sp_tsq_retry(%s, %s)",
                 (domain, batch_id),
             )
             logger.debug(f"Batch {domain}.{batch_id} TSQ retry processed")

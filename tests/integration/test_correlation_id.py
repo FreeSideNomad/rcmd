@@ -13,7 +13,8 @@ from commandbus.bus import CommandBus
 def database_url() -> str:
     """Get database URL from environment."""
     return os.environ.get(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/commandbus"
+        "DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/commandbus",  # pragma: allowlist secret
     )
 
 
@@ -37,8 +38,8 @@ async def cleanup_db(pool: AsyncConnectionPool):
     """Clean up test data after each test."""
     yield
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
 
 
 @pytest.mark.integration
@@ -66,7 +67,7 @@ async def test_send_with_explicit_correlation_id(
     # Verify correlation_id in audit event
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT details_json FROM command_bus_audit WHERE command_id = %s",
+            "SELECT details_json FROM commandbus.audit WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
@@ -99,7 +100,7 @@ async def test_send_generates_correlation_id_when_not_provided(
     # Verify correlation_id in audit event matches metadata
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT details_json FROM command_bus_audit WHERE command_id = %s",
+            "SELECT details_json FROM commandbus.audit WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()

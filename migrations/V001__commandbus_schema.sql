@@ -1,11 +1,24 @@
--- Initialize database for Command Bus
--- This script runs automatically when the PostgreSQL container starts
+-- V001: Command Bus Core Schema
+-- Creates the 'commandbus' schema with all core tables and stored procedures
+--
+-- This migration consolidates all command bus database objects into a dedicated schema
+-- for better organization and separation of concerns.
 
--- Enable PGMQ extension
+-- Enable PGMQ extension (required for message queuing)
 CREATE EXTENSION IF NOT EXISTS pgmq;
 
--- Create batch table (must be created before command table for FK)
-CREATE TABLE IF NOT EXISTS command_bus_batch (
+-- Create commandbus schema
+CREATE SCHEMA IF NOT EXISTS commandbus;
+
+-- Set search path for this migration
+SET search_path TO commandbus, pgmq, public;
+
+-- ============================================================================
+-- Tables
+-- ============================================================================
+
+-- Batch table (must be created before command table for FK reference)
+CREATE TABLE IF NOT EXISTS commandbus.batch (
     domain                    TEXT NOT NULL,
     batch_id                  UUID NOT NULL,
     name                      TEXT NULL,
@@ -21,14 +34,14 @@ CREATE TABLE IF NOT EXISTS command_bus_batch (
     PRIMARY KEY (domain, batch_id)
 );
 
-CREATE INDEX IF NOT EXISTS ix_command_bus_batch_status
-    ON command_bus_batch(domain, status);
+CREATE INDEX IF NOT EXISTS ix_batch_status
+    ON commandbus.batch(domain, status);
 
-CREATE INDEX IF NOT EXISTS ix_command_bus_batch_created
-    ON command_bus_batch(domain, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_batch_created
+    ON commandbus.batch(domain, created_at DESC);
 
--- Create command bus tables
-CREATE TABLE IF NOT EXISTS command_bus_command (
+-- Command table (command metadata)
+CREATE TABLE IF NOT EXISTS commandbus.command (
     domain            TEXT NOT NULL,
     queue_name        TEXT NOT NULL,
     msg_id            BIGINT NULL,
@@ -48,23 +61,23 @@ CREATE TABLE IF NOT EXISTS command_bus_command (
     batch_id          UUID NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_command_bus_command_domain_cmdid
-    ON command_bus_command(domain, command_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_command_domain_cmdid
+    ON commandbus.command(domain, command_id);
 
-CREATE INDEX IF NOT EXISTS ix_command_bus_command_status_type
-    ON command_bus_command(status, command_type);
+CREATE INDEX IF NOT EXISTS ix_command_status_type
+    ON commandbus.command(status, command_type);
 
-CREATE INDEX IF NOT EXISTS ix_command_bus_command_status_created
-    ON command_bus_command(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_command_status_created
+    ON commandbus.command(status, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS ix_command_bus_command_updated
-    ON command_bus_command(updated_at);
+CREATE INDEX IF NOT EXISTS ix_command_updated
+    ON commandbus.command(updated_at);
 
-CREATE INDEX IF NOT EXISTS ix_command_bus_command_batch
-    ON command_bus_command(domain, batch_id) WHERE batch_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_command_batch
+    ON commandbus.command(domain, batch_id) WHERE batch_id IS NOT NULL;
 
 -- Audit table (append-only)
-CREATE TABLE IF NOT EXISTS command_bus_audit (
+CREATE TABLE IF NOT EXISTS commandbus.audit (
     audit_id      BIGSERIAL PRIMARY KEY,
     domain        TEXT NOT NULL,
     command_id    UUID NOT NULL,
@@ -73,11 +86,11 @@ CREATE TABLE IF NOT EXISTS command_bus_audit (
     details_json  JSONB NULL
 );
 
-CREATE INDEX IF NOT EXISTS ix_command_bus_audit_cmdid_ts
-    ON command_bus_audit(command_id, ts);
+CREATE INDEX IF NOT EXISTS ix_audit_cmdid_ts
+    ON commandbus.audit(command_id, ts);
 
 -- Optional payload archive
-CREATE TABLE IF NOT EXISTS command_bus_payload_archive (
+CREATE TABLE IF NOT EXISTS commandbus.payload_archive (
     domain        TEXT NOT NULL,
     command_id    UUID NOT NULL,
     payload_json  JSONB NOT NULL,
@@ -85,40 +98,16 @@ CREATE TABLE IF NOT EXISTS command_bus_payload_archive (
     PRIMARY KEY(domain, command_id)
 );
 
--- Create sample queues for testing
-SELECT pgmq.create('test__commands');
-SELECT pgmq.create('test__replies');
-SELECT pgmq.create('payments__commands');
-SELECT pgmq.create('payments__replies');
-SELECT pgmq.create('reports__commands');
-SELECT pgmq.create('reports__replies');
-
--- Create E2E demo application queues
-SELECT pgmq.create('e2e__commands');
-SELECT pgmq.create('e2e__replies');
-
--- E2E demo application configuration table
-CREATE TABLE IF NOT EXISTS e2e_config (
-    key           TEXT PRIMARY KEY,
-    value         JSONB NOT NULL,
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Insert default E2E configuration
-INSERT INTO e2e_config (key, value) VALUES
-    ('worker', '{"visibility_timeout": 30, "concurrency": 4, "poll_interval": 1.0, "batch_size": 10}'::jsonb),
-    ('retry', '{"max_attempts": 3, "backoff_schedule": [10, 60, 300]}'::jsonb)
-ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================================
--- Stored Procedures for Command Bus
+-- Stored Procedures
 -- These combine command + audit operations into single DB calls for performance
 -- ============================================================================
 
 -- sp_receive_command: Atomically receive a command
 -- Combines: get metadata + increment attempts + update status + insert audit + start batch
 -- Returns NULL if command not found or in terminal state
-CREATE OR REPLACE FUNCTION sp_receive_command(
+CREATE OR REPLACE FUNCTION commandbus.sp_receive_command(
     p_domain TEXT,
     p_command_id UUID,
     p_new_status TEXT DEFAULT 'IN_PROGRESS',
@@ -157,7 +146,7 @@ DECLARE
     v_batch_id UUID;
 BEGIN
     -- Atomically update and get command metadata
-    UPDATE command_bus_command c
+    UPDATE commandbus.command c
     SET attempts = c.attempts + 1,
         status = p_new_status,
         updated_at = NOW()
@@ -179,7 +168,7 @@ BEGIN
     END IF;
 
     -- Insert audit event
-    INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+    INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
     VALUES (
         p_domain,
         p_command_id,
@@ -193,7 +182,7 @@ BEGIN
 
     -- Start batch if this command belongs to one (transitions PENDING -> IN_PROGRESS)
     IF v_batch_id IS NOT NULL THEN
-        PERFORM sp_start_batch(p_domain, v_batch_id);
+        PERFORM commandbus.sp_start_batch(p_domain, v_batch_id);
     END IF;
 
     -- Return the metadata
@@ -220,7 +209,7 @@ $$ LANGUAGE plpgsql;
 -- sp_finish_command: Atomically finish a command (success or failure)
 -- Combines: update status/error + insert audit + update batch counters
 -- Returns is_batch_complete (TRUE if batch is now complete, for callback triggering)
-CREATE OR REPLACE FUNCTION sp_finish_command(
+CREATE OR REPLACE FUNCTION commandbus.sp_finish_command(
     p_domain TEXT,
     p_command_id UUID,
     p_status TEXT,
@@ -237,7 +226,7 @@ DECLARE
     v_update_type TEXT;
 BEGIN
     -- Update command metadata
-    UPDATE command_bus_command
+    UPDATE commandbus.command
     SET status = p_status,
         last_error_type = COALESCE(p_error_type, last_error_type),
         last_error_code = COALESCE(p_error_code, last_error_code),
@@ -248,7 +237,7 @@ BEGIN
     v_found := FOUND;
 
     -- Insert audit event (even if command not found, for debugging)
-    INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+    INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
     VALUES (p_domain, p_command_id, p_event_type, p_details);
 
     -- Update batch counters if this command belongs to a batch
@@ -264,7 +253,7 @@ BEGIN
         END CASE;
 
         IF v_update_type IS NOT NULL THEN
-            v_is_batch_complete := sp_update_batch_counters(p_domain, p_batch_id, v_update_type);
+            v_is_batch_complete := commandbus.sp_update_batch_counters(p_domain, p_batch_id, v_update_type);
         END IF;
     END IF;
 
@@ -275,7 +264,7 @@ $$ LANGUAGE plpgsql;
 
 -- sp_fail_command: Handle transient failure with error update + audit
 -- Used for retryable failures (before exhaustion)
-CREATE OR REPLACE FUNCTION sp_fail_command(
+CREATE OR REPLACE FUNCTION commandbus.sp_fail_command(
     p_domain TEXT,
     p_command_id UUID,
     p_error_type TEXT,
@@ -287,7 +276,7 @@ CREATE OR REPLACE FUNCTION sp_fail_command(
 ) RETURNS BOOLEAN AS $$
 BEGIN
     -- Update error info
-    UPDATE command_bus_command
+    UPDATE commandbus.command
     SET last_error_type = p_error_type,
         last_error_code = p_error_code,
         last_error_msg = p_error_msg,
@@ -299,7 +288,7 @@ BEGIN
     END IF;
 
     -- Insert audit event
-    INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+    INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
     VALUES (
         p_domain,
         p_command_id,
@@ -320,7 +309,7 @@ $$ LANGUAGE plpgsql;
 
 
 -- ============================================================================
--- Batch Status Tracking Stored Procedures (S042)
+-- Batch Status Tracking Stored Procedures
 -- Consolidated batch counter updates with is_batch_complete return value
 -- ============================================================================
 
@@ -334,7 +323,7 @@ $$ LANGUAGE plpgsql;
 --   'tsq_complete' - Operator completed from TSQ (in_troubleshooting_count--, completed_count++)
 --   'tsq_cancel'   - Operator canceled from TSQ (in_troubleshooting_count--, canceled_count++)
 --   'tsq_retry'    - Operator retried from TSQ (in_troubleshooting_count--)
-CREATE OR REPLACE FUNCTION sp_update_batch_counters(
+CREATE OR REPLACE FUNCTION commandbus.sp_update_batch_counters(
     p_domain TEXT,
     p_batch_id UUID,
     p_update_type TEXT
@@ -350,33 +339,33 @@ BEGIN
     -- Update counters based on update_type
     CASE p_update_type
         WHEN 'complete' THEN
-            UPDATE command_bus_batch
+            UPDATE commandbus.batch
             SET completed_count = completed_count + 1
             WHERE domain = p_domain AND batch_id = p_batch_id
             RETURNING * INTO v_batch;
 
         WHEN 'tsq_move' THEN
-            UPDATE command_bus_batch
+            UPDATE commandbus.batch
             SET in_troubleshooting_count = in_troubleshooting_count + 1
             WHERE domain = p_domain AND batch_id = p_batch_id
             RETURNING * INTO v_batch;
 
         WHEN 'tsq_complete' THEN
-            UPDATE command_bus_batch
+            UPDATE commandbus.batch
             SET in_troubleshooting_count = in_troubleshooting_count - 1,
                 completed_count = completed_count + 1
             WHERE domain = p_domain AND batch_id = p_batch_id
             RETURNING * INTO v_batch;
 
         WHEN 'tsq_cancel' THEN
-            UPDATE command_bus_batch
+            UPDATE commandbus.batch
             SET in_troubleshooting_count = in_troubleshooting_count - 1,
                 canceled_count = canceled_count + 1
             WHERE domain = p_domain AND batch_id = p_batch_id
             RETURNING * INTO v_batch;
 
         WHEN 'tsq_retry' THEN
-            UPDATE command_bus_batch
+            UPDATE commandbus.batch
             SET in_troubleshooting_count = in_troubleshooting_count - 1
             WHERE domain = p_domain AND batch_id = p_batch_id
             RETURNING * INTO v_batch;
@@ -397,19 +386,19 @@ BEGIN
 
         -- Determine final status
         IF v_batch.canceled_count > 0 THEN
-            UPDATE command_bus_batch
+            UPDATE commandbus.batch
             SET status = 'COMPLETED_WITH_FAILURES',
                 completed_at = NOW()
             WHERE domain = p_domain AND batch_id = p_batch_id;
         ELSE
-            UPDATE command_bus_batch
+            UPDATE commandbus.batch
             SET status = 'COMPLETED',
                 completed_at = NOW()
             WHERE domain = p_domain AND batch_id = p_batch_id;
         END IF;
 
         -- Record audit event for batch completion
-        INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+        INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
         VALUES (
             p_domain,
             p_batch_id,
@@ -430,7 +419,7 @@ $$ LANGUAGE plpgsql;
 
 -- sp_start_batch: Transition batch from PENDING to IN_PROGRESS on first command receive
 -- Called from sp_receive_command when a batched command is first processed
-CREATE OR REPLACE FUNCTION sp_start_batch(
+CREATE OR REPLACE FUNCTION commandbus.sp_start_batch(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
@@ -443,7 +432,7 @@ BEGIN
 
     -- Lock the batch row and check if it's still PENDING
     SELECT * INTO v_batch
-    FROM command_bus_batch
+    FROM commandbus.batch
     WHERE domain = p_domain AND batch_id = p_batch_id
     FOR UPDATE;
 
@@ -453,13 +442,13 @@ BEGIN
 
     -- Only transition from PENDING to IN_PROGRESS
     IF v_batch.status = 'PENDING' THEN
-        UPDATE command_bus_batch
+        UPDATE commandbus.batch
         SET status = 'IN_PROGRESS',
             started_at = NOW()
         WHERE domain = p_domain AND batch_id = p_batch_id;
 
         -- Record audit event for batch start
-        INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+        INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
         VALUES (
             p_domain,
             p_batch_id,  -- Use batch_id as command_id for batch events
@@ -483,7 +472,7 @@ $$ LANGUAGE plpgsql;
 
 -- sp_tsq_complete: Operator completes a command from TSQ
 -- Returns is_batch_complete flag for callback triggering
-CREATE OR REPLACE FUNCTION sp_tsq_complete(
+CREATE OR REPLACE FUNCTION commandbus.sp_tsq_complete(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
@@ -491,14 +480,14 @@ BEGIN
     IF p_batch_id IS NULL THEN
         RETURN FALSE;
     END IF;
-    RETURN sp_update_batch_counters(p_domain, p_batch_id, 'tsq_complete');
+    RETURN commandbus.sp_update_batch_counters(p_domain, p_batch_id, 'tsq_complete');
 END;
 $$ LANGUAGE plpgsql;
 
 
 -- sp_tsq_cancel: Operator cancels a command from TSQ
 -- Returns is_batch_complete flag for callback triggering
-CREATE OR REPLACE FUNCTION sp_tsq_cancel(
+CREATE OR REPLACE FUNCTION commandbus.sp_tsq_cancel(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
@@ -506,7 +495,7 @@ BEGIN
     IF p_batch_id IS NULL THEN
         RETURN FALSE;
     END IF;
-    RETURN sp_update_batch_counters(p_domain, p_batch_id, 'tsq_cancel');
+    RETURN commandbus.sp_update_batch_counters(p_domain, p_batch_id, 'tsq_cancel');
 END;
 $$ LANGUAGE plpgsql;
 
@@ -514,7 +503,7 @@ $$ LANGUAGE plpgsql;
 -- sp_tsq_retry: Operator retries a command from TSQ
 -- Note: Retry never completes a batch (command goes back to queue)
 -- Returns FALSE always since retry cannot complete a batch
-CREATE OR REPLACE FUNCTION sp_tsq_retry(
+CREATE OR REPLACE FUNCTION commandbus.sp_tsq_retry(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
@@ -524,11 +513,6 @@ BEGIN
     END IF;
     -- sp_update_batch_counters will always return FALSE for tsq_retry
     -- because it decrements in_troubleshooting_count without adding to terminal counts
-    RETURN sp_update_batch_counters(p_domain, p_batch_id, 'tsq_retry');
+    RETURN commandbus.sp_update_batch_counters(p_domain, p_batch_id, 'tsq_retry');
 END;
 $$ LANGUAGE plpgsql;
-
-
--- Grant permissions (for non-superuser access if needed)
--- GRANT ALL ON ALL TABLES IN SCHEMA public TO your_app_user;
--- GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO your_app_user;
