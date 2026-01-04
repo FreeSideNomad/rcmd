@@ -122,7 +122,10 @@ docker-up:
 	@echo "Waiting for PostgreSQL to be ready..."
 	@sleep 3
 	@docker compose exec -T postgres pg_isready -U postgres || (echo "PostgreSQL not ready" && exit 1)
-	@echo "PostgreSQL with PGMQ is ready!"
+	@echo "PostgreSQL is ready!"
+	@echo "Waiting for Flyway migrations to complete..."
+	@docker compose logs flyway --follow 2>&1 | head -50 || true
+	@echo "Database initialized with Flyway migrations!"
 
 docker-down:
 	docker compose down -v
