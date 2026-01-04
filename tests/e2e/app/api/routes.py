@@ -221,7 +221,7 @@ async def list_commands(
         query = """
             SELECT command_id, domain, command_type, status, attempts, max_attempts,
                    created_at, updated_at, last_error_code, last_error_msg, correlation_id
-            FROM command_bus_command
+            FROM commandbus.command
             WHERE domain = %s
         """
         params: list[Any] = [E2E_DOMAIN]
@@ -238,7 +238,7 @@ async def list_commands(
             rows = await cur.fetchall()
 
             # Get total count
-            count_query = "SELECT COUNT(*) FROM command_bus_command WHERE domain = %s"
+            count_query = "SELECT COUNT(*) FROM commandbus.command WHERE domain = %s"
             count_params: list[Any] = [E2E_DOMAIN]
             if status:
                 count_query += " AND status = %s"
@@ -309,7 +309,7 @@ async def stats_overview(pool: Pool) -> StatsOverviewResponse:
             await cur.execute(
                 """
                 SELECT status, COUNT(*) as count
-                FROM command_bus_command
+                FROM commandbus.command
                 WHERE domain = %s
                 GROUP BY status
             """,
@@ -335,7 +335,7 @@ async def stats_overview(pool: Pool) -> StatsOverviewResponse:
             await cur.execute(
                 """
                 SELECT COUNT(*) as completed_last_minute
-                FROM command_bus_audit
+                FROM commandbus.audit
                 WHERE domain = %s
                   AND event_type = 'COMPLETED'
                   AND ts > NOW() - INTERVAL '1 minute'
@@ -350,10 +350,10 @@ async def stats_overview(pool: Pool) -> StatsOverviewResponse:
                 """
                 SELECT
                     EXTRACT(EPOCH FROM (MAX(ts) - MIN(ts))) * 1000 as duration_ms
-                FROM command_bus_audit
+                FROM commandbus.audit
                 WHERE domain = %s
                   AND command_id IN (
-                      SELECT DISTINCT command_id FROM command_bus_audit
+                      SELECT DISTINCT command_id FROM commandbus.audit
                       WHERE domain = %s AND event_type = 'COMPLETED'
                         AND ts > NOW() - INTERVAL '5 minutes'
                       LIMIT 100
@@ -412,8 +412,8 @@ async def recent_activity(pool: Pool, limit: int = 10) -> RecentActivityResponse
             await cur.execute(
                 """
                 SELECT a.command_id, a.event_type, a.ts, c.command_type
-                FROM command_bus_audit a
-                LEFT JOIN command_bus_command c
+                FROM commandbus.audit a
+                LEFT JOIN commandbus.command c
                     ON a.command_id = c.command_id AND a.domain = c.domain
                 WHERE a.domain = %s
                 ORDER BY a.ts DESC
@@ -459,7 +459,7 @@ async def stats_throughput(pool: Pool, window: int = 60) -> ThroughputResponse:
             # Get commands completed in window
             await cur.execute(
                 """
-                    SELECT COUNT(*) FROM command_bus_audit
+                    SELECT COUNT(*) FROM commandbus.audit
                     WHERE domain = %s
                       AND event_type = 'COMPLETED'
                       AND ts > NOW() - INTERVAL '%s seconds'
@@ -472,7 +472,7 @@ async def stats_throughput(pool: Pool, window: int = 60) -> ThroughputResponse:
             # Get queue depth
             await cur.execute(
                 """
-                    SELECT COUNT(*) FROM command_bus_command
+                    SELECT COUNT(*) FROM commandbus.command
                     WHERE domain = %s AND status = 'PENDING'
                 """,
                 (E2E_DOMAIN,),
@@ -513,7 +513,7 @@ async def stats_load_test(pool: Pool, total: int = 10000) -> LoadTestResponse:
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    SELECT status, COUNT(*) FROM command_bus_command
+                    SELECT status, COUNT(*) FROM commandbus.command
                     WHERE domain = %s
                     GROUP BY status
                 """,
@@ -663,7 +663,7 @@ async def list_tsq_commands(
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    SELECT COUNT(*) FROM command_bus_command
+                    SELECT COUNT(*) FROM commandbus.command
                     WHERE domain = %s AND status = 'IN_TROUBLESHOOTING_QUEUE'
                 """,
                 (E2E_DOMAIN,),
@@ -770,7 +770,7 @@ async def get_audit_trail(command_id: str, pool: Pool) -> AuditTrailResponse:
             await cur.execute(
                 """
                     SELECT audit_id, event_type, ts, details_json
-                    FROM command_bus_audit
+                    FROM commandbus.audit
                     WHERE domain = %s AND command_id = %s
                     ORDER BY ts ASC
                 """,
@@ -827,8 +827,8 @@ async def search_audit_events(
             query = """
                 SELECT a.audit_id, a.command_id, a.event_type, a.ts,
                        a.details_json, c.command_type
-                FROM command_bus_audit a
-                LEFT JOIN command_bus_command c
+                FROM commandbus.audit a
+                LEFT JOIN commandbus.command c
                     ON a.command_id = c.command_id AND a.domain = c.domain
                 WHERE a.domain = %s
             """
@@ -858,7 +858,7 @@ async def search_audit_events(
             ]
 
             # Get total count
-            count_query = "SELECT COUNT(*) FROM command_bus_audit WHERE domain = %s"
+            count_query = "SELECT COUNT(*) FROM commandbus.audit WHERE domain = %s"
             count_params: list[Any] = [E2E_DOMAIN]
             if event_type:
                 count_query += " AND event_type = %s"
@@ -936,7 +936,7 @@ async def list_batches(
             query = """
                 SELECT batch_id, name, status, total_count, completed_count,
                        failed_count, canceled_count, in_troubleshooting_count, created_at
-                FROM command_bus_batch
+                FROM commandbus.batch
                 WHERE domain = %s
             """
             params: list[Any] = [E2E_DOMAIN]
@@ -952,7 +952,7 @@ async def list_batches(
             rows = await cur.fetchall()
 
             # Get total count
-            count_query = "SELECT COUNT(*) FROM command_bus_batch WHERE domain = %s"
+            count_query = "SELECT COUNT(*) FROM commandbus.batch WHERE domain = %s"
             count_params: list[Any] = [E2E_DOMAIN]
             if status:
                 count_query += " AND status = %s"
@@ -1036,7 +1036,7 @@ async def get_batch_commands(
             query = """
                 SELECT command_id, command_type, status, attempts, max_attempts,
                        created_at, last_error_code, last_error_msg
-                FROM command_bus_command
+                FROM commandbus.command
                 WHERE domain = %s AND batch_id = %s
             """
             params: list[Any] = [E2E_DOMAIN, batch_id]
@@ -1053,7 +1053,7 @@ async def get_batch_commands(
 
             # Get total count
             count_query = """
-                SELECT COUNT(*) FROM command_bus_command
+                SELECT COUNT(*) FROM commandbus.command
                 WHERE domain = %s AND batch_id = %s
             """
             count_params: list[Any] = [E2E_DOMAIN, batch_id]
