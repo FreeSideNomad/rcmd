@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import time
 from datetime import datetime
 from typing import Any
@@ -97,68 +96,45 @@ async def create_command(
 async def create_bulk_commands(
     request: BulkCreateRequest, bus: Bus, pool: Pool
 ) -> BulkCreateResponse:
-    """Create multiple test commands for load testing.
+    """Create multiple test commands with probabilistic behavior.
 
     Uses batch operations for efficient bulk creation:
     - bus.send_batch() for PGMQ messages and command metadata
-    - repo.create_batch() for test command records (skipped for no_op)
+    - repo.create_batch() for test command records
+
+    All commands share the same probabilistic behavior configuration,
+    but each command's actual behavior is determined at execution time
+    by independent random rolls.
     """
     start_time = time.time()
 
-    count = request.count  # No artificial limit - let the bus handle chunking
-    behaviors_assigned: dict[str, int] = {}
+    count = request.count
     repo = TestCommandRepository(pool)
+    behavior = request.behavior.model_dump()
 
-    # Check if this is a no_op bulk request (performance testing)
-    is_no_op = request.behavior and request.behavior.type == "no_op"
-
-    # Build all commands first
+    # Build all commands
     send_requests: list[SendRequest] = []
     test_commands: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
 
     for _ in range(count):
         cmd_id = uuid4()
 
-        if is_no_op:
-            # NoOp commands don't need behavior configuration or test_command records
-            send_requests.append(
-                SendRequest(
-                    domain=E2E_DOMAIN,
-                    command_type="NoOp",
-                    command_id=cmd_id,
-                    data={},
-                    max_attempts=request.max_attempts,
-                )
+        # Prepare test command record
+        test_commands.append((cmd_id, behavior, {}))
+
+        # Prepare send request
+        send_requests.append(
+            SendRequest(
+                domain=E2E_DOMAIN,
+                command_type="TestCommand",
+                command_id=cmd_id,
+                data={"behavior": behavior},
+                max_attempts=request.max_attempts,
             )
-        else:
-            if request.behavior_distribution:
-                behavior = _select_behavior_from_distribution(
-                    request.behavior_distribution, request.execution_time_ms
-                )
-                btype = behavior["type"]
-                behaviors_assigned[btype] = behaviors_assigned.get(btype, 0) + 1
-            elif request.behavior:
-                behavior = request.behavior.model_dump()
-            else:
-                behavior = {"type": "success", "execution_time_ms": request.execution_time_ms}
+        )
 
-            # Prepare test command record
-            test_commands.append((cmd_id, behavior, {}))
-
-            # Prepare send request
-            send_requests.append(
-                SendRequest(
-                    domain=E2E_DOMAIN,
-                    command_type="TestCommand",
-                    command_id=cmd_id,
-                    data={"behavior": behavior},
-                    max_attempts=request.max_attempts,
-                )
-            )
-
-    # Batch insert test commands (skip for no_op)
-    if test_commands:
-        await repo.create_batch(test_commands)
+    # Batch insert test commands
+    await repo.create_batch(test_commands)
 
     # Batch send to command bus
     batch_result = await bus.send_batch(send_requests)
@@ -174,37 +150,8 @@ async def create_bulk_commands(
         total_command_ids=batch_result.total_commands,
         generation_time_ms=generation_time_ms,
         queue_time_ms=int((time.time() - start_time) * 1000),
-        behavior_distribution=behaviors_assigned if request.behavior_distribution else None,
         message=f"{batch_result.total_commands} commands in {batch_result.chunks_processed} chunks",
     )
-
-
-def _select_behavior_from_distribution(
-    distribution: dict[str, int], execution_time_ms: int
-) -> dict[str, Any]:
-    """Select a behavior based on weighted distribution."""
-    total = sum(distribution.values())
-    if total == 0:
-        return {"type": "success", "execution_time_ms": execution_time_ms}
-
-    rand = random.randint(1, total)
-    cumulative = 0
-
-    for behavior_type, weight in distribution.items():
-        cumulative += weight
-        if rand <= cumulative:
-            behavior: dict[str, Any] = {
-                "type": behavior_type,
-                "execution_time_ms": execution_time_ms,
-            }
-            if behavior_type == "fail_transient_then_succeed":
-                behavior["transient_failures"] = 2
-            elif behavior_type in ("fail_permanent", "fail_transient"):
-                behavior["error_code"] = "LOAD_TEST_ERROR"
-                behavior["error_message"] = "Load test simulated failure"
-            return behavior
-
-    return {"type": "success", "execution_time_ms": execution_time_ms}
 
 
 @api_router.get("/commands", response_model=CommandListResponse)
