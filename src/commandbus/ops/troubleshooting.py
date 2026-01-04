@@ -92,7 +92,7 @@ class TroubleshootingQueue:
                 a.message,
                 c.created_at,
                 c.updated_at
-            FROM command_bus_command c
+            FROM commandbus.command c
             LEFT JOIN {archive_table} a ON a.message->>'command_id' = c.command_id::text
             WHERE c.domain = %s
               AND c.status = %s
@@ -161,7 +161,7 @@ class TroubleshootingQueue:
         """
         query = """
             SELECT COUNT(*)
-            FROM command_bus_command
+            FROM commandbus.command
             WHERE domain = %s
               AND status = %s
         """
@@ -247,7 +247,7 @@ class TroubleshootingQueue:
                 # Update command metadata: status=PENDING, attempts=0, msg_id=new
                 await conn.execute(
                     """
-                    UPDATE command_bus_command
+                    UPDATE commandbus.command
                     SET status = %s, attempts = 0, msg_id = %s,
                         last_error_type = NULL, last_error_code = NULL,
                         last_error_msg = NULL, updated_at = NOW()
@@ -323,7 +323,7 @@ class TroubleshootingQueue:
                 # Update command status to CANCELED
                 await conn.execute(
                     """
-                    UPDATE command_bus_command
+                    UPDATE commandbus.command
                     SET status = %s, updated_at = NOW()
                     WHERE domain = %s AND command_id = %s
                     """,
@@ -417,7 +417,7 @@ class TroubleshootingQueue:
                 # Update command status to COMPLETED
                 await conn.execute(
                     """
-                    UPDATE command_bus_command
+                    UPDATE commandbus.command
                     SET status = %s, updated_at = NOW()
                     WHERE domain = %s AND command_id = %s
                     """,

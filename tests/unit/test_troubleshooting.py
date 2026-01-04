@@ -596,7 +596,7 @@ class TestTroubleshootingQueueOperatorRetry:
             query = call_args[0][0]
             params = call_args[0][1]
 
-            assert "UPDATE command_bus_command" in query
+            assert "UPDATE commandbus.command" in query
             assert "status = %s" in query
             assert "attempts = 0" in query
             assert CommandStatus.PENDING.value in params
@@ -842,7 +842,7 @@ class TestTroubleshootingQueueOperatorCancel:
             query = call_args[0][0]
             params = call_args[0][1]
 
-            assert "UPDATE command_bus_command" in query
+            assert "UPDATE commandbus.command" in query
             assert "status = %s" in query
             assert CommandStatus.CANCELED.value in params
 
@@ -1177,7 +1177,7 @@ class TestTroubleshootingQueueOperatorComplete:
             query = call_args[0][0]
             params = call_args[0][1]
 
-            assert "UPDATE command_bus_command" in query
+            assert "UPDATE commandbus.command" in query
             assert "status = %s" in query
             assert CommandStatus.COMPLETED.value in params
 
