@@ -882,7 +882,7 @@ async def list_batches(
         async with pool.connection() as conn, conn.cursor() as cur:
             query = """
                 SELECT batch_id, name, status, total_count, completed_count,
-                       failed_count, canceled_count, in_troubleshooting_count, created_at
+                       canceled_count, in_troubleshooting_count, created_at
                 FROM commandbus.batch
                 WHERE domain = %s
             """
@@ -920,11 +920,11 @@ async def list_batches(
                     status=row[2],
                     total_count=total_count,
                     completed_count=completed,
-                    failed_count=row[5] or 0,
-                    canceled_count=row[6] or 0,
-                    in_troubleshooting_count=row[7] or 0,
+                    failed_count=0,  # Not tracked in database schema
+                    canceled_count=row[5] or 0,
+                    in_troubleshooting_count=row[6] or 0,
                     progress_percent=round(progress, 1),
-                    created_at=row[8],
+                    created_at=row[7],
                 )
             )
 
@@ -956,7 +956,7 @@ async def get_batch(batch_id: UUID, bus: Bus) -> BatchDetailResponse:
         status=batch.status.value,
         total_count=total_count,
         completed_count=completed,
-        failed_count=batch.failed_count or 0,
+        failed_count=0,  # Not tracked in BatchMetadata model
         canceled_count=batch.canceled_count or 0,
         in_troubleshooting_count=batch.in_troubleshooting_count or 0,
         progress_percent=round(progress, 1),
