@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from commandbus.batch import check_and_invoke_batch_callback
+from commandbus.batch import invoke_batch_callback
 from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from commandbus.models import (
     Command,
@@ -225,9 +225,7 @@ class Worker:
             f"(command_id={command_id}, attempt={attempts}/{metadata.max_attempts})"
         )
 
-        # Update batch status on first receive (S042)
-        if metadata.batch_id is not None:
-            await self._batch_repo.update_on_receive(domain, metadata.batch_id, conn=conn)
+        # Note: Batch start (PENDING -> IN_PROGRESS) is handled inside sp_receive_command
 
         return ReceivedCommand(
             command=command,
@@ -259,8 +257,9 @@ class Worker:
             # Delete message from queue
             await self._pgmq.delete(self._queue_name, received.msg_id, conn)
 
-            # Use stored procedure: update status + insert audit in ONE DB CALL
-            await self._command_repo.sp_finish_command(
+            # Use stored procedure: update status + insert audit + batch counter in ONE DB CALL
+            # Returns is_batch_complete for callback triggering
+            is_batch_complete = await self._command_repo.sp_finish_command(
                 domain,
                 command_id,
                 CommandStatus.COMPLETED,
@@ -270,6 +269,7 @@ class Worker:
                     "reply_to": command.reply_to,
                     "has_result": result is not None,
                 },
+                batch_id=received.metadata.batch_id,
                 conn=conn,
             )
 
@@ -285,19 +285,11 @@ class Worker:
                 }
                 await self._pgmq.send(command.reply_to, reply_message, conn=conn)
 
-            # Update batch counters on complete (S042)
-            if received.metadata.batch_id is not None:
-                await self._batch_repo.update_on_complete(
-                    domain, received.metadata.batch_id, conn=conn
-                )
-
         logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
 
-        # Check and invoke batch completion callback (S043) - outside transaction
-        if received.metadata.batch_id is not None:
-            await check_and_invoke_batch_callback(
-                domain, received.metadata.batch_id, self._batch_repo
-            )
+        # Invoke batch completion callback (S043) - outside transaction
+        if is_batch_complete and received.metadata.batch_id is not None:
+            await invoke_batch_callback(domain, received.metadata.batch_id, self._batch_repo)
 
     async def fail(
         self,
@@ -400,7 +392,8 @@ class Worker:
             # Archive message (not delete - keeps history)
             await self._pgmq.archive(self._queue_name, received.msg_id, conn)
 
-            # Use stored procedure: update status + error + audit in ONE DB CALL
+            # Use stored procedure: update status + error + audit + batch counter in ONE DB CALL
+            # Note: Moving to TSQ never completes a batch (is_batch_complete always False)
             await self._command_repo.sp_finish_command(
                 domain,
                 command_id,
@@ -416,14 +409,9 @@ class Worker:
                     "error_msg": error.error_message,
                     "error_details": error.details,
                 },
+                batch_id=received.metadata.batch_id,
                 conn=conn,
             )
-
-            # Update batch counters when moving to TSQ (S042)
-            if received.metadata.batch_id is not None:
-                await self._batch_repo.update_on_tsq_move(
-                    domain, received.metadata.batch_id, conn=conn
-                )
 
         logger.warning(
             f"Permanent failure for {domain}.{command.command_type} "
@@ -460,7 +448,8 @@ class Worker:
             # Archive message (not delete - keeps history)
             await self._pgmq.archive(self._queue_name, received.msg_id, conn)
 
-            # Use stored procedure: update status + error + audit in ONE DB CALL
+            # Use stored procedure: update status + error + audit + batch counter in ONE DB CALL
+            # Note: Moving to TSQ never completes a batch (is_batch_complete always False)
             await self._command_repo.sp_finish_command(
                 domain,
                 command_id,
@@ -478,14 +467,9 @@ class Worker:
                     "error_code": error_code,
                     "error_msg": error_msg,
                 },
+                batch_id=received.metadata.batch_id,
                 conn=conn,
             )
-
-            # Update batch counters when moving to TSQ (S042)
-            if received.metadata.batch_id is not None:
-                await self._batch_repo.update_on_tsq_move(
-                    domain, received.metadata.batch_id, conn=conn
-                )
 
         logger.warning(
             f"Retry exhausted for {domain}.{command.command_type} "

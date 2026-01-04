@@ -56,10 +56,10 @@ class PostgresBatchRepository:
             """
             INSERT INTO command_bus_batch (
                 domain, batch_id, name, custom_data, status,
-                total_count, completed_count, failed_count,
+                total_count, completed_count,
                 canceled_count, in_troubleshooting_count,
                 created_at, started_at, completed_at
-            ) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 metadata.domain,
@@ -69,7 +69,6 @@ class PostgresBatchRepository:
                 metadata.status.value,
                 metadata.total_count,
                 metadata.completed_count,
-                metadata.failed_count,
                 metadata.canceled_count,
                 metadata.in_troubleshooting_count,
                 metadata.created_at,
@@ -112,7 +111,7 @@ class PostgresBatchRepository:
             await cur.execute(
                 """
                 SELECT domain, batch_id, name, custom_data, status,
-                       total_count, completed_count, failed_count,
+                       total_count, completed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
                 FROM command_bus_batch
@@ -220,7 +219,7 @@ class PostgresBatchRepository:
             await cur.execute(
                 f"""
                 SELECT domain, batch_id, name, custom_data, status,
-                       total_count, completed_count, failed_count,
+                       total_count, completed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
                 FROM command_bus_batch
@@ -248,147 +247,21 @@ class PostgresBatchRepository:
             status=BatchStatus(row[4]),
             total_count=row[5],
             completed_count=row[6],
-            failed_count=row[7],
-            canceled_count=row[8],
-            in_troubleshooting_count=row[9],
-            created_at=row[10],
-            started_at=row[11],
-            completed_at=row[12],
+            canceled_count=row[7],
+            in_troubleshooting_count=row[8],
+            created_at=row[9],
+            started_at=row[10],
+            completed_at=row[11],
         )
 
     # =========================================================================
     # Batch Status Tracking Methods (S042)
-    # These call stored procedures to atomically update batch status/counters
+    # TSQ operations that call stored procedures and return is_batch_complete
+    # Note: Batch start and command complete/tsq_move are now handled by
+    # sp_receive_command and sp_finish_command respectively
     # =========================================================================
 
-    async def update_on_receive(
-        self,
-        domain: str,
-        batch_id: UUID,
-        conn: AsyncConnection[Any] | None = None,
-    ) -> bool:
-        """Update batch status to IN_PROGRESS on first command receive.
-
-        Called when a worker receives a command that belongs to a batch.
-        Only transitions batch from PENDING to IN_PROGRESS on the first receive.
-
-        Args:
-            domain: The domain
-            batch_id: The batch ID
-            conn: Optional connection (for transaction support)
-
-        Returns:
-            True if batch was transitioned to IN_PROGRESS, False otherwise
-        """
-        if conn is not None:
-            return await self._update_on_receive(conn, domain, batch_id)
-
-        async with self._pool.connection() as acquired_conn:
-            return await self._update_on_receive(acquired_conn, domain, batch_id)
-
-    async def _update_on_receive(
-        self,
-        conn: AsyncConnection[Any],
-        domain: str,
-        batch_id: UUID,
-    ) -> bool:
-        """Update on receive using stored procedure."""
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT sp_update_batch_on_receive(%s, %s)",
-                (domain, batch_id),
-            )
-            row = await cur.fetchone()
-            result = bool(row[0]) if row else False
-            if result:
-                logger.debug(f"Batch {domain}.{batch_id} transitioned to IN_PROGRESS")
-            return result
-
-    async def update_on_complete(
-        self,
-        domain: str,
-        batch_id: UUID,
-        conn: AsyncConnection[Any] | None = None,
-    ) -> bool:
-        """Update batch when a command completes successfully.
-
-        Increments completed_count and checks if batch is now complete.
-
-        Args:
-            domain: The domain
-            batch_id: The batch ID
-            conn: Optional connection (for transaction support)
-
-        Returns:
-            True if batch was updated, False otherwise
-        """
-        if conn is not None:
-            return await self._update_on_complete(conn, domain, batch_id)
-
-        async with self._pool.connection() as acquired_conn:
-            return await self._update_on_complete(acquired_conn, domain, batch_id)
-
-    async def _update_on_complete(
-        self,
-        conn: AsyncConnection[Any],
-        domain: str,
-        batch_id: UUID,
-    ) -> bool:
-        """Update on complete using stored procedure."""
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT sp_update_batch_on_complete(%s, %s)",
-                (domain, batch_id),
-            )
-            row = await cur.fetchone()
-            result = bool(row[0]) if row else False
-            if result:
-                logger.debug(f"Batch {domain}.{batch_id} completed_count incremented")
-            return result
-
-    async def update_on_tsq_move(
-        self,
-        domain: str,
-        batch_id: UUID,
-        conn: AsyncConnection[Any] | None = None,
-    ) -> bool:
-        """Update batch when a command moves to troubleshooting queue.
-
-        Increments in_troubleshooting_count.
-
-        Args:
-            domain: The domain
-            batch_id: The batch ID
-            conn: Optional connection (for transaction support)
-
-        Returns:
-            True if batch was updated, False otherwise
-        """
-        if conn is not None:
-            return await self._update_on_tsq_move(conn, domain, batch_id)
-
-        async with self._pool.connection() as acquired_conn:
-            return await self._update_on_tsq_move(acquired_conn, domain, batch_id)
-
-    async def _update_on_tsq_move(
-        self,
-        conn: AsyncConnection[Any],
-        domain: str,
-        batch_id: UUID,
-    ) -> bool:
-        """Update on TSQ move using stored procedure."""
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT sp_update_batch_on_tsq_move(%s, %s)",
-                (domain, batch_id),
-            )
-            row = await cur.fetchone()
-            result = bool(row[0]) if row else False
-            if result:
-                logger.debug(f"Batch {domain}.{batch_id} in_troubleshooting_count incremented")
-            return result
-
-    async def update_on_tsq_complete(
+    async def tsq_complete(
         self,
         domain: str,
         batch_id: UUID,
@@ -405,33 +278,32 @@ class PostgresBatchRepository:
             conn: Optional connection (for transaction support)
 
         Returns:
-            True if batch was updated, False otherwise
+            True if batch is now complete (for callback triggering)
         """
         if conn is not None:
-            return await self._update_on_tsq_complete(conn, domain, batch_id)
+            return await self._tsq_complete(conn, domain, batch_id)
 
         async with self._pool.connection() as acquired_conn:
-            return await self._update_on_tsq_complete(acquired_conn, domain, batch_id)
+            return await self._tsq_complete(acquired_conn, domain, batch_id)
 
-    async def _update_on_tsq_complete(
+    async def _tsq_complete(
         self,
         conn: AsyncConnection[Any],
         domain: str,
         batch_id: UUID,
     ) -> bool:
-        """Update on TSQ complete using stored procedure."""
+        """TSQ complete using stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_update_batch_on_tsq_complete(%s, %s)",
+                "SELECT sp_tsq_complete(%s, %s)",
                 (domain, batch_id),
             )
             row = await cur.fetchone()
-            result = bool(row[0]) if row else False
-            if result:
-                logger.debug(f"Batch {domain}.{batch_id} TSQ complete processed")
-            return result
+            is_complete = bool(row[0]) if row else False
+            logger.debug(f"Batch {domain}.{batch_id} TSQ complete: is_batch_complete={is_complete}")
+            return is_complete
 
-    async def update_on_tsq_cancel(
+    async def tsq_cancel(
         self,
         domain: str,
         batch_id: UUID,
@@ -448,70 +320,63 @@ class PostgresBatchRepository:
             conn: Optional connection (for transaction support)
 
         Returns:
-            True if batch was updated, False otherwise
+            True if batch is now complete (for callback triggering)
         """
         if conn is not None:
-            return await self._update_on_tsq_cancel(conn, domain, batch_id)
+            return await self._tsq_cancel(conn, domain, batch_id)
 
         async with self._pool.connection() as acquired_conn:
-            return await self._update_on_tsq_cancel(acquired_conn, domain, batch_id)
+            return await self._tsq_cancel(acquired_conn, domain, batch_id)
 
-    async def _update_on_tsq_cancel(
+    async def _tsq_cancel(
         self,
         conn: AsyncConnection[Any],
         domain: str,
         batch_id: UUID,
     ) -> bool:
-        """Update on TSQ cancel using stored procedure."""
+        """TSQ cancel using stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_update_batch_on_tsq_cancel(%s, %s)",
+                "SELECT sp_tsq_cancel(%s, %s)",
                 (domain, batch_id),
             )
             row = await cur.fetchone()
-            result = bool(row[0]) if row else False
-            if result:
-                logger.debug(f"Batch {domain}.{batch_id} TSQ cancel processed")
-            return result
+            is_complete = bool(row[0]) if row else False
+            logger.debug(f"Batch {domain}.{batch_id} TSQ cancel: is_batch_complete={is_complete}")
+            return is_complete
 
-    async def update_on_tsq_retry(
+    async def tsq_retry(
         self,
         domain: str,
         batch_id: UUID,
         conn: AsyncConnection[Any] | None = None,
-    ) -> bool:
+    ) -> None:
         """Update batch when operator retries a command from TSQ.
 
         Decrements in_troubleshooting_count (command goes back to queue).
+        Note: Retry never completes a batch.
 
         Args:
             domain: The domain
             batch_id: The batch ID
             conn: Optional connection (for transaction support)
-
-        Returns:
-            True if batch was updated, False otherwise
         """
         if conn is not None:
-            return await self._update_on_tsq_retry(conn, domain, batch_id)
+            await self._tsq_retry(conn, domain, batch_id)
+        else:
+            async with self._pool.connection() as acquired_conn:
+                await self._tsq_retry(acquired_conn, domain, batch_id)
 
-        async with self._pool.connection() as acquired_conn:
-            return await self._update_on_tsq_retry(acquired_conn, domain, batch_id)
-
-    async def _update_on_tsq_retry(
+    async def _tsq_retry(
         self,
         conn: AsyncConnection[Any],
         domain: str,
         batch_id: UUID,
-    ) -> bool:
-        """Update on TSQ retry using stored procedure."""
+    ) -> None:
+        """TSQ retry using stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_update_batch_on_tsq_retry(%s, %s)",
+                "SELECT sp_tsq_retry(%s, %s)",
                 (domain, batch_id),
             )
-            row = await cur.fetchone()
-            result = bool(row[0]) if row else False
-            if result:
-                logger.debug(f"Batch {domain}.{batch_id} TSQ retry processed")
-            return result
+            logger.debug(f"Batch {domain}.{batch_id} TSQ retry processed")

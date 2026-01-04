@@ -6,7 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from commandbus.batch import check_and_invoke_batch_callback
+from commandbus.batch import invoke_batch_callback
 from commandbus.exceptions import CommandNotFoundError, InvalidOperationError
 from commandbus.models import CommandStatus, ReplyOutcome, TroubleshootingItem
 from commandbus.pgmq.client import PgmqClient
@@ -266,8 +266,9 @@ class TroubleshootingQueue:
                 )
 
                 # Update batch counters on retry (S042)
+                # Note: Retry never completes a batch
                 if metadata.batch_id is not None:
-                    await batch_repo.update_on_tsq_retry(domain, metadata.batch_id, conn=conn)
+                    await batch_repo.tsq_retry(domain, metadata.batch_id, conn=conn)
 
         logger.info(
             f"Operator retry for {domain}.{command_id}: "
@@ -355,16 +356,20 @@ class TroubleshootingQueue:
                 )
 
                 # Update batch counters on cancel (S042)
+                # Returns is_batch_complete for callback triggering
+                is_batch_complete = False
                 if metadata.batch_id is not None:
-                    await batch_repo.update_on_tsq_cancel(domain, metadata.batch_id, conn=conn)
+                    is_batch_complete = await batch_repo.tsq_cancel(
+                        domain, metadata.batch_id, conn=conn
+                    )
 
         logger.info(
             f"Operator cancel for {domain}.{command_id}: reason={reason}, operator={operator}"
         )
 
-        # Check and invoke batch completion callback (S043) - outside transaction
-        if metadata.batch_id is not None:
-            await check_and_invoke_batch_callback(domain, metadata.batch_id, batch_repo)
+        # Invoke batch completion callback (S043) - outside transaction
+        if is_batch_complete and metadata.batch_id is not None:
+            await invoke_batch_callback(domain, metadata.batch_id, batch_repo)
 
     async def operator_complete(
         self,
@@ -445,11 +450,15 @@ class TroubleshootingQueue:
                 )
 
                 # Update batch counters on complete (S042)
+                # Returns is_batch_complete for callback triggering
+                is_batch_complete = False
                 if metadata.batch_id is not None:
-                    await batch_repo.update_on_tsq_complete(domain, metadata.batch_id, conn=conn)
+                    is_batch_complete = await batch_repo.tsq_complete(
+                        domain, metadata.batch_id, conn=conn
+                    )
 
         logger.info(f"Operator complete for {domain}.{command_id}: operator={operator}")
 
-        # Check and invoke batch completion callback (S043) - outside transaction
-        if metadata.batch_id is not None:
-            await check_and_invoke_batch_callback(domain, metadata.batch_id, batch_repo)
+        # Invoke batch completion callback (S043) - outside transaction
+        if is_batch_complete and metadata.batch_id is not None:
+            await invoke_batch_callback(domain, metadata.batch_id, batch_repo)

@@ -84,12 +84,57 @@ async def remove_batch_callback(domain: str, batch_id: UUID) -> None:
     logger.debug(f"Removed callback for batch {domain}.{batch_id}")
 
 
+async def invoke_batch_callback(
+    domain: str,
+    batch_id: UUID,
+    batch_repo: PostgresBatchRepository,
+) -> None:
+    """Invoke the callback for a completed batch.
+
+    This function should be called when is_batch_complete=True is returned
+    from sp_finish_command or TSQ operations.
+
+    The callback is invoked outside of any database transaction.
+    Callback exceptions are caught and logged but not propagated.
+
+    Args:
+        domain: The domain of the batch
+        batch_id: The batch ID
+        batch_repo: Batch repository to fetch batch metadata
+    """
+    callback = get_batch_callback(domain, batch_id)
+    if callback is None:
+        return
+
+    # Fetch the batch to get its final status for the callback
+    batch = await batch_repo.get(domain, batch_id)
+    if batch is None:
+        logger.warning(f"Batch {domain}.{batch_id} not found for callback")
+        await remove_batch_callback(domain, batch_id)
+        return
+
+    try:
+        logger.info(
+            f"Invoking callback for batch {domain}.{batch_id} (status={batch.status.value})"
+        )
+        await callback(batch)
+        logger.debug(f"Callback for batch {domain}.{batch_id} completed successfully")
+    except Exception as e:
+        logger.exception(f"Batch callback error for {domain}.{batch_id}: {e}")
+    finally:
+        # Always remove the callback after invocation (success or failure)
+        await remove_batch_callback(domain, batch_id)
+
+
 async def check_and_invoke_batch_callback(
     domain: str,
     batch_id: UUID,
     batch_repo: PostgresBatchRepository,
 ) -> None:
     """Check if batch is complete and invoke callback if registered.
+
+    DEPRECATED: Use invoke_batch_callback instead when is_batch_complete=True
+    is returned from sp_finish_command or TSQ operations.
 
     This function should be called after any operation that might complete a batch
     (e.g., command complete, TSQ cancel, TSQ complete).
