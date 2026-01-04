@@ -1,5 +1,6 @@
 """Integration tests for batch creation functionality."""
 
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -12,6 +13,7 @@ from commandbus import (
     CommandStatus,
     DuplicateCommandError,
 )
+from commandbus.batch import clear_all_callbacks
 from commandbus.exceptions import PermanentCommandError
 from commandbus.handler import HandlerRegistry
 from commandbus.ops.troubleshooting import TroubleshootingQueue
@@ -764,3 +766,259 @@ class TestBatchStatusTracking:
         assert batch.completed_count == 1
         assert batch.in_troubleshooting_count == 0
         assert batch.completed_at is not None
+
+
+@pytest.mark.asyncio
+class TestBatchCompletionCallback:
+    """Integration tests for batch completion callbacks (S043)."""
+
+    async def test_callback_invoked_when_batch_completes(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that callback is invoked when batch completes."""
+        clear_all_callbacks()
+
+        batch_id = uuid4()
+        cmd_id = uuid4()
+        callback = AsyncMock()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+            on_complete=callback,
+        )
+
+        # Create worker
+        registry = HandlerRegistry()
+
+        @registry.handler("payments", "DebitAccount")
+        async def handle_debit(command, context):
+            return {"processed": True}
+
+        worker = Worker(pool, domain="payments", registry=registry)
+
+        # Receive and complete command
+        received = await worker.receive(batch_size=1)
+        await worker.complete(received[0], result={"processed": True})
+
+        # Callback should have been invoked
+        callback.assert_called_once()
+        batch_arg = callback.call_args[0][0]
+        assert batch_arg.batch_id == batch_id
+        assert batch_arg.status == BatchStatus.COMPLETED
+
+        clear_all_callbacks()
+
+    async def test_callback_invoked_on_tsq_complete(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that callback is invoked when operator completes TSQ item."""
+        clear_all_callbacks()
+
+        batch_id = uuid4()
+        cmd_id = uuid4()
+        callback = AsyncMock()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+            on_complete=callback,
+        )
+
+        # Create worker
+        worker = Worker(pool, domain="payments")
+
+        # Receive and fail permanently
+        received = await worker.receive(batch_size=1)
+        error = PermanentCommandError(code="INVALID_ACCOUNT", message="Account not found")
+        await worker.fail_permanent(received[0], error)
+
+        # Callback should not be invoked yet
+        callback.assert_not_called()
+
+        # Operator completes the command
+        tsq = TroubleshootingQueue(pool)
+        await tsq.operator_complete("payments", cmd_id, result_data={"manual": True})
+
+        # Callback should have been invoked
+        callback.assert_called_once()
+        batch_arg = callback.call_args[0][0]
+        assert batch_arg.batch_id == batch_id
+        assert batch_arg.status == BatchStatus.COMPLETED
+
+        clear_all_callbacks()
+
+    async def test_callback_invoked_on_tsq_cancel(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that callback is invoked when operator cancels TSQ item."""
+        clear_all_callbacks()
+
+        batch_id = uuid4()
+        cmd_id = uuid4()
+        callback = AsyncMock()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+            on_complete=callback,
+        )
+
+        # Create worker
+        worker = Worker(pool, domain="payments")
+
+        # Receive and fail permanently
+        received = await worker.receive(batch_size=1)
+        error = PermanentCommandError(code="INVALID_ACCOUNT", message="Account not found")
+        await worker.fail_permanent(received[0], error)
+
+        # Callback should not be invoked yet
+        callback.assert_not_called()
+
+        # Operator cancels the command
+        tsq = TroubleshootingQueue(pool)
+        await tsq.operator_cancel("payments", cmd_id, reason="Test cancel")
+
+        # Callback should have been invoked
+        callback.assert_called_once()
+        batch_arg = callback.call_args[0][0]
+        assert batch_arg.batch_id == batch_id
+        assert batch_arg.status == BatchStatus.COMPLETED_WITH_FAILURES
+
+        clear_all_callbacks()
+
+    async def test_callback_not_invoked_while_batch_in_progress(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that callback is not invoked while batch is still in progress."""
+        clear_all_callbacks()
+
+        batch_id = uuid4()
+        cmd1_id = uuid4()
+        cmd2_id = uuid4()
+        callback = AsyncMock()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd1_id,
+                    data={"account_id": "123"},
+                ),
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd2_id,
+                    data={"account_id": "456"},
+                ),
+            ],
+            batch_id=batch_id,
+            on_complete=callback,
+        )
+
+        # Create worker
+        registry = HandlerRegistry()
+
+        @registry.handler("payments", "DebitAccount")
+        async def handle_debit(command, context):
+            return {"processed": True}
+
+        worker = Worker(pool, domain="payments", registry=registry)
+
+        # Complete first command
+        received = await worker.receive(batch_size=1)
+        await worker.complete(received[0], result={"processed": True})
+
+        # Callback should NOT be invoked - batch still has pending commands
+        callback.assert_not_called()
+
+        # Complete second command
+        received = await worker.receive(batch_size=1)
+        await worker.complete(received[0], result={"processed": True})
+
+        # Now callback should be invoked
+        callback.assert_called_once()
+
+        clear_all_callbacks()
+
+    async def test_callback_exception_does_not_propagate(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that callback exceptions are caught and don't affect the worker."""
+        clear_all_callbacks()
+
+        batch_id = uuid4()
+        cmd_id = uuid4()
+        callback = AsyncMock(side_effect=ValueError("Callback failed!"))
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+            on_complete=callback,
+        )
+
+        # Create worker
+        registry = HandlerRegistry()
+
+        @registry.handler("payments", "DebitAccount")
+        async def handle_debit(command, context):
+            return {"processed": True}
+
+        worker = Worker(pool, domain="payments", registry=registry)
+
+        # Receive and complete command - should not raise
+        received = await worker.receive(batch_size=1)
+        await worker.complete(received[0], result={"processed": True})
+
+        # Callback was called (and failed)
+        callback.assert_called_once()
+
+        # Batch should still be marked as complete
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.COMPLETED
+
+        clear_all_callbacks()

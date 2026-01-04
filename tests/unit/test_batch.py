@@ -7,6 +7,14 @@ from uuid import uuid4
 
 import pytest
 
+from commandbus.batch import (
+    _batch_callbacks,
+    check_and_invoke_batch_callback,
+    clear_all_callbacks,
+    get_batch_callback,
+    register_batch_callback,
+    remove_batch_callback,
+)
 from commandbus.bus import CommandBus
 from commandbus.exceptions import DuplicateCommandError
 from commandbus.models import (
@@ -480,6 +488,72 @@ class TestCommandBusCreateBatch:
             _domain, _cmd_id, _event_type, details = logged_events[0]
             assert details["batch_id"] == str(batch_id)
 
+    @pytest.mark.asyncio
+    async def test_create_batch_registers_on_complete_callback(
+        self, command_bus: CommandBus
+    ) -> None:
+        """Test that on_complete callback is registered."""
+        clear_all_callbacks()
+
+        batch_id = uuid4()
+        callback = AsyncMock()
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists,
+            patch.object(command_bus._batch_repo, "save", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "send_batch", new_callable=AsyncMock) as mock_send,
+            patch.object(command_bus._command_repo, "save_batch", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists.return_value = set()
+            mock_send.return_value = [1]
+
+            await command_bus.create_batch(
+                domain="payments",
+                commands=[BatchCommand(command_type="Cmd", command_id=uuid4(), data={})],
+                batch_id=batch_id,
+                on_complete=callback,
+            )
+
+            registered = get_batch_callback("payments", batch_id)
+            assert registered is callback
+
+        clear_all_callbacks()
+
+    @pytest.mark.asyncio
+    async def test_create_batch_without_on_complete_callback(self, command_bus: CommandBus) -> None:
+        """Test that no callback is registered when on_complete is not provided."""
+        clear_all_callbacks()
+
+        batch_id = uuid4()
+
+        with (
+            patch.object(
+                command_bus._command_repo, "exists_batch", new_callable=AsyncMock
+            ) as mock_exists,
+            patch.object(command_bus._batch_repo, "save", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "send_batch", new_callable=AsyncMock) as mock_send,
+            patch.object(command_bus._command_repo, "save_batch", new_callable=AsyncMock),
+            patch.object(command_bus._audit_logger, "log_batch", new_callable=AsyncMock),
+            patch.object(command_bus._pgmq, "notify", new_callable=AsyncMock),
+        ):
+            mock_exists.return_value = set()
+            mock_send.return_value = [1]
+
+            await command_bus.create_batch(
+                domain="payments",
+                commands=[BatchCommand(command_type="Cmd", command_id=uuid4(), data={})],
+                batch_id=batch_id,
+            )
+
+            registered = get_batch_callback("payments", batch_id)
+            assert registered is None
+
+        clear_all_callbacks()
+
 
 class TestBatchRepositoryStatusTracking:
     """Tests for PostgresBatchRepository status tracking methods."""
@@ -672,3 +746,190 @@ class TestBatchRepositoryStatusTracking:
         result = await repo.update_on_receive("payments", uuid4())
 
         assert result is False
+
+
+class TestBatchCompletionCallbackRegistry:
+    """Tests for batch completion callback registry functions."""
+
+    @pytest.fixture(autouse=True)
+    def cleanup_callbacks(self) -> None:
+        """Clear all callbacks before and after each test."""
+        clear_all_callbacks()
+        yield
+        clear_all_callbacks()
+
+    @pytest.mark.asyncio
+    async def test_register_and_get_callback(self) -> None:
+        """Test registering and retrieving a callback."""
+        batch_id = uuid4()
+        callback = AsyncMock()
+
+        await register_batch_callback("payments", batch_id, callback)
+
+        retrieved = get_batch_callback("payments", batch_id)
+        assert retrieved is callback
+
+    @pytest.mark.asyncio
+    async def test_get_callback_not_found(self) -> None:
+        """Test getting a callback that doesn't exist."""
+        result = get_batch_callback("payments", uuid4())
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_remove_callback(self) -> None:
+        """Test removing a callback."""
+        batch_id = uuid4()
+        callback = AsyncMock()
+
+        await register_batch_callback("payments", batch_id, callback)
+        await remove_batch_callback("payments", batch_id)
+
+        result = get_batch_callback("payments", batch_id)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_remove_nonexistent_callback(self) -> None:
+        """Test removing a callback that doesn't exist (no error)."""
+        # Should not raise
+        await remove_batch_callback("payments", uuid4())
+
+    def test_clear_all_callbacks(self) -> None:
+        """Test clearing all callbacks."""
+        # Add some callbacks directly
+        _batch_callbacks[("payments", uuid4())] = AsyncMock()
+        _batch_callbacks[("orders", uuid4())] = AsyncMock()
+
+        clear_all_callbacks()
+
+        assert len(_batch_callbacks) == 0
+
+    @pytest.mark.asyncio
+    async def test_callbacks_are_domain_scoped(self) -> None:
+        """Test that callbacks are scoped by domain."""
+        batch_id = uuid4()
+        callback1 = AsyncMock()
+        callback2 = AsyncMock()
+
+        await register_batch_callback("payments", batch_id, callback1)
+        await register_batch_callback("orders", batch_id, callback2)
+
+        assert get_batch_callback("payments", batch_id) is callback1
+        assert get_batch_callback("orders", batch_id) is callback2
+
+    @pytest.mark.asyncio
+    async def test_check_and_invoke_callback_not_registered(self) -> None:
+        """Test check_and_invoke when no callback is registered."""
+        batch_repo = MagicMock()
+        batch_repo.get = AsyncMock()
+
+        # Should not call batch_repo.get if no callback registered
+        await check_and_invoke_batch_callback("payments", uuid4(), batch_repo)
+
+        batch_repo.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_and_invoke_callback_batch_not_found(self) -> None:
+        """Test check_and_invoke when batch doesn't exist."""
+        batch_id = uuid4()
+        callback = AsyncMock()
+
+        await register_batch_callback("payments", batch_id, callback)
+
+        batch_repo = MagicMock()
+        batch_repo.get = AsyncMock(return_value=None)
+
+        await check_and_invoke_batch_callback("payments", batch_id, batch_repo)
+
+        callback.assert_not_called()
+        # Callback should be removed
+        assert get_batch_callback("payments", batch_id) is None
+
+    @pytest.mark.asyncio
+    async def test_check_and_invoke_callback_batch_not_terminal(self) -> None:
+        """Test check_and_invoke when batch is not in terminal state."""
+        batch_id = uuid4()
+        callback = AsyncMock()
+
+        await register_batch_callback("payments", batch_id, callback)
+
+        batch = BatchMetadata(
+            domain="payments",
+            batch_id=batch_id,
+            status=BatchStatus.IN_PROGRESS,
+        )
+        batch_repo = MagicMock()
+        batch_repo.get = AsyncMock(return_value=batch)
+
+        await check_and_invoke_batch_callback("payments", batch_id, batch_repo)
+
+        callback.assert_not_called()
+        # Callback should still be registered
+        assert get_batch_callback("payments", batch_id) is callback
+
+    @pytest.mark.asyncio
+    async def test_check_and_invoke_callback_completed(self) -> None:
+        """Test check_and_invoke when batch is COMPLETED."""
+
+        batch_id = uuid4()
+        callback = AsyncMock()
+
+        await register_batch_callback("payments", batch_id, callback)
+
+        batch = BatchMetadata(
+            domain="payments",
+            batch_id=batch_id,
+            status=BatchStatus.COMPLETED,
+        )
+        batch_repo = MagicMock()
+        batch_repo.get = AsyncMock(return_value=batch)
+
+        await check_and_invoke_batch_callback("payments", batch_id, batch_repo)
+
+        callback.assert_called_once_with(batch)
+        # Callback should be removed after invocation
+        assert get_batch_callback("payments", batch_id) is None
+
+    @pytest.mark.asyncio
+    async def test_check_and_invoke_callback_completed_with_failures(self) -> None:
+        """Test check_and_invoke when batch is COMPLETED_WITH_FAILURES."""
+        batch_id = uuid4()
+        callback = AsyncMock()
+
+        await register_batch_callback("payments", batch_id, callback)
+
+        batch = BatchMetadata(
+            domain="payments",
+            batch_id=batch_id,
+            status=BatchStatus.COMPLETED_WITH_FAILURES,
+            failed_count=2,
+        )
+        batch_repo = MagicMock()
+        batch_repo.get = AsyncMock(return_value=batch)
+
+        await check_and_invoke_batch_callback("payments", batch_id, batch_repo)
+
+        callback.assert_called_once_with(batch)
+        assert get_batch_callback("payments", batch_id) is None
+
+    @pytest.mark.asyncio
+    async def test_check_and_invoke_callback_exception_isolated(self) -> None:
+        """Test that callback exceptions are caught and don't propagate."""
+        batch_id = uuid4()
+        callback = AsyncMock(side_effect=ValueError("callback failed"))
+
+        await register_batch_callback("payments", batch_id, callback)
+
+        batch = BatchMetadata(
+            domain="payments",
+            batch_id=batch_id,
+            status=BatchStatus.COMPLETED,
+        )
+        batch_repo = MagicMock()
+        batch_repo.get = AsyncMock(return_value=batch)
+
+        # Should not raise
+        await check_and_invoke_batch_callback("payments", batch_id, batch_repo)
+
+        callback.assert_called_once()
+        # Callback should still be removed after failure
+        assert get_batch_callback("payments", batch_id) is None

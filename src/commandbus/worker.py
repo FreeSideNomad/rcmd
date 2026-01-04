@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from commandbus.batch import check_and_invoke_batch_callback
 from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from commandbus.models import (
     Command,
@@ -291,6 +292,12 @@ class Worker:
                 )
 
         logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
+
+        # Check and invoke batch completion callback (S043) - outside transaction
+        if received.metadata.batch_id is not None:
+            await check_and_invoke_batch_callback(
+                domain, received.metadata.batch_id, self._batch_repo
+            )
 
     async def fail(
         self,

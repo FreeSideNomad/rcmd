@@ -6,6 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from commandbus.batch import check_and_invoke_batch_callback
 from commandbus.exceptions import CommandNotFoundError, InvalidOperationError
 from commandbus.models import CommandStatus, ReplyOutcome, TroubleshootingItem
 from commandbus.pgmq.client import PgmqClient
@@ -361,6 +362,10 @@ class TroubleshootingQueue:
             f"Operator cancel for {domain}.{command_id}: reason={reason}, operator={operator}"
         )
 
+        # Check and invoke batch completion callback (S043) - outside transaction
+        if metadata.batch_id is not None:
+            await check_and_invoke_batch_callback(domain, metadata.batch_id, batch_repo)
+
     async def operator_complete(
         self,
         domain: str,
@@ -444,3 +449,7 @@ class TroubleshootingQueue:
                     await batch_repo.update_on_tsq_complete(domain, metadata.batch_id, conn=conn)
 
         logger.info(f"Operator complete for {domain}.{command_id}: operator={operator}")
+
+        # Check and invoke batch completion callback (S043) - outside transaction
+        if metadata.batch_id is not None:
+            await check_and_invoke_batch_callback(domain, metadata.batch_id, batch_repo)

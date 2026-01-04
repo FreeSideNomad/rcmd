@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+from commandbus.batch import BatchCompletionCallback, register_batch_callback
 from commandbus.exceptions import DuplicateCommandError
 from commandbus.models import (
     AuditEvent,
@@ -500,6 +501,7 @@ class CommandBus:
         batch_id: UUID | None = None,
         name: str | None = None,
         custom_data: dict[str, Any] | None = None,
+        on_complete: BatchCompletionCallback | None = None,
     ) -> CreateBatchResult:
         """Create a batch containing multiple commands atomically.
 
@@ -512,6 +514,10 @@ class CommandBus:
             batch_id: Optional batch ID (auto-generated if not provided)
             name: Optional human-readable name for the batch
             custom_data: Optional custom metadata
+            on_complete: Optional async callback invoked when batch completes.
+                         The callback receives BatchMetadata as argument.
+                         Callback errors are logged but not propagated.
+                         Note: Callbacks are in-memory only and lost on restart.
 
         Returns:
             CreateBatchResult with batch_id and individual command results
@@ -521,6 +527,9 @@ class CommandBus:
             DuplicateCommandError: If any command_id already exists
 
         Example:
+            async def on_batch_complete(batch: BatchMetadata) -> None:
+                print(f"Batch {batch.batch_id} completed with status {batch.status}")
+
             result = await bus.create_batch(
                 domain="payments",
                 commands=[
@@ -536,6 +545,7 @@ class CommandBus:
                     ),
                 ],
                 name="Monthly billing run",
+                on_complete=on_batch_complete,
             )
         """
         if not commands:
@@ -653,6 +663,10 @@ class CommandBus:
 
             # Send NOTIFY
             await self._pgmq.notify(queue_name, conn)
+
+        # Register callback if provided (outside transaction)
+        if on_complete is not None:
+            await register_batch_callback(domain, effective_batch_id, on_complete)
 
         logger.info(
             f"Created batch {effective_batch_id} in domain {domain} with {len(commands)} commands"
