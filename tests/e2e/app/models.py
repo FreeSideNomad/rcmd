@@ -66,7 +66,7 @@ class TestCommandRepository:
         async with self.pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO test_command (command_id, payload, behavior)
+                INSERT INTO e2e.test_command (command_id, payload, behavior)
                 VALUES (%s, %s, %s)
                 RETURNING id, command_id, payload, behavior,
                           created_at, processed_at, attempts, result
@@ -91,7 +91,7 @@ class TestCommandRepository:
         async with self.pool.connection() as conn, conn.cursor() as cur:
             await cur.executemany(
                 """
-                INSERT INTO test_command (command_id, payload, behavior)
+                INSERT INTO e2e.test_command (command_id, payload, behavior)
                 VALUES (%s, %s, %s)
                 """,
                 [(cmd_id, Json(payload), Json(behavior)) for cmd_id, behavior, payload in commands],
@@ -104,7 +104,7 @@ class TestCommandRepository:
                 """
                 SELECT id, command_id, payload, behavior,
                        created_at, processed_at, attempts, result
-                FROM test_command
+                FROM e2e.test_command
                 WHERE command_id = %s
                 """,
                 (command_id,),
@@ -117,7 +117,7 @@ class TestCommandRepository:
         async with self.pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    UPDATE test_command
+                    UPDATE e2e.test_command
                     SET attempts = attempts + 1
                     WHERE command_id = %s
                     RETURNING attempts
@@ -132,7 +132,7 @@ class TestCommandRepository:
         async with self.pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    UPDATE test_command
+                    UPDATE e2e.test_command
                     SET processed_at = NOW(), result = %s
                     WHERE command_id = %s
                     """,
@@ -144,7 +144,7 @@ class TestCommandRepository:
         async with self.pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    UPDATE test_command
+                    UPDATE e2e.test_command
                     SET behavior = %s
                     WHERE command_id = %s
                     """,
@@ -158,7 +158,7 @@ class TestCommandRepository:
                 """
                 SELECT id, command_id, payload, behavior,
                        created_at, processed_at, attempts, result
-                FROM test_command
+                FROM e2e.test_command
                 ORDER BY created_at DESC
                 LIMIT %s OFFSET %s
                 """,
