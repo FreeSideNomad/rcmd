@@ -16,6 +16,7 @@ from commandbus.models import (
     CreateBatchResult,
     SendResult,
 )
+from commandbus.repositories.batch import PostgresBatchRepository
 
 
 class TestBatchCommand:
@@ -478,3 +479,196 @@ class TestCommandBusCreateBatch:
             assert len(logged_events) == 1
             _domain, _cmd_id, _event_type, details = logged_events[0]
             assert details["batch_id"] == str(batch_id)
+
+
+class TestBatchRepositoryStatusTracking:
+    """Tests for PostgresBatchRepository status tracking methods."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with proper async context managers."""
+        pool = MagicMock()
+        conn = MagicMock()
+        cursor = MagicMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_cursor():
+            yield cursor
+
+        pool.connection = mock_connection
+        conn.cursor = mock_cursor
+
+        return pool, conn, cursor
+
+    @pytest.mark.asyncio
+    async def test_update_on_receive_returns_true(self, mock_pool: tuple) -> None:
+        """Test update_on_receive returns True when batch transitions."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_receive("payments", uuid4())
+
+        assert result is True
+        cursor.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_on_receive_returns_false(self, mock_pool: tuple) -> None:
+        """Test update_on_receive returns False when no transition."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(False,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_receive("payments", uuid4())
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_update_on_receive_with_conn(self, mock_pool: tuple) -> None:
+        """Test update_on_receive uses provided connection."""
+        pool, conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_receive("payments", uuid4(), conn=conn)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_complete_returns_true(self, mock_pool: tuple) -> None:
+        """Test update_on_complete returns True when batch updated."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_complete("payments", uuid4())
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_complete_with_conn(self, mock_pool: tuple) -> None:
+        """Test update_on_complete uses provided connection."""
+        pool, conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_complete("payments", uuid4(), conn=conn)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_move_returns_true(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_move returns True when batch updated."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_move("payments", uuid4())
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_move_with_conn(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_move uses provided connection."""
+        pool, conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_move("payments", uuid4(), conn=conn)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_complete_returns_true(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_complete returns True when batch updated."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_complete("payments", uuid4())
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_complete_with_conn(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_complete uses provided connection."""
+        pool, conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_complete("payments", uuid4(), conn=conn)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_cancel_returns_true(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_cancel returns True when batch updated."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_cancel("payments", uuid4())
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_cancel_with_conn(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_cancel uses provided connection."""
+        pool, conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_cancel("payments", uuid4(), conn=conn)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_retry_returns_true(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_retry returns True when batch updated."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_retry("payments", uuid4())
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_tsq_retry_with_conn(self, mock_pool: tuple) -> None:
+        """Test update_on_tsq_retry uses provided connection."""
+        pool, conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=(True,))
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_tsq_retry("payments", uuid4(), conn=conn)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_on_receive_handles_none_row(self, mock_pool: tuple) -> None:
+        """Test update_on_receive handles None row result."""
+        pool, _conn, cursor = mock_pool
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=None)
+
+        repo = PostgresBatchRepository(pool)
+        result = await repo.update_on_receive("payments", uuid4())
+
+        assert result is False

@@ -10,6 +10,7 @@ from commandbus.exceptions import CommandNotFoundError, InvalidOperationError
 from commandbus.models import CommandStatus, ReplyOutcome, TroubleshootingItem
 from commandbus.pgmq.client import PgmqClient
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
+from commandbus.repositories.batch import PostgresBatchRepository
 from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
@@ -203,6 +204,7 @@ class TroubleshootingQueue:
 
         # Create helper instances
         command_repo = PostgresCommandRepository(self._pool)
+        batch_repo = PostgresBatchRepository(self._pool)
         pgmq = PgmqClient(self._pool)
         audit_logger = PostgresAuditLogger(self._pool)
 
@@ -262,6 +264,10 @@ class TroubleshootingQueue:
                     conn=conn,
                 )
 
+                # Update batch counters on retry (S042)
+                if metadata.batch_id is not None:
+                    await batch_repo.update_on_tsq_retry(domain, metadata.batch_id, conn=conn)
+
         logger.info(
             f"Operator retry for {domain}.{command_id}: "
             f"new_msg_id={new_msg_id}, operator={operator}"
@@ -293,6 +299,7 @@ class TroubleshootingQueue:
         """
         # Create helper instances
         command_repo = PostgresCommandRepository(self._pool)
+        batch_repo = PostgresBatchRepository(self._pool)
         pgmq = PgmqClient(self._pool)
         audit_logger = PostgresAuditLogger(self._pool)
 
@@ -346,6 +353,10 @@ class TroubleshootingQueue:
                     conn=conn,
                 )
 
+                # Update batch counters on cancel (S042)
+                if metadata.batch_id is not None:
+                    await batch_repo.update_on_tsq_cancel(domain, metadata.batch_id, conn=conn)
+
         logger.info(
             f"Operator cancel for {domain}.{command_id}: reason={reason}, operator={operator}"
         )
@@ -374,6 +385,7 @@ class TroubleshootingQueue:
         """
         # Create helper instances
         command_repo = PostgresCommandRepository(self._pool)
+        batch_repo = PostgresBatchRepository(self._pool)
         pgmq = PgmqClient(self._pool)
         audit_logger = PostgresAuditLogger(self._pool)
 
@@ -426,5 +438,9 @@ class TroubleshootingQueue:
                     },
                     conn=conn,
                 )
+
+                # Update batch counters on complete (S042)
+                if metadata.batch_id is not None:
+                    await batch_repo.update_on_tsq_complete(domain, metadata.batch_id, conn=conn)
 
         logger.info(f"Operator complete for {domain}.{command_id}: operator={operator}")

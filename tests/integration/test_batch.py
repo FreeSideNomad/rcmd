@@ -12,6 +12,10 @@ from commandbus import (
     CommandStatus,
     DuplicateCommandError,
 )
+from commandbus.exceptions import PermanentCommandError
+from commandbus.handler import HandlerRegistry
+from commandbus.ops.troubleshooting import TroubleshootingQueue
+from commandbus.worker import Worker
 
 
 @pytest.mark.asyncio
@@ -418,3 +422,345 @@ class TestBatchCommandMetadata:
         cmd2 = await command_bus.get_command("payments", cmd2_id)
         assert cmd2 is not None
         assert cmd2.max_attempts == 5  # overridden
+
+
+@pytest.mark.asyncio
+class TestBatchStatusTracking:
+    """Integration tests for batch status tracking (S042)."""
+
+    async def test_batch_transitions_to_in_progress_on_receive(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that batch status changes from PENDING to IN_PROGRESS on first receive."""
+        batch_id = uuid4()
+        cmd_id = uuid4()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+        )
+
+        # Verify initial status
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.PENDING
+        assert batch.started_at is None
+
+        # Receive the command via worker
+        worker = Worker(pool, domain="payments")
+        received = await worker.receive(batch_size=1)
+        assert len(received) == 1
+
+        # Verify batch is now IN_PROGRESS
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.IN_PROGRESS
+        assert batch.started_at is not None
+
+    async def test_batch_completed_count_increments_on_complete(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that completed_count increments when command completes."""
+        batch_id = uuid4()
+        cmd_id = uuid4()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+        )
+
+        # Create worker with a handler
+        registry = HandlerRegistry()
+
+        @registry.handler("payments", "DebitAccount")
+        async def handle_debit(command, context):
+            return {"processed": True}
+
+        worker = Worker(pool, domain="payments", registry=registry)
+
+        # Receive and complete command
+        received = await worker.receive(batch_size=1)
+        assert len(received) == 1
+        await worker.complete(received[0], result={"processed": True})
+
+        # Verify batch counters
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.COMPLETED
+        assert batch.completed_count == 1
+        assert batch.completed_at is not None
+
+    async def test_batch_tsq_count_increments_on_permanent_failure(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that in_troubleshooting_count increments when command moves to TSQ."""
+        batch_id = uuid4()
+        cmd_id = uuid4()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+        )
+
+        # Create worker
+        worker = Worker(pool, domain="payments")
+
+        # Receive command
+        received = await worker.receive(batch_size=1)
+        assert len(received) == 1
+
+        # Fail permanently
+        error = PermanentCommandError(code="INVALID_ACCOUNT", message="Account not found")
+        await worker.fail_permanent(received[0], error)
+
+        # Verify batch counters
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.in_troubleshooting_count == 1
+        # Batch is not complete because command is in TSQ
+        assert batch.status == BatchStatus.IN_PROGRESS
+
+    async def test_batch_completes_when_all_commands_complete(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that batch transitions to COMPLETED when all commands complete."""
+        batch_id = uuid4()
+        cmd1_id = uuid4()
+        cmd2_id = uuid4()
+        cmd3_id = uuid4()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd1_id,
+                    data={"account_id": "123"},
+                ),
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd2_id,
+                    data={"account_id": "456"},
+                ),
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd3_id,
+                    data={"account_id": "789"},
+                ),
+            ],
+            batch_id=batch_id,
+        )
+
+        # Create worker
+        registry = HandlerRegistry()
+
+        @registry.handler("payments", "DebitAccount")
+        async def handle_debit(command, context):
+            return {"processed": True}
+
+        worker = Worker(pool, domain="payments", registry=registry)
+
+        # Receive and complete all commands
+        for _ in range(3):
+            received = await worker.receive(batch_size=1)
+            assert len(received) == 1
+            await worker.complete(received[0], result={"processed": True})
+
+        # Verify batch is complete
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.COMPLETED
+        assert batch.total_count == 3
+        assert batch.completed_count == 3
+        assert batch.completed_at is not None
+
+    async def test_batch_completed_with_failures(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that batch transitions to COMPLETED_WITH_FAILURES when commands are canceled."""
+        batch_id = uuid4()
+        cmd1_id = uuid4()
+        cmd2_id = uuid4()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd1_id,
+                    data={"account_id": "123"},
+                ),
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd2_id,
+                    data={"account_id": "456"},
+                ),
+            ],
+            batch_id=batch_id,
+        )
+
+        # Create worker
+        registry = HandlerRegistry()
+
+        @registry.handler("payments", "DebitAccount")
+        async def handle_debit(command, context):
+            return {"processed": True}
+
+        worker = Worker(pool, domain="payments", registry=registry)
+
+        # Complete first command
+        received = await worker.receive(batch_size=1)
+        await worker.complete(received[0], result={"processed": True})
+
+        # Fail second command permanently
+        received = await worker.receive(batch_size=1)
+        error = PermanentCommandError(code="INVALID_ACCOUNT", message="Account not found")
+        await worker.fail_permanent(received[0], error)
+
+        # Verify batch is in progress with TSQ count
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.IN_PROGRESS
+        assert batch.completed_count == 1
+        assert batch.in_troubleshooting_count == 1
+
+        # Cancel the command in TSQ
+        tsq = TroubleshootingQueue(pool)
+        await tsq.operator_cancel("payments", cmd2_id, reason="Test cancel")
+
+        # Verify batch is now COMPLETED_WITH_FAILURES
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.COMPLETED_WITH_FAILURES
+        assert batch.completed_count == 1
+        assert batch.canceled_count == 1
+        assert batch.in_troubleshooting_count == 0
+        assert batch.completed_at is not None
+
+    async def test_operator_retry_decrements_tsq_count(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that operator retry decrements in_troubleshooting_count."""
+        batch_id = uuid4()
+        cmd_id = uuid4()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+        )
+
+        # Create worker
+        worker = Worker(pool, domain="payments")
+
+        # Receive and fail permanently
+        received = await worker.receive(batch_size=1)
+        error = PermanentCommandError(code="INVALID_ACCOUNT", message="Account not found")
+        await worker.fail_permanent(received[0], error)
+
+        # Verify TSQ count
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.in_troubleshooting_count == 1
+
+        # Retry the command
+        tsq = TroubleshootingQueue(pool)
+        await tsq.operator_retry("payments", cmd_id)
+
+        # Verify TSQ count decremented
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.in_troubleshooting_count == 0
+
+    async def test_operator_complete_updates_batch(
+        self,
+        command_bus: CommandBus,
+        pool: AsyncConnectionPool,
+        cleanup_payments_domain: None,
+    ) -> None:
+        """Test that operator complete decrements TSQ and increments completed."""
+        batch_id = uuid4()
+        cmd_id = uuid4()
+
+        await command_bus.create_batch(
+            domain="payments",
+            commands=[
+                BatchCommand(
+                    command_type="DebitAccount",
+                    command_id=cmd_id,
+                    data={"account_id": "123"},
+                ),
+            ],
+            batch_id=batch_id,
+        )
+
+        # Create worker
+        worker = Worker(pool, domain="payments")
+
+        # Receive and fail permanently
+        received = await worker.receive(batch_size=1)
+        error = PermanentCommandError(code="INVALID_ACCOUNT", message="Account not found")
+        await worker.fail_permanent(received[0], error)
+
+        # Verify initial state
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.in_troubleshooting_count == 1
+        assert batch.completed_count == 0
+
+        # Operator completes the command
+        tsq = TroubleshootingQueue(pool)
+        await tsq.operator_complete("payments", cmd_id, result_data={"manual": True})
+
+        # Verify batch is now complete
+        batch = await command_bus.get_batch("payments", batch_id)
+        assert batch is not None
+        assert batch.status == BatchStatus.COMPLETED
+        assert batch.completed_count == 1
+        assert batch.in_troubleshooting_count == 0
+        assert batch.completed_at is not None

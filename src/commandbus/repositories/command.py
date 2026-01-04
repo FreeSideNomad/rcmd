@@ -724,6 +724,7 @@ class PostgresCommandRepository:
             last_error_msg=row[11],
             created_at=row[12],
             updated_at=row[13],
+            batch_id=row[14],  # S042: Include batch_id for status tracking
         )
         return metadata, metadata.attempts
 
