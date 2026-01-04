@@ -73,7 +73,6 @@ class TestCreateBatchAtomic:
         assert batch.status == BatchStatus.PENDING
         assert batch.total_count == 3
         assert batch.completed_count == 0
-        assert batch.failed_count == 0
         assert batch.canceled_count == 0
         assert batch.in_troubleshooting_count == 0
 

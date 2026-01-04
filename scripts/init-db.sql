@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS command_bus_batch (
     status                    TEXT NOT NULL DEFAULT 'PENDING',
     total_count               INT NOT NULL DEFAULT 0,
     completed_count           INT NOT NULL DEFAULT 0,
-    failed_count              INT NOT NULL DEFAULT 0,
     canceled_count            INT NOT NULL DEFAULT 0,
     in_troubleshooting_count  INT NOT NULL DEFAULT 0,
     created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -117,7 +116,7 @@ ON CONFLICT (key) DO NOTHING;
 -- ============================================================================
 
 -- sp_receive_command: Atomically receive a command
--- Combines: get metadata + increment attempts + update status + insert audit
+-- Combines: get metadata + increment attempts + update status + insert audit + start batch
 -- Returns NULL if command not found or in terminal state
 CREATE OR REPLACE FUNCTION sp_receive_command(
     p_domain TEXT,
@@ -192,6 +191,11 @@ BEGIN
         )
     );
 
+    -- Start batch if this command belongs to one (transitions PENDING -> IN_PROGRESS)
+    IF v_batch_id IS NOT NULL THEN
+        PERFORM sp_start_batch(p_domain, v_batch_id);
+    END IF;
+
     -- Return the metadata
     RETURN QUERY SELECT
         p_domain,
@@ -214,7 +218,8 @@ $$ LANGUAGE plpgsql;
 
 
 -- sp_finish_command: Atomically finish a command (success or failure)
--- Combines: update status/error + insert audit
+-- Combines: update status/error + insert audit + update batch counters
+-- Returns is_batch_complete (TRUE if batch is now complete, for callback triggering)
 CREATE OR REPLACE FUNCTION sp_finish_command(
     p_domain TEXT,
     p_command_id UUID,
@@ -223,10 +228,13 @@ CREATE OR REPLACE FUNCTION sp_finish_command(
     p_error_type TEXT DEFAULT NULL,
     p_error_code TEXT DEFAULT NULL,
     p_error_msg TEXT DEFAULT NULL,
-    p_details JSONB DEFAULT NULL
+    p_details JSONB DEFAULT NULL,
+    p_batch_id UUID DEFAULT NULL
 ) RETURNS BOOLEAN AS $$
 DECLARE
     v_found BOOLEAN;
+    v_is_batch_complete BOOLEAN := FALSE;
+    v_update_type TEXT;
 BEGIN
     -- Update command metadata
     UPDATE command_bus_command
@@ -243,7 +251,24 @@ BEGIN
     INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
     VALUES (p_domain, p_command_id, p_event_type, p_details);
 
-    RETURN v_found;
+    -- Update batch counters if this command belongs to a batch
+    IF p_batch_id IS NOT NULL AND v_found THEN
+        -- Determine update_type based on status
+        CASE p_status
+            WHEN 'COMPLETED' THEN
+                v_update_type := 'complete';
+            WHEN 'IN_TROUBLESHOOTING_QUEUE' THEN
+                v_update_type := 'tsq_move';
+            ELSE
+                v_update_type := NULL;  -- No batch update for other statuses
+        END CASE;
+
+        IF v_update_type IS NOT NULL THEN
+            v_is_batch_complete := sp_update_batch_counters(p_domain, p_batch_id, v_update_type);
+        END IF;
+    END IF;
+
+    RETURN v_is_batch_complete;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -296,12 +321,116 @@ $$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- Batch Status Tracking Stored Procedures (S042)
--- These atomically update batch counters and status as commands are processed
+-- Consolidated batch counter updates with is_batch_complete return value
 -- ============================================================================
 
--- sp_update_batch_on_receive: Update batch to IN_PROGRESS on first command receive
--- Called when a command with a batch_id is received by a worker
-CREATE OR REPLACE FUNCTION sp_update_batch_on_receive(
+-- sp_update_batch_counters: Central helper for updating batch counters
+-- Called from sp_finish_command and TSQ operations
+-- Returns TRUE if batch is now complete (for callback triggering)
+--
+-- update_type values:
+--   'complete'     - Command completed successfully (completed_count++)
+--   'tsq_move'     - Command moved to TSQ (in_troubleshooting_count++)
+--   'tsq_complete' - Operator completed from TSQ (in_troubleshooting_count--, completed_count++)
+--   'tsq_cancel'   - Operator canceled from TSQ (in_troubleshooting_count--, canceled_count++)
+--   'tsq_retry'    - Operator retried from TSQ (in_troubleshooting_count--)
+CREATE OR REPLACE FUNCTION sp_update_batch_counters(
+    p_domain TEXT,
+    p_batch_id UUID,
+    p_update_type TEXT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_batch RECORD;
+    v_is_complete BOOLEAN := FALSE;
+BEGIN
+    IF p_batch_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    -- Update counters based on update_type
+    CASE p_update_type
+        WHEN 'complete' THEN
+            UPDATE command_bus_batch
+            SET completed_count = completed_count + 1
+            WHERE domain = p_domain AND batch_id = p_batch_id
+            RETURNING * INTO v_batch;
+
+        WHEN 'tsq_move' THEN
+            UPDATE command_bus_batch
+            SET in_troubleshooting_count = in_troubleshooting_count + 1
+            WHERE domain = p_domain AND batch_id = p_batch_id
+            RETURNING * INTO v_batch;
+
+        WHEN 'tsq_complete' THEN
+            UPDATE command_bus_batch
+            SET in_troubleshooting_count = in_troubleshooting_count - 1,
+                completed_count = completed_count + 1
+            WHERE domain = p_domain AND batch_id = p_batch_id
+            RETURNING * INTO v_batch;
+
+        WHEN 'tsq_cancel' THEN
+            UPDATE command_bus_batch
+            SET in_troubleshooting_count = in_troubleshooting_count - 1,
+                canceled_count = canceled_count + 1
+            WHERE domain = p_domain AND batch_id = p_batch_id
+            RETURNING * INTO v_batch;
+
+        WHEN 'tsq_retry' THEN
+            UPDATE command_bus_batch
+            SET in_troubleshooting_count = in_troubleshooting_count - 1
+            WHERE domain = p_domain AND batch_id = p_batch_id
+            RETURNING * INTO v_batch;
+
+        ELSE
+            RAISE EXCEPTION 'Unknown update_type: %', p_update_type;
+    END CASE;
+
+    IF v_batch IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    -- Check if batch is now complete (all commands in terminal state, none in TSQ)
+    -- Batch completion formula: completed + canceled = total AND in_tsq = 0
+    IF v_batch.completed_count + v_batch.canceled_count = v_batch.total_count
+       AND v_batch.in_troubleshooting_count = 0 THEN
+        v_is_complete := TRUE;
+
+        -- Determine final status
+        IF v_batch.canceled_count > 0 THEN
+            UPDATE command_bus_batch
+            SET status = 'COMPLETED_WITH_FAILURES',
+                completed_at = NOW()
+            WHERE domain = p_domain AND batch_id = p_batch_id;
+        ELSE
+            UPDATE command_bus_batch
+            SET status = 'COMPLETED',
+                completed_at = NOW()
+            WHERE domain = p_domain AND batch_id = p_batch_id;
+        END IF;
+
+        -- Record audit event for batch completion
+        INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+        VALUES (
+            p_domain,
+            p_batch_id,
+            'BATCH_COMPLETED',
+            jsonb_build_object(
+                'batch_id', p_batch_id,
+                'total_count', v_batch.total_count,
+                'completed_count', v_batch.completed_count,
+                'canceled_count', v_batch.canceled_count
+            )
+        );
+    END IF;
+
+    RETURN v_is_complete;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- sp_start_batch: Transition batch from PENDING to IN_PROGRESS on first command receive
+-- Called from sp_receive_command when a batched command is first processed
+CREATE OR REPLACE FUNCTION sp_start_batch(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
@@ -346,69 +475,30 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- sp_update_batch_on_complete: Update batch when a command completes successfully
--- Increments completed_count and checks if batch is now complete
-CREATE OR REPLACE FUNCTION sp_update_batch_on_complete(
+-- ============================================================================
+-- Troubleshooting Queue (TSQ) Stored Procedures
+-- These are called by operators to complete/cancel/retry commands from TSQ
+-- They return is_batch_complete for callback triggering
+-- ============================================================================
+
+-- sp_tsq_complete: Operator completes a command from TSQ
+-- Returns is_batch_complete flag for callback triggering
+CREATE OR REPLACE FUNCTION sp_tsq_complete(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
-DECLARE
-    v_batch RECORD;
 BEGIN
     IF p_batch_id IS NULL THEN
         RETURN FALSE;
     END IF;
-
-    -- Lock and update the batch row atomically
-    UPDATE command_bus_batch
-    SET completed_count = completed_count + 1
-    WHERE domain = p_domain AND batch_id = p_batch_id
-    RETURNING * INTO v_batch;
-
-    IF v_batch IS NULL THEN
-        RETURN FALSE;
-    END IF;
-
-    -- Check if batch is now complete (all commands in terminal state, none in TSQ)
-    IF v_batch.completed_count + v_batch.failed_count + v_batch.canceled_count = v_batch.total_count
-       AND v_batch.in_troubleshooting_count = 0 THEN
-        -- Determine final status
-        IF v_batch.failed_count + v_batch.canceled_count > 0 THEN
-            UPDATE command_bus_batch
-            SET status = 'COMPLETED_WITH_FAILURES',
-                completed_at = NOW()
-            WHERE domain = p_domain AND batch_id = p_batch_id;
-        ELSE
-            UPDATE command_bus_batch
-            SET status = 'COMPLETED',
-                completed_at = NOW()
-            WHERE domain = p_domain AND batch_id = p_batch_id;
-        END IF;
-
-        -- Record audit event for batch completion
-        INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
-        VALUES (
-            p_domain,
-            p_batch_id,
-            'BATCH_COMPLETED',
-            jsonb_build_object(
-                'batch_id', p_batch_id,
-                'total_count', v_batch.total_count,
-                'completed_count', v_batch.completed_count,
-                'failed_count', v_batch.failed_count,
-                'canceled_count', v_batch.canceled_count
-            )
-        );
-    END IF;
-
-    RETURN TRUE;
+    RETURN sp_update_batch_counters(p_domain, p_batch_id, 'tsq_complete');
 END;
 $$ LANGUAGE plpgsql;
 
 
--- sp_update_batch_on_tsq_move: Update batch when a command moves to TSQ
--- Increments in_troubleshooting_count
-CREATE OR REPLACE FUNCTION sp_update_batch_on_tsq_move(
+-- sp_tsq_cancel: Operator cancels a command from TSQ
+-- Returns is_batch_complete flag for callback triggering
+CREATE OR REPLACE FUNCTION sp_tsq_cancel(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
@@ -416,130 +506,15 @@ BEGIN
     IF p_batch_id IS NULL THEN
         RETURN FALSE;
     END IF;
-
-    UPDATE command_bus_batch
-    SET in_troubleshooting_count = in_troubleshooting_count + 1
-    WHERE domain = p_domain AND batch_id = p_batch_id;
-
-    RETURN FOUND;
+    RETURN sp_update_batch_counters(p_domain, p_batch_id, 'tsq_cancel');
 END;
 $$ LANGUAGE plpgsql;
 
 
--- sp_update_batch_on_tsq_complete: Update batch when operator completes a command from TSQ
--- Decrements in_troubleshooting_count, increments completed_count, checks for batch completion
-CREATE OR REPLACE FUNCTION sp_update_batch_on_tsq_complete(
-    p_domain TEXT,
-    p_batch_id UUID
-) RETURNS BOOLEAN AS $$
-DECLARE
-    v_batch RECORD;
-BEGIN
-    IF p_batch_id IS NULL THEN
-        RETURN FALSE;
-    END IF;
-
-    -- Lock and update the batch row atomically
-    UPDATE command_bus_batch
-    SET in_troubleshooting_count = in_troubleshooting_count - 1,
-        completed_count = completed_count + 1
-    WHERE domain = p_domain AND batch_id = p_batch_id
-    RETURNING * INTO v_batch;
-
-    IF v_batch IS NULL THEN
-        RETURN FALSE;
-    END IF;
-
-    -- Check if batch is now complete
-    IF v_batch.completed_count + v_batch.failed_count + v_batch.canceled_count = v_batch.total_count
-       AND v_batch.in_troubleshooting_count = 0 THEN
-        IF v_batch.failed_count + v_batch.canceled_count > 0 THEN
-            UPDATE command_bus_batch
-            SET status = 'COMPLETED_WITH_FAILURES',
-                completed_at = NOW()
-            WHERE domain = p_domain AND batch_id = p_batch_id;
-        ELSE
-            UPDATE command_bus_batch
-            SET status = 'COMPLETED',
-                completed_at = NOW()
-            WHERE domain = p_domain AND batch_id = p_batch_id;
-        END IF;
-
-        INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
-        VALUES (
-            p_domain,
-            p_batch_id,
-            'BATCH_COMPLETED',
-            jsonb_build_object(
-                'batch_id', p_batch_id,
-                'total_count', v_batch.total_count,
-                'completed_count', v_batch.completed_count,
-                'failed_count', v_batch.failed_count,
-                'canceled_count', v_batch.canceled_count
-            )
-        );
-    END IF;
-
-    RETURN TRUE;
-END;
-$$ LANGUAGE plpgsql;
-
-
--- sp_update_batch_on_tsq_cancel: Update batch when operator cancels a command from TSQ
--- Decrements in_troubleshooting_count, increments canceled_count, checks for batch completion
-CREATE OR REPLACE FUNCTION sp_update_batch_on_tsq_cancel(
-    p_domain TEXT,
-    p_batch_id UUID
-) RETURNS BOOLEAN AS $$
-DECLARE
-    v_batch RECORD;
-BEGIN
-    IF p_batch_id IS NULL THEN
-        RETURN FALSE;
-    END IF;
-
-    -- Lock and update the batch row atomically
-    UPDATE command_bus_batch
-    SET in_troubleshooting_count = in_troubleshooting_count - 1,
-        canceled_count = canceled_count + 1
-    WHERE domain = p_domain AND batch_id = p_batch_id
-    RETURNING * INTO v_batch;
-
-    IF v_batch IS NULL THEN
-        RETURN FALSE;
-    END IF;
-
-    -- Check if batch is now complete
-    IF v_batch.completed_count + v_batch.failed_count + v_batch.canceled_count = v_batch.total_count
-       AND v_batch.in_troubleshooting_count = 0 THEN
-        UPDATE command_bus_batch
-        SET status = 'COMPLETED_WITH_FAILURES',
-            completed_at = NOW()
-        WHERE domain = p_domain AND batch_id = p_batch_id;
-
-        INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
-        VALUES (
-            p_domain,
-            p_batch_id,
-            'BATCH_COMPLETED',
-            jsonb_build_object(
-                'batch_id', p_batch_id,
-                'total_count', v_batch.total_count,
-                'completed_count', v_batch.completed_count,
-                'failed_count', v_batch.failed_count,
-                'canceled_count', v_batch.canceled_count
-            )
-        );
-    END IF;
-
-    RETURN TRUE;
-END;
-$$ LANGUAGE plpgsql;
-
-
--- sp_update_batch_on_tsq_retry: Update batch when operator retries a command from TSQ
--- Decrements in_troubleshooting_count (command goes back to queue as PENDING)
-CREATE OR REPLACE FUNCTION sp_update_batch_on_tsq_retry(
+-- sp_tsq_retry: Operator retries a command from TSQ
+-- Note: Retry never completes a batch (command goes back to queue)
+-- Returns FALSE always since retry cannot complete a batch
+CREATE OR REPLACE FUNCTION sp_tsq_retry(
     p_domain TEXT,
     p_batch_id UUID
 ) RETURNS BOOLEAN AS $$
@@ -547,12 +522,9 @@ BEGIN
     IF p_batch_id IS NULL THEN
         RETURN FALSE;
     END IF;
-
-    UPDATE command_bus_batch
-    SET in_troubleshooting_count = in_troubleshooting_count - 1
-    WHERE domain = p_domain AND batch_id = p_batch_id;
-
-    RETURN FOUND;
+    -- sp_update_batch_counters will always return FALSE for tsq_retry
+    -- because it decrements in_troubleshooting_count without adding to terminal counts
+    RETURN sp_update_batch_counters(p_domain, p_batch_id, 'tsq_retry');
 END;
 $$ LANGUAGE plpgsql;
 

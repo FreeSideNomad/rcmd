@@ -819,12 +819,13 @@ class PostgresCommandRepository:
         error_code: str | None = None,
         error_msg: str | None = None,
         details: dict[str, Any] | None = None,
+        batch_id: UUID | None = None,
         conn: AsyncConnection[Any] | None = None,
     ) -> bool:
         """Finish command using stored procedure.
 
-        This combines finish_command + audit logging into a single DB call.
-        Uses sp_finish_command stored procedure for maximum performance.
+        This combines finish_command + audit logging + batch counter update
+        into a single DB call. Uses sp_finish_command stored procedure.
 
         Args:
             domain: The domain
@@ -835,10 +836,11 @@ class PostgresCommandRepository:
             error_code: Error code (optional, for failures)
             error_msg: Error message (optional, for failures)
             details: Additional audit details (optional)
+            batch_id: Batch ID for batch counter updates (optional)
             conn: Optional connection (for transaction support)
 
         Returns:
-            True if command was found and updated, False otherwise
+            True if batch is now complete (for callback triggering), False otherwise
         """
         details_json = json.dumps(details) if details else None
 
@@ -853,6 +855,7 @@ class PostgresCommandRepository:
                 error_code,
                 error_msg,
                 details_json,
+                batch_id,
             )
 
         async with self._pool.connection() as acquired_conn:
@@ -866,6 +869,7 @@ class PostgresCommandRepository:
                 error_code,
                 error_msg,
                 details_json,
+                batch_id,
             )
 
     async def _sp_finish_command(
@@ -879,11 +883,12 @@ class PostgresCommandRepository:
         error_code: str | None,
         error_msg: str | None,
         details_json: str | None,
+        batch_id: UUID | None,
     ) -> bool:
         """Call sp_finish_command stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_finish_command(%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                "SELECT sp_finish_command(%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
                 (
                     domain,
                     command_id,
@@ -893,6 +898,7 @@ class PostgresCommandRepository:
                     error_code,
                     error_msg,
                     details_json,
+                    batch_id,
                 ),
             )
             row = await cur.fetchone()

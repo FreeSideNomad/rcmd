@@ -592,7 +592,6 @@ class CommandBus:
                 status=BatchStatus.PENDING,
                 total_count=len(commands),
                 completed_count=0,
-                failed_count=0,
                 canceled_count=0,
                 in_troubleshooting_count=0,
                 created_at=now,
