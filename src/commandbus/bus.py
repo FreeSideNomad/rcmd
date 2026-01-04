@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from commandbus.batch import BatchCompletionCallback, register_batch_callback
-from commandbus.exceptions import DuplicateCommandError
+from commandbus.exceptions import BatchNotFoundError, DuplicateCommandError
 from commandbus.models import (
     AuditEvent,
     BatchCommand,
@@ -109,6 +109,7 @@ class CommandBus:
         correlation_id: UUID | None = None,
         reply_to: str | None = None,
         max_attempts: int | None = None,
+        batch_id: UUID | None = None,
     ) -> SendResult:
         """Send a command to a domain queue.
 
@@ -124,18 +125,24 @@ class CommandBus:
             correlation_id: Optional correlation ID for tracing
             reply_to: Optional reply queue name
             max_attempts: Max retry attempts (defaults to bus default)
+            batch_id: Optional batch ID to associate this command with
 
         Returns:
             SendResult with command_id and msg_id
 
         Raises:
             DuplicateCommandError: If command_id already exists in this domain
+            BatchNotFoundError: If batch_id is provided but batch does not exist
         """
         queue_name = _make_queue_name(domain)
         effective_max_attempts = max_attempts or self._default_max_attempts
         effective_correlation_id = correlation_id if correlation_id is not None else uuid4()
 
         async with self._pool.connection() as conn, conn.transaction():
+            # Validate batch_id if provided
+            if batch_id is not None and not await self._batch_repo.exists(domain, batch_id, conn):
+                raise BatchNotFoundError(domain, str(batch_id))
+
             # Check for duplicate command
             if await self._command_repo.exists(domain, command_id, conn):
                 raise DuplicateCommandError(domain, str(command_id))
@@ -167,6 +174,7 @@ class CommandBus:
                 reply_to=reply_to,
                 created_at=now,
                 updated_at=now,
+                batch_id=batch_id,
             )
 
             # Save metadata
@@ -182,6 +190,7 @@ class CommandBus:
                     "correlation_id": str(effective_correlation_id),
                     "reply_to": reply_to,
                     "msg_id": msg_id,
+                    "batch_id": str(batch_id) if batch_id else None,
                 },
                 conn=conn,
             )
@@ -693,3 +702,83 @@ class CommandBus:
             BatchMetadata if found, None otherwise
         """
         return await self._batch_repo.get(domain, batch_id)
+
+    async def list_batches(
+        self,
+        domain: str,
+        *,
+        status: BatchStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[BatchMetadata]:
+        """List batches for a domain with optional status filter.
+
+        Args:
+            domain: The domain to list batches for
+            status: Optional filter by batch status
+            limit: Maximum number of results (default 100)
+            offset: Number of results to skip for pagination (default 0)
+
+        Returns:
+            List of BatchMetadata matching the filters, ordered by created_at DESC
+
+        Example:
+            # Get all pending batches
+            pending = await bus.list_batches(
+                domain="payments",
+                status=BatchStatus.PENDING,
+            )
+
+            # Paginate through all batches
+            page1 = await bus.list_batches(domain="payments", limit=50, offset=0)
+            page2 = await bus.list_batches(domain="payments", limit=50, offset=50)
+        """
+        return await self._batch_repo.list_batches(
+            domain=domain,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def list_batch_commands(
+        self,
+        domain: str,
+        batch_id: UUID,
+        *,
+        status: CommandStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CommandMetadata]:
+        """List commands in a batch with optional status filter.
+
+        Args:
+            domain: The domain
+            batch_id: The batch ID
+            status: Optional filter by command status
+            limit: Maximum number of results (default 100)
+            offset: Number of results to skip for pagination (default 0)
+
+        Returns:
+            List of CommandMetadata in the batch, ordered by created_at ASC
+
+        Example:
+            # Get all commands in a batch
+            commands = await bus.list_batch_commands(
+                domain="payments",
+                batch_id=batch_id,
+            )
+
+            # Get only failed commands
+            failed = await bus.list_batch_commands(
+                domain="payments",
+                batch_id=batch_id,
+                status=CommandStatus.IN_TROUBLESHOOTING_QUEUE,
+            )
+        """
+        return await self._command_repo.list_by_batch(
+            domain=domain,
+            batch_id=batch_id,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
