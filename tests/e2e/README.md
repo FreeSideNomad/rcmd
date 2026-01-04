@@ -91,7 +91,7 @@ mv tailwindcss-macos-arm64 tailwindcss
 
 ## Configuration
 
-All configuration is stored in the `e2e_config` table and editable via the Settings page:
+All configuration is stored in the `e2e.config` table and editable via the Settings page:
 
 ### Worker Configuration
 - `visibility_timeout`: How long before unacknowledged message is redelivered (default: 30s)

@@ -580,7 +580,7 @@ async def get_config(pool: Pool) -> ConfigResponse:
     """Get current configuration from database."""
     try:
         async with pool.connection() as conn, conn.cursor() as cur:
-            await cur.execute("SELECT key, value FROM e2e_config")
+            await cur.execute("SELECT key, value FROM e2e.config")
             rows = await cur.fetchall()
             config: dict[str, Any] = {}
             for row in rows:
@@ -606,7 +606,7 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
             if request.worker:
                 await cur.execute(
                     """
-                        INSERT INTO e2e_config (key, value, updated_at)
+                        INSERT INTO e2e.config (key, value, updated_at)
                         VALUES ('worker', %s, NOW())
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
@@ -615,7 +615,7 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
             if request.retry:
                 await cur.execute(
                     """
-                        INSERT INTO e2e_config (key, value, updated_at)
+                        INSERT INTO e2e.config (key, value, updated_at)
                         VALUES ('retry', %s, NOW())
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,

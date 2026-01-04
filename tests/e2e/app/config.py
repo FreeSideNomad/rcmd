@@ -88,7 +88,7 @@ class ConfigStore:
     async def load_from_db(self, pool: Any) -> None:
         """Load configuration from database."""
         async with pool.connection() as conn, conn.cursor() as cur:
-            await cur.execute("SELECT key, value FROM e2e_config")
+            await cur.execute("SELECT key, value FROM e2e.config")
             rows = await cur.fetchall()
             for key, value in rows:
                 if key == "worker":
@@ -101,7 +101,7 @@ class ConfigStore:
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    INSERT INTO e2e_config (key, value, updated_at)
+                    INSERT INTO e2e.config (key, value, updated_at)
                     VALUES ('worker', %s, NOW())
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
@@ -109,7 +109,7 @@ class ConfigStore:
             )
             await cur.execute(
                 """
-                    INSERT INTO e2e_config (key, value, updated_at)
+                    INSERT INTO e2e.config (key, value, updated_at)
                     VALUES ('retry', %s, NOW())
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
