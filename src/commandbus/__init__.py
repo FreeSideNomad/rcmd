@@ -1,5 +1,13 @@
 """Command Bus - A Python library for Command Bus over PostgreSQL + PGMQ."""
 
+from commandbus.batch import (
+    BatchCompletionCallback,
+    check_and_invoke_batch_callback,
+    clear_all_callbacks,
+    get_batch_callback,
+    register_batch_callback,
+    remove_batch_callback,
+)
 from commandbus.bus import CommandBus
 from commandbus.exceptions import (
     BatchNotFoundError,
@@ -42,6 +50,7 @@ __all__ = [
     "AuditEvent",
     "AuditEventType",
     "BatchCommand",
+    "BatchCompletionCallback",
     "BatchMetadata",
     "BatchNotFoundError",
     "BatchSendResult",
@@ -75,7 +84,12 @@ __all__ = [
     "TroubleshootingItem",
     "TroubleshootingQueue",
     "Worker",
+    "check_and_invoke_batch_callback",
+    "clear_all_callbacks",
+    "get_batch_callback",
     "handler",
+    "register_batch_callback",
+    "remove_batch_callback",
 ]
 
 __version__ = "0.1.0"
