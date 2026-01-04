@@ -42,14 +42,14 @@ async def command_bus(pool: AsyncConnectionPool) -> CommandBus:
 async def cleanup_db(pool: AsyncConnectionPool):
     """Clean up test data before and after each test."""
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
         await conn.execute("DELETE FROM pgmq.q_reports__commands")
     yield
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
         await conn.execute("DELETE FROM pgmq.q_reports__commands")
 

@@ -111,7 +111,7 @@ class PostgresCommandRepository:
         """Save metadata using an existing connection."""
         await conn.execute(
             """
-            INSERT INTO command_bus_command (
+            INSERT INTO commandbus.command (
                 domain, queue_name, msg_id, command_id, command_type,
                 status, attempts, max_attempts, correlation_id, reply_queue,
                 created_at, updated_at, batch_id
@@ -156,7 +156,7 @@ class PostgresCommandRepository:
         async with conn.cursor() as cur:
             await cur.executemany(
                 """
-                INSERT INTO command_bus_command (
+                INSERT INTO commandbus.command (
                     domain, queue_name, msg_id, command_id, command_type,
                     status, attempts, max_attempts, correlation_id, reply_queue,
                     created_at, updated_at, batch_id
@@ -205,7 +205,7 @@ class PostgresCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT command_id FROM command_bus_command
+                SELECT command_id FROM commandbus.command
                 WHERE domain = %s AND command_id = ANY(%s)
                 """,
                 (domain, command_ids),
@@ -249,7 +249,7 @@ class PostgresCommandRepository:
                        max_attempts, msg_id, correlation_id, reply_queue,
                        last_error_type, last_error_code, last_error_msg,
                        created_at, updated_at, batch_id
-                FROM command_bus_command
+                FROM commandbus.command
                 WHERE domain = %s AND command_id = %s
                 """,
                 (domain, command_id),
@@ -308,7 +308,7 @@ class PostgresCommandRepository:
         """Update status using an existing connection."""
         await conn.execute(
             """
-            UPDATE command_bus_command
+            UPDATE commandbus.command
             SET status = %s, updated_at = NOW()
             WHERE domain = %s AND command_id = %s
             """,
@@ -347,7 +347,7 @@ class PostgresCommandRepository:
         """Update msg_id using an existing connection."""
         await conn.execute(
             """
-            UPDATE command_bus_command
+            UPDATE commandbus.command
             SET msg_id = %s, updated_at = NOW()
             WHERE domain = %s AND command_id = %s
             """,
@@ -386,7 +386,7 @@ class PostgresCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE command_bus_command
+                UPDATE commandbus.command
                 SET attempts = attempts + 1, updated_at = NOW()
                 WHERE domain = %s AND command_id = %s
                 RETURNING attempts
@@ -443,7 +443,7 @@ class PostgresCommandRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE command_bus_command
+                UPDATE commandbus.command
                 SET attempts = attempts + 1,
                     status = %s,
                     updated_at = NOW()
@@ -520,7 +520,7 @@ class PostgresCommandRepository:
         """Update error info using an existing connection."""
         await conn.execute(
             """
-            UPDATE command_bus_command
+            UPDATE commandbus.command
             SET last_error_type = %s, last_error_code = %s, last_error_msg = %s,
                 updated_at = NOW()
             WHERE domain = %s AND command_id = %s
@@ -576,7 +576,7 @@ class PostgresCommandRepository:
         """Finish command using an existing connection."""
         await conn.execute(
             """
-            UPDATE command_bus_command
+            UPDATE commandbus.command
             SET status = %s,
                 last_error_type = COALESCE(%s, last_error_type),
                 last_error_code = COALESCE(%s, last_error_code),
@@ -621,7 +621,7 @@ class PostgresCommandRepository:
             await cur.execute(
                 """
                 SELECT EXISTS(
-                    SELECT 1 FROM command_bus_command
+                    SELECT 1 FROM commandbus.command
                     WHERE domain = %s AND command_id = %s
                 )
                 """,
@@ -681,7 +681,7 @@ class PostgresCommandRepository:
                        max_attempts, msg_id, correlation_id, reply_queue,
                        last_error_type, last_error_code, last_error_msg,
                        created_at, updated_at, batch_id
-                FROM command_bus_command
+                FROM commandbus.command
                 WHERE {where_clause}
                 ORDER BY created_at ASC
                 LIMIT %s OFFSET %s
@@ -782,7 +782,7 @@ class PostgresCommandRepository:
         """Call sp_receive_command stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT * FROM sp_receive_command(%s, %s, %s, %s, %s)",
+                "SELECT * FROM commandbus.sp_receive_command(%s, %s, %s, %s, %s)",
                 (domain, command_id, "IN_PROGRESS", msg_id, max_attempts),
             )
             row = await cur.fetchone()
@@ -888,7 +888,7 @@ class PostgresCommandRepository:
         """Call sp_finish_command stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_finish_command(%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
+                "SELECT commandbus.sp_finish_command(%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)",
                 (
                     domain,
                     command_id,
@@ -976,7 +976,7 @@ class PostgresCommandRepository:
         """Call sp_fail_command stored procedure."""
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT sp_fail_command(%s, %s, %s, %s, %s, %s, %s, %s)",
+                "SELECT commandbus.sp_fail_command(%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     domain,
                     command_id,
@@ -1036,7 +1036,7 @@ class PostgresCommandRepository:
                        max_attempts, msg_id, correlation_id, reply_queue,
                        last_error_type, last_error_code, last_error_msg,
                        created_at, updated_at, batch_id
-                FROM command_bus_command
+                FROM commandbus.command
                 WHERE {where_clause}
                 ORDER BY created_at DESC
                 LIMIT %s OFFSET %s

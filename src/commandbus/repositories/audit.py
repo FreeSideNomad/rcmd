@@ -94,7 +94,7 @@ class PostgresAuditLogger:
         details_json = json.dumps(details) if details else None
         await conn.execute(
             """
-            INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+            INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
             VALUES (%s, %s, %s, %s::jsonb)
             """,
             (domain, command_id, event_type.value, details_json),
@@ -148,7 +148,7 @@ class PostgresAuditLogger:
                     await cur.execute(
                         """
                         SELECT audit_id, domain, command_id, event_type, ts, details_json
-                        FROM command_bus_audit
+                        FROM commandbus.audit
                         WHERE command_id = %s AND domain = %s
                         ORDER BY ts ASC
                         """,
@@ -158,7 +158,7 @@ class PostgresAuditLogger:
                     await cur.execute(
                         """
                         SELECT audit_id, domain, command_id, event_type, ts, details_json
-                        FROM command_bus_audit
+                        FROM commandbus.audit
                         WHERE command_id = %s
                         ORDER BY ts ASC
                         """,

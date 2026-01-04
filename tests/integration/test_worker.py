@@ -20,7 +20,8 @@ from commandbus.worker import Worker
 def database_url() -> str:
     """Get database URL from environment."""
     return os.environ.get(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/commandbus"
+        "DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/commandbus",  # pragma: allowlist secret
     )
 
 
@@ -50,16 +51,16 @@ async def cleanup_db(pool: AsyncConnectionPool):
     """Clean up test data before and after each test."""
     # Cleanup before test
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
         # Clean up PGMQ queues
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
         await conn.execute("DELETE FROM pgmq.q_reports__replies")
     yield
     # Cleanup after test
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
         await conn.execute("DELETE FROM pgmq.q_payments__commands")
         await conn.execute("DELETE FROM pgmq.q_reports__replies")
 
@@ -122,7 +123,7 @@ async def test_receive_increments_attempts(
     # Check metadata was updated
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT attempts FROM command_bus_command WHERE command_id = %s",
+            "SELECT attempts FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
@@ -152,7 +153,7 @@ async def test_receive_records_audit_event(
         await cur.execute(
             """
             SELECT event_type, details_json
-            FROM command_bus_audit
+            FROM commandbus.audit
             WHERE command_id = %s AND event_type = 'RECEIVED'
             """,
             (command_id,),
@@ -220,7 +221,7 @@ async def test_receive_updates_status_to_in_progress(
     # Check status was updated
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            "SELECT status FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
@@ -246,7 +247,7 @@ async def test_receive_skips_completed_command(
     # Manually mark as completed
     async with pool.connection() as conn:
         await conn.execute(
-            "UPDATE command_bus_command SET status = %s WHERE command_id = %s",
+            "UPDATE commandbus.command SET status = %s WHERE command_id = %s",
             (CommandStatus.COMPLETED.value, command_id),
         )
 
@@ -280,7 +281,7 @@ async def test_complete_deletes_message_and_updates_status(
     # Verify status is COMPLETED
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            "SELECT status FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
@@ -316,7 +317,7 @@ async def test_complete_records_audit_event(
         await cur.execute(
             """
             SELECT event_type, details_json
-            FROM command_bus_audit
+            FROM commandbus.audit
             WHERE command_id = %s AND event_type = 'COMPLETED'
             """,
             (command_id,),
@@ -389,7 +390,7 @@ async def test_complete_is_atomic(
     # 1. Status is COMPLETED
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            "SELECT status FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
@@ -398,7 +399,7 @@ async def test_complete_is_atomic(
         # 2. Audit event exists
         await cur.execute(
             """
-            SELECT COUNT(*) FROM command_bus_audit
+            SELECT COUNT(*) FROM commandbus.audit
             WHERE command_id = %s AND event_type = 'COMPLETED'
             """,
             (command_id,),
@@ -456,7 +457,7 @@ async def test_worker_run_processes_commands(
     # Verify command is completed
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            "SELECT status FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
@@ -556,7 +557,7 @@ async def test_worker_graceful_shutdown(
     # Command should be completed
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT status FROM command_bus_command WHERE command_id = %s",
+            "SELECT status FROM commandbus.command WHERE command_id = %s",
             (command_id,),
         )
         row = await cur.fetchone()
