@@ -1,7 +1,7 @@
 """E2E tests for success scenarios (S023).
 
 These tests verify the complete command lifecycle from sending through completion,
-using the test command behavior specification to control outcomes.
+using the test command probabilistic behavior specification to control outcomes.
 """
 
 from __future__ import annotations
@@ -48,12 +48,12 @@ class TestSuccessScenarios:
         """
         command_id = uuid4()
 
-        # Send command with success behavior
+        # Send command with success behavior (all probabilities 0 = always succeed)
         result = await command_bus.send(
             domain="e2e",
             command_type="TestCommand",
             command_id=command_id,
-            data={"behavior": {"type": "success"}, "test_data": "value"},
+            data={"behavior": {}, "test_data": "value"},
         )
 
         assert result.msg_id is not None
@@ -83,11 +83,11 @@ class TestSuccessScenarios:
         """Test command with simulated execution time.
 
         Verifies:
-        - Command with execution_time_ms takes approximately that long
+        - Command with min/max duration takes approximately that long
         - Timing is reflected in audit trail
         """
         command_id = uuid4()
-        execution_time_ms = 300  # 300ms delay
+        duration_ms = 300  # 300ms fixed delay
 
         start = time.time()
 
@@ -95,14 +95,19 @@ class TestSuccessScenarios:
             domain="e2e",
             command_type="TestCommand",
             command_id=command_id,
-            data={"behavior": {"type": "success", "execution_time_ms": execution_time_ms}},
+            data={
+                "behavior": {
+                    "min_duration_ms": duration_ms,
+                    "max_duration_ms": duration_ms,
+                }
+            },
         )
 
         await wait_for_completion(command_id, timeout=10)
         elapsed = time.time() - start
 
         # Should take at least the execution time
-        assert elapsed >= execution_time_ms / 1000
+        assert elapsed >= duration_ms / 1000
 
         # Verify completed
         cmd = await command_bus.get_command("e2e", command_id)
@@ -120,7 +125,7 @@ class TestSuccessScenarios:
         """Test command with no execution delay completes quickly.
 
         Verifies:
-        - Command with no execution_time_ms completes immediately
+        - Command with no duration completes immediately
         - Processing time is minimal
         """
         command_id = uuid4()
@@ -131,7 +136,7 @@ class TestSuccessScenarios:
             domain="e2e",
             command_type="TestCommand",
             command_id=command_id,
-            data={"behavior": {"type": "success"}},
+            data={"behavior": {}},
         )
 
         await wait_for_completion(command_id, timeout=10)
@@ -165,7 +170,7 @@ class TestSuccessScenarios:
             domain="e2e",
             command_type="TestCommand",
             command_id=command_id,
-            data={"behavior": {"type": "success"}, **custom_payload},
+            data={"behavior": {}, **custom_payload},
         )
 
         await wait_for_completion(command_id, timeout=10)
@@ -193,11 +198,11 @@ class TestSuccessScenarios:
         - Total time is less than sequential execution would take
         """
         num_commands = 6
-        execution_time_ms = 200  # Each command takes 200ms
+        duration_ms = 200  # Each command takes 200ms
         command_ids = [uuid4() for _ in range(num_commands)]
 
         # Create worker with higher concurrency
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry(None)
         worker = Worker(
             pool,
             domain="e2e",
@@ -211,13 +216,18 @@ class TestSuccessScenarios:
         try:
             start = time.time()
 
-            # Send all commands
+            # Send all commands with fixed duration
             for cmd_id in command_ids:
                 await command_bus.send(
                     domain="e2e",
                     command_type="TestCommand",
                     command_id=cmd_id,
-                    data={"behavior": {"type": "success", "execution_time_ms": execution_time_ms}},
+                    data={
+                        "behavior": {
+                            "min_duration_ms": duration_ms,
+                            "max_duration_ms": duration_ms,
+                        }
+                    },
                 )
 
             # Wait for all to complete
@@ -269,7 +279,7 @@ class TestSuccessScenarios:
                 domain="e2e",
                 command_type="TestCommand",
                 command_id=cmd_id,
-                data={"behavior": {"type": "success"}},
+                data={"behavior": {}},
             )
             await wait_for_completion(cmd_id, timeout=10)
             completion_times.append(time.time() - start)
@@ -303,7 +313,12 @@ class TestSuccessScenarios:
             domain="e2e",
             command_type="TestCommand",
             command_id=command_id,
-            data={"behavior": {"type": "success", "execution_time_ms": 100}},
+            data={
+                "behavior": {
+                    "min_duration_ms": 100,
+                    "max_duration_ms": 100,
+                }
+            },
         )
 
         await wait_for_completion(command_id, timeout=10)

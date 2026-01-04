@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import random
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,21 @@ if TYPE_CHECKING:
 
 # Shared state for tracking transient failure attempts per command
 _failure_counts: dict[str, int] = {}
+
+# Default visibility timeout for timeout simulation
+DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 30
+
+
+def _sample_duration(min_ms: int, max_ms: int) -> float:
+    """Sample duration from normal distribution, clamped to [min, max]."""
+    if min_ms == max_ms:
+        return float(min_ms)
+    if min_ms > max_ms:
+        min_ms, max_ms = max_ms, min_ms
+    mean = (min_ms + max_ms) / 2
+    std_dev = (max_ms - min_ms) / 6
+    sample = random.gauss(mean, std_dev)
+    return max(min_ms, min(max_ms, sample))
 
 
 @pytest.fixture
@@ -74,81 +90,76 @@ def create_handler_registry() -> Callable[[dict[str, Any] | None], HandlerRegist
 
     def _create(behavior: dict[str, Any] | None = None) -> HandlerRegistry:
         registry = HandlerRegistry()
-        behavior = behavior or {"type": "success"}
+        behavior = behavior or {}
 
         async def test_handler(cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
-            """Test command handler that simulates different behaviors.
+            """Test command handler using probabilistic behavior evaluation.
 
-            Supported behavior types:
-            - success: Complete successfully
-            - fail_permanent: Raise PermanentCommandError immediately
-            - fail_transient: Raise TransientCommandError every time
-            - fail_transient_then_succeed: Fail N times then succeed
-            - timeout: Simulate long-running operation (use with short visibility_timeout)
+            Probabilistic behavior evaluation (evaluated sequentially):
+            - fail_permanent_pct: Chance of permanent failure (0-100%)
+            - fail_transient_pct: Chance of transient failure (0-100%)
+            - timeout_pct: Chance of timeout behavior (0-100%)
+            - If none trigger, command succeeds with duration from normal distribution
+
+            For deterministic failures in tests, use 100% probability.
             """
             # Get behavior from command data if present
             cmd_behavior = cmd.data.get("behavior", behavior)
-            behavior_type = cmd_behavior.get("type", "success")
-            execution_time_ms = cmd_behavior.get("execution_time_ms", 0)
             error_code = cmd_behavior.get("error_code", "TEST_ERROR")
             error_message = cmd_behavior.get("error_message", "Test error")
-            transient_failures = cmd_behavior.get("transient_failures", 3)
 
-            # Simulate execution time
-            if execution_time_ms > 0:
-                await asyncio.sleep(execution_time_ms / 1000)
-
-            if behavior_type == "success":
-                return {
-                    "status": "success",
-                    "processed_at": time.time(),
-                    "data": cmd.data,
-                }
-
-            if behavior_type == "fail_permanent":
+            # Roll for permanent failure
+            fail_permanent_pct = cmd_behavior.get("fail_permanent_pct", 0.0)
+            if random.random() * 100 < fail_permanent_pct:
                 raise PermanentCommandError(
                     code=error_code,
                     message=error_message,
                     details={"command_id": str(cmd.command_id)},
                 )
 
-            if behavior_type == "fail_transient":
+            # Roll for transient failure
+            fail_transient_pct = cmd_behavior.get("fail_transient_pct", 0.0)
+            # Support for "fail N times then succeed" pattern using transient_failures count
+            transient_failures = cmd_behavior.get("transient_failures", 0)
+            if transient_failures > 0:
+                # Track failures per command for deterministic fail-then-succeed
+                cmd_key = str(cmd.command_id)
+                current_count = _failure_counts.get(cmd_key, 0)
+                if current_count < transient_failures:
+                    _failure_counts[cmd_key] = current_count + 1
+                    raise TransientCommandError(
+                        code=error_code,
+                        message=f"Transient failure {current_count + 1}/{transient_failures}",
+                        details={"attempt": current_count + 1},
+                    )
+                # Clean up after succeeding
+                _failure_counts.pop(cmd_key, None)
+            elif random.random() * 100 < fail_transient_pct:
                 raise TransientCommandError(
                     code=error_code,
                     message=error_message,
                     details={"command_id": str(cmd.command_id)},
                 )
 
-            if behavior_type == "fail_transient_then_succeed":
-                # Track failures per command
-                cmd_key = str(cmd.command_id)
-                current_count = _failure_counts.get(cmd_key, 0)
-                _failure_counts[cmd_key] = current_count + 1
+            # Roll for timeout
+            timeout_pct = cmd_behavior.get("timeout_pct", 0.0)
+            if random.random() * 100 < timeout_pct:
+                # Sleep longer than visibility timeout to trigger redelivery
+                await asyncio.sleep(DEFAULT_VISIBILITY_TIMEOUT_SECONDS * 1.5)
 
-                if current_count < transient_failures:
-                    raise TransientCommandError(
-                        code=error_code,
-                        message=f"Transient failure {current_count + 1}/{transient_failures}",
-                        details={"attempt": current_count + 1},
-                    )
-                # Clean up and succeed
-                del _failure_counts[cmd_key]
-                return {
-                    "status": "success",
-                    "processed_at": time.time(),
-                    "attempts_before_success": transient_failures,
-                }
+            # Success path - calculate duration from normal distribution
+            min_ms = cmd_behavior.get("min_duration_ms", 0)
+            max_ms = cmd_behavior.get("max_duration_ms", 0)
 
-            if behavior_type == "timeout":
-                # Sleep longer than visibility_timeout to simulate timeout
-                timeout_ms = cmd_behavior.get("timeout_ms", 10000)
-                await asyncio.sleep(timeout_ms / 1000)
-                return {
-                    "status": "success",
-                    "processed_at": time.time(),
-                }
+            if min_ms > 0 or max_ms > 0:
+                duration_ms = _sample_duration(min_ms, max_ms)
+                await asyncio.sleep(duration_ms / 1000)
 
-            raise ValueError(f"Unknown behavior type: {behavior_type}")
+            return {
+                "status": "success",
+                "processed_at": time.time(),
+                "data": cmd.data,
+            }
 
         registry.register("e2e", "TestCommand", test_handler)
         return registry
@@ -162,7 +173,7 @@ async def worker(
     create_handler_registry: Callable[[dict[str, Any] | None], HandlerRegistry],
 ) -> Worker:
     """Create a Worker with test handler registry."""
-    registry = create_handler_registry({"type": "success"})
+    registry = create_handler_registry({})  # Default: all success
     return Worker(
         pool,
         domain="e2e",
@@ -249,7 +260,7 @@ def create_failure_worker(
     """Factory fixture for creating workers with specific retry settings."""
 
     def _create(max_attempts: int = 3, visibility_timeout: int = 30) -> Worker:
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})  # Default: all success
         return Worker(
             pool,
             domain="e2e",
