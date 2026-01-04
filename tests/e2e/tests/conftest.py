@@ -56,15 +56,15 @@ async def cleanup_db(pool: AsyncConnectionPool) -> AsyncGenerator[None, None]:
     """Clean up test data before and after each test."""
     # Cleanup before test
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
         # Clean up PGMQ queues
         await conn.execute("DELETE FROM pgmq.q_e2e__commands")
     yield
     # Cleanup after test
     async with pool.connection() as conn:
-        await conn.execute("DELETE FROM command_bus_audit")
-        await conn.execute("DELETE FROM command_bus_command")
+        await conn.execute("DELETE FROM commandbus.audit")
+        await conn.execute("DELETE FROM commandbus.command")
         await conn.execute("DELETE FROM pgmq.q_e2e__commands")
 
 

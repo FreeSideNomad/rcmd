@@ -235,8 +235,8 @@ async def cleanup_queue(pool: AsyncConnectionPool) -> None:
     """Clean up the load test queue."""
     async with pool.connection() as conn:
         # Clean up command metadata
-        await conn.execute("DELETE FROM command_bus_command WHERE domain = 'load_test'")
-        await conn.execute("DELETE FROM command_bus_audit WHERE domain = 'load_test'")
+        await conn.execute("DELETE FROM commandbus.command WHERE domain = 'load_test'")
+        await conn.execute("DELETE FROM commandbus.audit WHERE domain = 'load_test'")
 
         # Try to clean up the queue (may not exist)
         with contextlib.suppress(Exception):
