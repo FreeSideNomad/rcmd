@@ -20,6 +20,7 @@ from commandbus.models import (
 from commandbus.pgmq.client import PGMQ_NOTIFY_CHANNEL, PgmqClient
 from commandbus.policies import DEFAULT_RETRY_POLICY, RetryPolicy
 from commandbus.repositories.audit import PostgresAuditLogger
+from commandbus.repositories.batch import PostgresBatchRepository
 from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
@@ -96,6 +97,7 @@ class Worker:
         self._queue_name = _make_queue_name(domain)
         self._pgmq = PgmqClient(pool)
         self._command_repo = PostgresCommandRepository(pool)
+        self._batch_repo = PostgresBatchRepository(pool)
         self._audit_logger = PostgresAuditLogger(pool)
         self._running = False
         self._stop_event: asyncio.Event | None = None
@@ -222,6 +224,10 @@ class Worker:
             f"(command_id={command_id}, attempt={attempts}/{metadata.max_attempts})"
         )
 
+        # Update batch status on first receive (S042)
+        if metadata.batch_id is not None:
+            await self._batch_repo.update_on_receive(domain, metadata.batch_id, conn=conn)
+
         return ReceivedCommand(
             command=command,
             context=context,
@@ -277,6 +283,12 @@ class Worker:
                     "result": result,
                 }
                 await self._pgmq.send(command.reply_to, reply_message, conn=conn)
+
+            # Update batch counters on complete (S042)
+            if received.metadata.batch_id is not None:
+                await self._batch_repo.update_on_complete(
+                    domain, received.metadata.batch_id, conn=conn
+                )
 
         logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
 
@@ -400,6 +412,12 @@ class Worker:
                 conn=conn,
             )
 
+            # Update batch counters when moving to TSQ (S042)
+            if received.metadata.batch_id is not None:
+                await self._batch_repo.update_on_tsq_move(
+                    domain, received.metadata.batch_id, conn=conn
+                )
+
         logger.warning(
             f"Permanent failure for {domain}.{command.command_type} "
             f"(command_id={command_id}), moved to troubleshooting queue: "
@@ -455,6 +473,12 @@ class Worker:
                 },
                 conn=conn,
             )
+
+            # Update batch counters when moving to TSQ (S042)
+            if received.metadata.batch_id is not None:
+                await self._batch_repo.update_on_tsq_move(
+                    domain, received.metadata.batch_id, conn=conn
+                )
 
         logger.warning(
             f"Retry exhausted for {domain}.{command.command_type} "
