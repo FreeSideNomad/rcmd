@@ -118,7 +118,7 @@ class PostgresAuditLogger:
         async with conn.cursor() as cur:
             await cur.executemany(
                 """
-                INSERT INTO command_bus_audit (domain, command_id, event_type, details_json)
+                INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
                 VALUES (%s, %s, %s, %s::jsonb)
                 """,
                 [
