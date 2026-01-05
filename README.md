@@ -56,10 +56,10 @@ Reliable Commands implements the **Transactional Outbox Pattern**:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    PostgreSQL                           │
-│  ┌─────────────────┐    ┌─────────────────┐            │
-│  │  Business Data  │    │  Command Queue  │            │
-│  │    (orders)     │    │     (PGMQ)      │            │
-│  └────────┬────────┘    └────────┬────────┘            │
+│  ┌─────────────────┐    ┌─────────────────┐             │
+│  │  Business Data  │    │  Command Queue  │             │
+│  │    (orders)     │    │     (PGMQ)      │             │
+│  └────────┬────────┘    └────────┬────────┘             │
 │           │                      │                      │
 │           └──────────┬───────────┘                      │
 │                      │                                  │
@@ -129,9 +129,9 @@ Understanding these terms is essential for working with the library:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                              Your Application                            │
+│                              Your Application                           │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
+│                                                                         │
 │   ┌──────────────┐         ┌──────────────────────────────────────┐     │
 │   │  CommandBus  │         │              Worker                  │     │
 │   │              │         │  ┌────────────────────────────────┐  │     │
@@ -142,13 +142,13 @@ Understanding these terms is essential for working with the library:
 │   └──────┬───────┘         │  │  └──────────┘  └──────────┘    │  │     │
 │          │                 │  └────────────────────────────────┘  │     │
 │          │                 └──────────────────┬───────────────────┘     │
-│          │                                    │                          │
-└──────────┼────────────────────────────────────┼──────────────────────────┘
+│          │                                    │                         │
+└──────────┼────────────────────────────────────┼─────────────────────────┘
            │                                    │
            ▼                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                            PostgreSQL + PGMQ                             │
-│                                                                          │
+│                            PostgreSQL + PGMQ                            │
+│                                                                         │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          │
 │  │  commandbus.    │  │    pgmq.        │  │  commandbus.    │          │
 │  │    command      │  │  q_<domain>     │  │    audit        │          │
@@ -157,7 +157,7 @@ Understanding these terms is essential for working with the library:
 │  │  - status       │  │  - payload      │  │  - timestamp    │          │
 │  │  - attempts     │  │  - vt (visible) │  │  - details      │          │
 │  └─────────────────┘  └─────────────────┘  └─────────────────┘          │
-│                                                                          │
+│                                                                         │
 │  ┌─────────────────┐  ┌─────────────────┐                               │
 │  │  commandbus.    │  │  commandbus.    │                               │
 │  │    batch        │  │    tsq          │                               │
@@ -166,7 +166,7 @@ Understanding these terms is essential for working with the library:
 │  │  - total_count  │  │    commands     │                               │
 │  │  - completed    │  │    for review   │                               │
 │  └─────────────────┘  └─────────────────┘                               │
-│                                                                          │
+│                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -177,9 +177,9 @@ Understanding these terms is essential for working with the library:
 ### State Machine
 
 ```
-                                    ┌─────────────────────────────────┐
-                                    │                                 │
-                                    ▼                                 │
+                                    ┌────────────────────────────────┐
+                                    │                                │
+                                    ▼                                │
 ┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌───────────┐       │
 │ PENDING │───▶│ IN_PROGRESS │───▶│ FAILED  │───▶│  PENDING  │───────┘
 └─────────┘    └──────┬──────┘    └────┬────┘    └───────────┘
@@ -253,14 +253,14 @@ Alternative: Worker A crashes
 │   BEGIN;                                                         │
 │                                                                  │
 │   -- Your business logic                                         │
-│   INSERT INTO orders (id, product, qty) VALUES (...);           │
+│   INSERT INTO orders (id, product, qty) VALUES (...);            │
 │                                                                  │
-│   -- rcmd: Queue command in same transaction                    │
-│   SELECT pgmq.send('q_orders', '{"type": "CreateOrder", ...}'); │
+│   -- rcmd: Queue command in same transaction                     │
+│   SELECT pgmq.send('q_orders', '{"type": "CreateOrder", ...}');  │
 │                                                                  │
-│   COMMIT;  ◀── Both succeed or both fail                        │
+│   COMMIT;  ◀── Both succeed or both fail                         │
 │                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Queue Naming Convention
@@ -599,25 +599,25 @@ Writing efficient and reliable handlers requires understanding how the worker pr
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                           Worker Process                             │
-│                                                                      │
+│                           Worker Process                            │
+│                                                                     │
 │   ┌─────────────┐                                                   │
 │   │  Event Loop │                                                   │
 │   │   (asyncio) │                                                   │
 │   └──────┬──────┘                                                   │
 │          │                                                          │
-│          ├──────────────┬──────────────┬──────────────┐            │
-│          ▼              ▼              ▼              ▼            │
-│   ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐       │
-│   │  Handler  │  │  Handler  │  │  Handler  │  │  Handler  │       │
-│   │  Task 1   │  │  Task 2   │  │  Task 3   │  │  Task 4   │       │
-│   │           │  │           │  │           │  │           │       │
-│   │  await    │  │  await    │  │  await    │  │  await    │       │
-│   │  db.query │  │  api.call │  │  db.save  │  │  sleeping │       │
-│   └───────────┘  └───────────┘  └───────────┘  └───────────┘       │
-│                                                                      │
+│          ├──────────────┬──────────────┬──────────────┐             │
+│          ▼              ▼              ▼              ▼             │
+│   ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐        │
+│   │  Handler  │  │  Handler  │  │  Handler  │  │  Handler  │        │
+│   │  Task 1   │  │  Task 2   │  │  Task 3   │  │  Task 4   │        │
+│   │           │  │           │  │           │  │           │        │
+│   │  await    │  │  await    │  │  await    │  │  await    │        │
+│   │  db.query │  │  api.call │  │  db.save  │  │  sleeping │        │
+│   └───────────┘  └───────────┘  └───────────┘  └───────────┘        │
+│                                                                     │
 │   concurrency=4 means 4 handlers run concurrently                   │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -842,12 +842,6 @@ The E2E UI provides:
 - **Audit Trail**: Full event history per command
 
 ---
-
-## Documentation
-
-- [Implementation Spec](docs/command-bus-python-spec.md) - Detailed design and API
-- [Architecture Decisions](docs/architecture/adr/) - ADRs explaining key choices
-- [Contributing](CONTRIBUTING.md) - How to contribute
 
 ## License
 
