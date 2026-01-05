@@ -1,7 +1,7 @@
 # rcmd - Reliable Commands
 
-[![PyPI version](https://badge.fury.io/py/commandbus.svg)](https://badge.fury.io/py/commandbus)
-[![Python Versions](https://img.shields.io/pypi/pyversions/commandbus.svg)](https://pypi.org/project/commandbus/)
+[![PyPI version](https://badge.fury.io/py/reliable-cmd.svg)](https://badge.fury.io/py/reliable-cmd)
+[![Python Versions](https://img.shields.io/pypi/pyversions/reliable-cmd.svg)](https://pypi.org/project/reliable-cmd/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A Python library providing Command Bus abstraction over PostgreSQL + PGMQ.
@@ -9,7 +9,7 @@ A Python library providing Command Bus abstraction over PostgreSQL + PGMQ.
 ## Installation
 
 ```bash
-pip install commandbus
+pip install reliable-cmd
 ```
 
 ## Overview
