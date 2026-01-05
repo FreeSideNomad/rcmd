@@ -63,3 +63,26 @@ SELECT pgmq.create('reports__replies');
 -- Create E2E demo application queues
 SELECT pgmq.create('e2e__commands');
 SELECT pgmq.create('e2e__replies');
+
+-- ============================================================================
+-- Batch Summary Table for Reply Queue Aggregation
+-- ============================================================================
+
+-- Stores aggregated reply counts for e2e testing of reply queue functionality
+CREATE TABLE IF NOT EXISTS e2e.batch_summary (
+    id SERIAL PRIMARY KEY,
+    batch_id UUID NOT NULL UNIQUE,
+    domain TEXT NOT NULL DEFAULT 'e2e',
+    total_expected INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    canceled_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS ix_batch_summary_batch_id
+    ON e2e.batch_summary(batch_id);
+
+CREATE INDEX IF NOT EXISTS ix_batch_summary_created_at
+    ON e2e.batch_summary(created_at);

@@ -9,6 +9,46 @@ from psycopg.types.json import Json
 
 
 @dataclass
+class BatchSummary:
+    """Batch summary for reply queue aggregation."""
+
+    id: int | None
+    batch_id: UUID
+    domain: str
+    total_expected: int
+    success_count: int
+    failed_count: int
+    canceled_count: int
+    created_at: datetime | None = None
+    completed_at: datetime | None = None
+
+    @classmethod
+    def from_row(cls, row: tuple) -> "BatchSummary":
+        """Create from database row."""
+        return cls(
+            id=row[0],
+            batch_id=row[1],
+            domain=row[2],
+            total_expected=row[3],
+            success_count=row[4],
+            failed_count=row[5],
+            canceled_count=row[6],
+            created_at=row[7],
+            completed_at=row[8],
+        )
+
+    @property
+    def total_received(self) -> int:
+        """Total replies received so far."""
+        return self.success_count + self.failed_count + self.canceled_count
+
+    @property
+    def is_complete(self) -> bool:
+        """Check if all expected replies have been received."""
+        return self.total_received >= self.total_expected
+
+
+@dataclass
 class TestCommand:
     """Test command with behavior specification."""
 
@@ -170,3 +210,92 @@ class TestCommandRepository:
             )
             rows = await cur.fetchall()
             return [TestCommand.from_row(row) for row in rows]
+
+
+class BatchSummaryRepository:
+    """Repository for batch summary records."""
+
+    def __init__(self, pool: Any) -> None:
+        """Initialize repository."""
+        self.pool = pool
+
+    async def create(
+        self,
+        batch_id: UUID,
+        total_expected: int,
+        domain: str = "e2e",
+    ) -> BatchSummary:
+        """Create a new batch summary record."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO e2e.batch_summary (batch_id, domain, total_expected)
+                VALUES (%s, %s, %s)
+                RETURNING id, batch_id, domain, total_expected,
+                          success_count, failed_count, canceled_count,
+                          created_at, completed_at
+                """,
+                (batch_id, domain, total_expected),
+            )
+            row = await cur.fetchone()
+            return BatchSummary.from_row(row)
+
+    async def get_by_batch_id(self, batch_id: UUID) -> BatchSummary | None:
+        """Get batch summary by batch_id."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, batch_id, domain, total_expected,
+                       success_count, failed_count, canceled_count,
+                       created_at, completed_at
+                FROM e2e.batch_summary
+                WHERE batch_id = %s
+                """,
+                (batch_id,),
+            )
+            row = await cur.fetchone()
+            return BatchSummary.from_row(row) if row else None
+
+    async def increment_success(self, batch_id: UUID) -> BatchSummary | None:
+        """Increment success count and return updated summary."""
+        return await self._increment_count(batch_id, "success_count")
+
+    async def increment_failed(self, batch_id: UUID) -> BatchSummary | None:
+        """Increment failed count and return updated summary."""
+        return await self._increment_count(batch_id, "failed_count")
+
+    async def increment_canceled(self, batch_id: UUID) -> BatchSummary | None:
+        """Increment canceled count and return updated summary."""
+        return await self._increment_count(batch_id, "canceled_count")
+
+    async def _increment_count(self, batch_id: UUID, column: str) -> BatchSummary | None:
+        """Increment a count column and mark complete if all received."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            # Update count and check if complete
+            await cur.execute(
+                f"""
+                UPDATE e2e.batch_summary
+                SET {column} = {column} + 1,
+                    completed_at = CASE
+                        WHEN success_count + failed_count + canceled_count + 1 >= total_expected
+                        THEN NOW()
+                        ELSE completed_at
+                    END
+                WHERE batch_id = %s
+                RETURNING id, batch_id, domain, total_expected,
+                          success_count, failed_count, canceled_count,
+                          created_at, completed_at
+                """,
+                (batch_id,),
+            )
+            row = await cur.fetchone()
+            return BatchSummary.from_row(row) if row else None
+
+    async def delete(self, batch_id: UUID) -> bool:
+        """Delete a batch summary record."""
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM e2e.batch_summary WHERE batch_id = %s",
+                (batch_id,),
+            )
+            return cur.rowcount > 0
