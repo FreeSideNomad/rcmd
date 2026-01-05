@@ -1,6 +1,16 @@
 # rcmd - Reliable Commands
 
+[![PyPI version](https://badge.fury.io/py/commandbus.svg)](https://badge.fury.io/py/commandbus)
+[![Python Versions](https://img.shields.io/pypi/pyversions/commandbus.svg)](https://pypi.org/project/commandbus/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A Python library providing Command Bus abstraction over PostgreSQL + PGMQ.
+
+## Installation
+
+```bash
+pip install commandbus
+```
 
 ## Overview
 
@@ -303,4 +313,4 @@ The E2E UI provides:
 
 ## License
 
-Apache 2.0
+MIT
