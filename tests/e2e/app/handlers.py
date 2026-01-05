@@ -60,7 +60,7 @@ class TestCommandHandlers:
     - Constructor-injected dependencies (pool)
     - @handler decorator marks methods as command handlers
     - Stateless design (no mutable instance state beyond dependencies)
-    - Handler methods use ctx.conn for transaction participation
+    - Handlers manage their own database transactions
 
     Probabilistic Behavior Evaluation:
     Commands are evaluated sequentially in this order:
@@ -87,10 +87,7 @@ class TestCommandHandlers:
         """
         repo = TestCommandRepository(self._pool)
 
-        # Increment attempt count
-        attempt = await repo.increment_attempts(cmd.command_id)
-
-        # Get behavior from test_command table
+        # Read behavior configuration
         test_cmd = await repo.get_by_command_id(cmd.command_id)
         if not test_cmd:
             raise PermanentCommandError(
@@ -129,6 +126,8 @@ class TestCommandHandlers:
             duration_ms = _sample_duration(min_ms, max_ms)
             await asyncio.sleep(duration_ms / 1000)
 
+        # Update attempt count and mark processed
+        attempt = await repo.increment_attempts(cmd.command_id)
         result = {"status": "success", "attempt": attempt}
         await repo.mark_processed(cmd.command_id, result)
         return result
