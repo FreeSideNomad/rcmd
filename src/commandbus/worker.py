@@ -25,6 +25,7 @@ from commandbus.repositories.batch import PostgresBatchRepository
 from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
+    from psycopg import AsyncConnection
     from psycopg_pool import AsyncConnectionPool
 
     from commandbus.handler import HandlerRegistry
@@ -680,23 +681,109 @@ class Worker:
         received: ReceivedCommand,
         semaphore: asyncio.Semaphore,
     ) -> None:
-        """Process a single command with semaphore control."""
+        """Process a single command with transaction wrapping.
+
+        The handler and command completion are wrapped in a single transaction.
+        If the handler succeeds, both the handler's DB operations (if using
+        ctx.conn) and the command completion commit together. If the handler
+        raises an exception, the transaction is rolled back.
+
+        Args:
+            received: The received command to process
+            semaphore: Semaphore for concurrency control
+        """
         assert self._registry is not None
 
         async with semaphore:
             try:
-                result = await self._registry.dispatch(
-                    received.command,
-                    received.context,
-                )
-                await self.complete(received, result=result)
+                is_batch_complete = False
+                async with self._pool.connection() as conn, conn.transaction():
+                    # Create context with connection for transaction participation
+                    context = HandlerContext(
+                        command=received.command,
+                        attempt=received.context.attempt,
+                        max_attempts=received.context.max_attempts,
+                        msg_id=received.msg_id,
+                        visibility_extender=received.context.visibility_extender,
+                        conn=conn,
+                    )
+
+                    # Handler executes within transaction
+                    result = await self._registry.dispatch(received.command, context)
+
+                    # Complete within same transaction
+                    is_batch_complete = await self._complete_in_txn(received, result, conn)
+
+                # Invoke batch completion callback (S043) - outside transaction
+                if is_batch_complete and received.metadata.batch_id is not None:
+                    await invoke_batch_callback(
+                        received.command.domain, received.metadata.batch_id, self._batch_repo
+                    )
+
             except TransientCommandError as e:
-                # Explicit transient error - apply backoff and retry
+                # Transaction rolled back, handle outside
                 await self.fail(received, e, is_transient=True)
             except PermanentCommandError as e:
-                # Permanent error - move to troubleshooting queue
+                # Transaction rolled back, move to troubleshooting queue
                 await self.fail_permanent(received, e)
             except Exception as e:
-                # Unknown exception treated as transient
+                # Transaction rolled back, treat as transient
                 logger.exception(f"Error processing command {received.command.command_id}")
                 await self.fail(received, e, is_transient=True)
+
+    async def _complete_in_txn(
+        self,
+        received: ReceivedCommand,
+        result: Any,
+        conn: AsyncConnection[Any],
+    ) -> bool:
+        """Complete a command within an existing transaction.
+
+        This is called from _process_command after the handler has executed
+        successfully. It performs the same operations as complete() but uses
+        the provided connection instead of opening a new one.
+
+        Args:
+            received: The received command to complete
+            result: Result data from the handler
+            conn: The connection within the transaction
+
+        Returns:
+            True if batch is now complete (for callback triggering)
+        """
+        command = received.command
+        command_id = command.command_id
+        domain = command.domain
+
+        # Delete message from queue
+        await self._pgmq.delete(self._queue_name, received.msg_id, conn)
+
+        # Use stored procedure: update status + insert audit + batch counter in ONE DB CALL
+        # Returns is_batch_complete for callback triggering
+        is_batch_complete = await self._command_repo.sp_finish_command(
+            domain,
+            command_id,
+            CommandStatus.COMPLETED,
+            event_type="COMPLETED",
+            details={
+                "msg_id": received.msg_id,
+                "reply_to": command.reply_to,
+                "has_result": result is not None,
+            },
+            batch_id=received.metadata.batch_id,
+            conn=conn,
+        )
+
+        # Send reply if reply_to is configured
+        if command.reply_to:
+            reply_message = {
+                "command_id": str(command_id),
+                "correlation_id": str(command.correlation_id) if command.correlation_id else None,
+                "outcome": ReplyOutcome.SUCCESS.value,
+                "result": result,
+            }
+            await self._pgmq.send(command.reply_to, reply_message, conn=conn)
+
+        logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
+
+        return is_batch_complete

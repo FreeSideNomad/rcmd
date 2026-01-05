@@ -671,27 +671,115 @@ Handler 4: ██░░░░██░░░░██░░░░
 Effective throughput: 4 commands concurrently!
 ```
 
-### Database Connections in Handlers
+### Transaction Participation via ctx.conn
 
-Use async database connections and manage transactions carefully:
+**Handlers can participate in the worker's transaction** by using `ctx.conn`. This ensures your business logic and command completion are atomic:
 
 ```python
 @handler(domain="orders", command_type="CreateOrder")
 async def handle_create_order(self, cmd: Command, ctx: HandlerContext):
-    async with self._pool.connection() as conn:
-        async with conn.transaction():
-            # All operations in this block are atomic
-            await conn.execute(
-                "INSERT INTO orders (id, data) VALUES (%s, %s)",
-                (cmd.command_id, cmd.data)
-            )
-            await conn.execute(
-                "UPDATE inventory SET qty = qty - %s WHERE product_id = %s",
-                (cmd.data["quantity"], cmd.data["product_id"])
-            )
-            # If any operation fails, entire transaction rolls back
+    # Use ctx.conn to participate in the worker's transaction
+    # Your operations + command completion are now atomic
+    await ctx.conn.execute(
+        "INSERT INTO orders (id, data) VALUES (%s, %s)",
+        (cmd.command_id, Json(cmd.data))
+    )
+    await ctx.conn.execute(
+        "UPDATE inventory SET qty = qty - %s WHERE product_id = %s",
+        (cmd.data["quantity"], cmd.data["product_id"])
+    )
+    # If handler returns successfully: both inserts + command completion COMMIT
+    # If handler raises exception: everything ROLLS BACK, command retries
 
     return {"status": "created"}
+```
+
+**Why use ctx.conn?**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Worker Transaction                                │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  Handler executes (using ctx.conn)                           │   │
+│  │  ├── INSERT INTO orders ...                                  │   │
+│  │  └── UPDATE inventory ...                                    │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                              │                                       │
+│                              ▼                                       │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  Command completion                                          │   │
+│  │  ├── DELETE from PGMQ queue                                  │   │
+│  │  ├── UPDATE command status to COMPLETED                      │   │
+│  │  └── INSERT audit event                                      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                              │                                       │
+│                              ▼                                       │
+│                          COMMIT                                      │
+│              (all operations succeed together)                       │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**If handler fails:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Worker Transaction                                │
+│                                                                      │
+│  Handler executes...                                                 │
+│  ├── INSERT INTO orders ...  ✓                                      │
+│  ├── UPDATE inventory ...    ✓                                      │
+│  └── raise TransientCommandError("timeout")  ✗                      │
+│                              │                                       │
+│                              ▼                                       │
+│                          ROLLBACK                                    │
+│              (orders insert reverted, inventory unchanged)           │
+│              (command will be retried after backoff)                 │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Service Layer Pattern
+
+For services that can be called from handlers or standalone, accept an optional `conn` parameter:
+
+```python
+class PaymentService:
+    def __init__(self, pool: AsyncConnectionPool):
+        self._pool = pool
+
+    async def transfer(
+        self,
+        from_account: str,
+        to_account: str,
+        amount: Decimal,
+        conn: AsyncConnection | None = None,  # Optional connection
+    ) -> dict:
+        """Transfer money. Uses provided conn or acquires from pool."""
+        if conn is not None:
+            # Participate in caller's transaction
+            return await self._transfer_impl(from_account, to_account, amount, conn)
+
+        # Standalone call - manage own transaction
+        async with self._pool.connection() as acquired_conn:
+            async with acquired_conn.transaction():
+                return await self._transfer_impl(from_account, to_account, amount, acquired_conn)
+
+
+class PaymentHandlers:
+    def __init__(self, payment_service: PaymentService):
+        self._service = payment_service
+
+    @handler(domain="payments", command_type="Transfer")
+    async def handle_transfer(self, cmd: Command, ctx: HandlerContext) -> dict:
+        # Pass ctx.conn to service - transfer is atomic with command completion
+        return await self._service.transfer(
+            from_account=cmd.data["from"],
+            to_account=cmd.data["to"],
+            amount=Decimal(cmd.data["amount"]),
+            conn=ctx.conn,  # Transaction participation
+        )
 ```
 
 ### Idempotency
