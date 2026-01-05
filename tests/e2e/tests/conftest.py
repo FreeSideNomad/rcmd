@@ -17,8 +17,10 @@ from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from commandbus.handler import HandlerRegistry
 from commandbus.models import Command, CommandStatus, HandlerContext
 from commandbus.ops.troubleshooting import TroubleshootingQueue
+from commandbus.pgmq.client import PgmqClient
 from commandbus.policies import RetryPolicy
 from commandbus.worker import Worker
+from tests.e2e.app.models import BatchSummary, BatchSummaryRepository
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
@@ -155,11 +157,20 @@ def create_handler_registry() -> Callable[[dict[str, Any] | None], HandlerRegist
                 duration_ms = _sample_duration(min_ms, max_ms)
                 await asyncio.sleep(duration_ms / 1000)
 
-            return {
+            # Build result - include response_data if send_response is enabled
+            result: dict[str, Any] = {
                 "status": "success",
                 "processed_at": time.time(),
-                "data": cmd.data,
             }
+
+            # If send_response is enabled, include response data in result
+            # This will be sent to the reply queue
+            if cmd_behavior.get("send_response", False):
+                response_data = cmd_behavior.get("response_data", {})
+                result["response_data"] = response_data
+                result["command_id"] = str(cmd.command_id)
+
+            return result
 
         registry.register("e2e", "TestCommand", test_handler)
         return registry
@@ -280,3 +291,128 @@ def reset_failure_counts() -> Callable[[], None]:
         _failure_counts.clear()
 
     return _reset
+
+
+class ReplyAggregator:
+    """Aggregates replies from a reply queue into batch summary.
+
+    Reads messages from the reply queue and updates the batch_summary
+    table with counts by outcome type (SUCCESS, FAILED, CANCELED).
+    """
+
+    def __init__(
+        self,
+        pool: AsyncConnectionPool,
+        reply_queue: str = "e2e__replies",
+    ) -> None:
+        """Initialize the reply aggregator.
+
+        Args:
+            pool: Database connection pool
+            reply_queue: Name of the reply queue to read from
+        """
+        self._pool = pool
+        self._pgmq = PgmqClient(pool)
+        self._reply_queue = reply_queue
+        self._batch_repo = BatchSummaryRepository(pool)
+
+    async def process_replies(
+        self,
+        batch_id: UUID,
+        timeout: float = 10.0,
+        poll_interval: float = 0.1,
+    ) -> BatchSummary:
+        """Process all replies for a batch until complete or timeout.
+
+        Reads from reply queue and updates batch_summary table.
+        Returns when all expected replies are received or timeout.
+
+        Args:
+            batch_id: The batch ID to aggregate replies for
+            timeout: Maximum time to wait for all replies
+            poll_interval: Time between poll attempts
+
+        Returns:
+            Final BatchSummary with aggregated counts
+        """
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            # Read available messages
+            messages = await self._pgmq.read(
+                self._reply_queue,
+                visibility_timeout=30,
+                batch_size=10,
+            )
+
+            for msg in messages:
+                await self._process_message(batch_id, msg.msg_id, msg.message)
+
+            # Check if batch is complete
+            summary = await self._batch_repo.get_by_batch_id(batch_id)
+            if summary and summary.is_complete:
+                return summary
+
+            await asyncio.sleep(poll_interval)
+
+        # Return current state on timeout
+        summary = await self._batch_repo.get_by_batch_id(batch_id)
+        if summary is None:
+            raise RuntimeError(f"Batch summary not found for {batch_id}")
+        return summary
+
+    async def _process_message(
+        self,
+        batch_id: UUID,
+        msg_id: int,
+        message: dict[str, Any],
+    ) -> None:
+        """Process a single reply message.
+
+        Updates the appropriate counter based on outcome.
+        """
+        outcome = message.get("outcome", "UNKNOWN")
+
+        async with self._pool.connection() as conn:
+            # Update count based on outcome
+            if outcome == "SUCCESS":
+                await self._batch_repo.increment_success(batch_id)
+            elif outcome == "FAILED":
+                await self._batch_repo.increment_failed(batch_id)
+            elif outcome == "CANCELED":
+                await self._batch_repo.increment_canceled(batch_id)
+
+            # Delete the message from the queue
+            await self._pgmq.delete(self._reply_queue, msg_id, conn)
+
+
+@pytest.fixture
+async def batch_summary_repo(
+    pool: AsyncConnectionPool,
+) -> BatchSummaryRepository:
+    """Create a BatchSummaryRepository for tests."""
+    return BatchSummaryRepository(pool)
+
+
+@pytest.fixture
+async def reply_aggregator(
+    pool: AsyncConnectionPool,
+) -> ReplyAggregator:
+    """Create a ReplyAggregator for tests."""
+    return ReplyAggregator(pool, reply_queue="e2e__replies")
+
+
+@pytest.fixture
+async def cleanup_reply_queue(
+    pool: AsyncConnectionPool,
+) -> AsyncGenerator[None, None]:
+    """Clean up reply queue and batch summary before and after tests."""
+    # Cleanup before test
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM pgmq.q_e2e__replies")
+        await conn.execute("DELETE FROM e2e.batch_summary")
+    yield
+    # Cleanup after test
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM pgmq.q_e2e__replies")
+        await conn.execute("DELETE FROM e2e.batch_summary")
