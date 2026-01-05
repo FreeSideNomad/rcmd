@@ -696,6 +696,7 @@ class Worker:
 
         async with semaphore:
             try:
+                is_batch_complete = False
                 async with self._pool.connection() as conn, conn.transaction():
                     # Create context with connection for transaction participation
                     context = HandlerContext(
@@ -711,7 +712,13 @@ class Worker:
                     result = await self._registry.dispatch(received.command, context)
 
                     # Complete within same transaction
-                    await self._complete_in_txn(received, result, conn)
+                    is_batch_complete = await self._complete_in_txn(received, result, conn)
+
+                # Invoke batch completion callback (S043) - outside transaction
+                if is_batch_complete and received.metadata.batch_id is not None:
+                    await invoke_batch_callback(
+                        received.command.domain, received.metadata.batch_id, self._batch_repo
+                    )
 
             except TransientCommandError as e:
                 # Transaction rolled back, handle outside
@@ -729,7 +736,7 @@ class Worker:
         received: ReceivedCommand,
         result: Any,
         conn: AsyncConnection[Any],
-    ) -> None:
+    ) -> bool:
         """Complete a command within an existing transaction.
 
         This is called from _process_command after the handler has executed
@@ -740,6 +747,9 @@ class Worker:
             received: The received command to complete
             result: Result data from the handler
             conn: The connection within the transaction
+
+        Returns:
+            True if batch is now complete (for callback triggering)
         """
         command = received.command
         command_id = command.command_id
@@ -748,8 +758,21 @@ class Worker:
         # Delete message from queue
         await self._pgmq.delete(self._queue_name, received.msg_id, conn)
 
-        # Update status to COMPLETED
-        await self._command_repo.update_status(domain, command_id, CommandStatus.COMPLETED, conn)
+        # Use stored procedure: update status + insert audit + batch counter in ONE DB CALL
+        # Returns is_batch_complete for callback triggering
+        is_batch_complete = await self._command_repo.sp_finish_command(
+            domain,
+            command_id,
+            CommandStatus.COMPLETED,
+            event_type="COMPLETED",
+            details={
+                "msg_id": received.msg_id,
+                "reply_to": command.reply_to,
+                "has_result": result is not None,
+            },
+            batch_id=received.metadata.batch_id,
+            conn=conn,
+        )
 
         # Send reply if reply_to is configured
         if command.reply_to:
@@ -761,17 +784,6 @@ class Worker:
             }
             await self._pgmq.send(command.reply_to, reply_message, conn=conn)
 
-        # Record audit event
-        await self._audit_logger.log(
-            domain=domain,
-            command_id=command_id,
-            event_type=AuditEventType.COMPLETED,
-            details={
-                "msg_id": received.msg_id,
-                "reply_to": command.reply_to,
-                "has_result": result is not None,
-            },
-            conn=conn,
-        )
-
         logger.info(f"Completed command {domain}.{command.command_type} (command_id={command_id})")
+
+        return is_batch_complete
