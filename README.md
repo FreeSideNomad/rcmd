@@ -231,28 +231,68 @@ async def create_order(bus: CommandBus, order_data: dict) -> UUID:
     return command_id
 ```
 
-For high-throughput scenarios, use batch sending:
+### 5. Using Batches
+
+Batches group related commands together and track their collective progress. Use batches when you need to:
+- Track completion of multiple related commands
+- Get notified when all commands in a group complete
+- Monitor success/failure rates for a set of operations
 
 ```python
-from commandbus.models import SendRequest
+from uuid import uuid4
+from commandbus import CommandBus, BatchCommand, BatchMetadata
 
-requests = [
-    SendRequest(
-        domain="orders",
-        command_type="CreateOrder",
-        command_id=uuid4(),
-        data={"product_id": "123", "quantity": 1},
+async def process_monthly_billing(bus: CommandBus, accounts: list[dict]) -> UUID:
+    """Create a batch of billing commands with completion callback."""
+
+    # Define callback for when batch completes
+    async def on_batch_complete(batch: BatchMetadata) -> None:
+        print(f"Batch {batch.batch_id} finished:")
+        print(f"  - Completed: {batch.completed_count}/{batch.total_count}")
+        print(f"  - Failed: {batch.in_troubleshooting_count}")
+        print(f"  - Status: {batch.status.value}")
+
+    # Create batch with commands
+    result = await bus.create_batch(
+        domain="billing",
+        commands=[
+            BatchCommand(
+                command_type="ProcessPayment",
+                command_id=uuid4(),
+                data={"account_id": acc["id"], "amount": acc["balance"]},
+            )
+            for acc in accounts
+        ],
+        name="Monthly billing - January 2026",
+        on_complete=on_batch_complete,  # Called when all commands finish
     )
-    for _ in range(1000)
-]
 
-result = await bus.send_batch(requests)
-print(f"Sent {result.total_commands} commands in {result.chunks_processed} chunks")
+    print(f"Created batch {result.batch_id} with {result.total_commands} commands")
+    return result.batch_id
+
+
+async def monitor_batch(bus: CommandBus, batch_id: UUID) -> None:
+    """Poll batch status for progress monitoring."""
+    batch = await bus.get_batch("billing", batch_id)
+    if batch:
+        progress = (batch.completed_count + batch.in_troubleshooting_count) / batch.total_count
+        print(f"Batch progress: {progress:.1%}")
+        print(f"  Status: {batch.status.value}")
+        print(f"  Completed: {batch.completed_count}")
+        print(f"  In TSQ: {batch.in_troubleshooting_count}")
 ```
+
+**Batch Status Lifecycle:**
+- `PENDING` → Batch created, commands waiting to be processed
+- `IN_PROGRESS` → At least one command has started processing
+- `COMPLETED` → All commands completed successfully
+- `COMPLETED_WITH_FAILURES` → All commands finished, some failed (in TSQ)
+
+**Note:** Batch callbacks are in-memory only and will be lost on worker restart. For critical workflows, poll `get_batch()` as a fallback
 
 ## E2E Test Application
 
-The repository includes an end-to-end test application with a web UI for testing command processing behaviors.
+The repository includes an end-to-end test application with a web UI for testing command processing with **probabilistic behaviors**.
 
 ### Prerequisites
 
@@ -291,25 +331,46 @@ for i in {1..4}; do
 done
 ```
 
-### Test Behaviors
+### Probabilistic Behavior Model
 
-The E2E UI supports various command behaviors for testing:
+Commands use a **probabilistic behavior model** with configurable outcome percentages:
 
-| Behavior | Description |
-|----------|-------------|
-| **No-Op** | Returns immediately, for throughput benchmarking |
-| **Success** | Completes successfully after optional delay |
-| **Fail Permanent** | Fails with PermanentCommandError, moves to TSQ |
-| **Fail Transient** | Fails with TransientCommandError, retries |
-| **Fail Transient Then Succeed** | Fails N times, then succeeds |
-| **Timeout** | Simulates slow execution |
+| Parameter | Description |
+|-----------|-------------|
+| `fail_permanent_pct` | Chance of permanent failure (0-100%) |
+| `fail_transient_pct` | Chance of transient failure (0-100%) |
+| `timeout_pct` | Chance of timeout behavior (0-100%) |
+| `min_duration_ms` | Minimum execution time (ms) |
+| `max_duration_ms` | Maximum execution time (ms) |
+
+**Evaluation Order:** Probabilities are evaluated sequentially - permanent failure first, then transient, then timeout. If none trigger, the command succeeds with execution time sampled from a normal distribution between min and max duration.
+
+**Example Configurations:**
+
+| Scenario | Settings |
+|----------|----------|
+| **Pure throughput test** | All percentages 0%, duration 0ms |
+| **Realistic workload** | 1% permanent, 5% transient, 100-500ms duration |
+| **High failure rate** | 10% permanent, 20% transient |
+| **Stress test retries** | 50% transient failure rate |
+
+### Outcome Calculator
+
+The UI includes an **Expected Outcomes Calculator** that shows predicted results based on your probability settings:
+
+```
+For 10,000 commands with 2% permanent, 8% transient:
+├── ~200 permanent failures → TSQ immediately
+├── ~800 transient failures → Retry (some recover)
+└── ~9,000 succeed on first attempt
+```
 
 ### Bulk Generation
 
 For load testing, use the bulk generation form:
-1. Select behavior type (No-Op recommended for pure throughput tests)
-2. Set count (up to 1,000,000)
-3. Set execution time (0ms for maximum throughput)
+1. Adjust probability sliders for desired failure rates
+2. Set execution time range (0ms for maximum throughput)
+3. Set count (up to 1,000,000)
 4. Click "Generate Bulk Commands"
 
 ### Monitoring
