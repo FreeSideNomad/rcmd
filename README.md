@@ -4,7 +4,7 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/reliable-cmd)](https://pypi.org/project/reliable-cmd/)
 [![License: MIT](https://img.shields.io/pypi/l/reliable-cmd)](https://opensource.org/licenses/MIT)
 
-A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for reliable, transactional command processing.
+A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for reliable, durable command processing.
 
 ## Table of Contents
 
@@ -49,21 +49,23 @@ await db.save(order)           # ✓ Succeeds
 await email_service.send(...)  # ❌ Fails - but order is already saved!
 ```
 
-### The Solution: Transactional Outbox
+### The Solution: Reliable Command Queue
 
-Reliable Commands implements the **Transactional Outbox Pattern**:
+Reliable Commands provides a **durable command queue** backed by PostgreSQL:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    PostgreSQL                           │
+│                                                         │
 │  ┌─────────────────┐    ┌─────────────────┐             │
-│  │  Business Data  │    │  Command Queue  │             │
-│  │    (orders)     │    │     (PGMQ)      │             │
+│  │ Command Metadata│    │  PGMQ Queue     │             │
+│  │  (commandbus.   │    │  (msg_id,       │             │
+│  │   command)      │    │   payload)      │             │
 │  └────────┬────────┘    └────────┬────────┘             │
 │           │                      │                      │
 │           └──────────┬───────────┘                      │
 │                      │                                  │
-│              SINGLE TRANSACTION                         │
+│          Written atomically together                    │
 └──────────────────────┼──────────────────────────────────┘
                        │
                        ▼
@@ -75,9 +77,9 @@ Reliable Commands implements the **Transactional Outbox Pattern**:
 ```
 
 **Benefits:**
-- **Atomicity**: Command is queued in the same transaction as your business data
-- **Durability**: PostgreSQL guarantees persistence
+- **Durability**: Commands persist in PostgreSQL until processed
 - **At-least-once delivery**: Failed commands are automatically retried
+- **Visibility timeout**: Commands redelivered if worker crashes
 - **Observability**: Full audit trail of all state transitions
 
 ---
@@ -246,19 +248,27 @@ Alternative: Worker A crashes
 
 ### How rcmd Uses PGMQ
 
+When you call `bus.send()`, rcmd creates a single transaction that:
+1. Inserts command metadata into `commandbus.command`
+2. Sends a message to the PGMQ queue
+3. Records an audit event
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Your Transaction                          │
+│                    CommandBus.send() Transaction                 │
 │                                                                  │
 │   BEGIN;                                                         │
 │                                                                  │
-│   -- Your business logic                                         │
-│   INSERT INTO orders (id, product, qty) VALUES (...);            │
+│   -- Insert command metadata                                     │
+│   INSERT INTO commandbus.command (command_id, status, ...)      │
 │                                                                  │
-│   -- rcmd: Queue command in same transaction                     │
-│   SELECT pgmq.send('q_orders', '{"type": "CreateOrder", ...}');  │
+│   -- Queue the message                                           │
+│   SELECT pgmq.send('orders__commands', '{"type": "...", ...}'); │
 │                                                                  │
-│   COMMIT;  ◀── Both succeed or both fail                         │
+│   -- Record audit event                                          │
+│   INSERT INTO commandbus.audit (event_type, ...)                │
+│                                                                  │
+│   COMMIT;  ◀── All three succeed or all fail                     │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
