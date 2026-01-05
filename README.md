@@ -25,38 +25,53 @@ Command Bus enables reliable command processing with:
 ## Requirements
 
 - Python 3.11+
-- PostgreSQL 15+ with [PGMQ extension](https://github.com/pgmq/pgmq)
-- [uv](https://github.com/astral-sh/uv) package manager (recommended) or pip
+- PostgreSQL 15+ with [PGMQ extension](https://github.com/tembo-io/pgmq)
 
 ## Quick Start
 
-```bash
-# Clone the repository
-git clone https://github.com/your-org/commandbus.git
-cd commandbus
+### 1. Database Setup
 
-# Install dependencies (uses uv)
-make install-dev
+First, ensure you have PostgreSQL with PGMQ extension installed. Then set up the commandbus schema:
 
-# Start PostgreSQL with PGMQ
-make docker-up
+```python
+import asyncio
+from psycopg_pool import AsyncConnectionPool
+from commandbus import setup_database
 
-# Run tests
-make test
+async def main():
+    pool = AsyncConnectionPool(
+        conninfo="postgresql://user:pass@localhost:5432/mydb"  # pragma: allowlist secret
+    )
+    await pool.open()
+
+    # Create commandbus schema, tables, and stored procedures
+    created = await setup_database(pool)
+    if created:
+        print("Database schema created successfully")
+    else:
+        print("Schema already exists")
+
+    await pool.close()
+
+asyncio.run(main())
 ```
 
-### Alternative: Using pip with venv
+The `setup_database()` function is idempotent - it safely skips if the schema already exists.
 
+### 2. Alternative: Manual SQL Setup
+
+If you prefer to manage migrations separately (e.g., with Flyway or Alembic), you can get the raw SQL:
+
+```python
+from commandbus import get_schema_sql
+
+sql = get_schema_sql()
+# Execute this SQL in your migration tool
+```
+
+Or copy the SQL file from the installed package:
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -e ".[dev,e2e]"
-
-# Install pre-commit hooks
-pre-commit install
+python -c "from commandbus import get_schema_sql; print(get_schema_sql())" > schema.sql
 ```
 
 ## Developer Guide
