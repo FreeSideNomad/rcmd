@@ -265,13 +265,13 @@ Alternative: Worker A crashes
 
 ### Queue Naming Convention
 
-Each domain gets its own PGMQ queue:
+Each domain gets its own PGMQ queue with the naming pattern `{domain}__commands`:
 
 | Domain | Queue Name |
 |--------|------------|
-| `orders` | `q_orders` |
-| `payments` | `q_payments` |
-| `inventory` | `q_inventory` |
+| `orders` | `orders__commands` |
+| `payments` | `payments__commands` |
+| `inventory` | `inventory__commands` |
 
 ### Message Flow
 
@@ -382,6 +382,8 @@ This section covers how to set up command handlers and configure workers for you
 Use the `@handler` decorator to mark methods as command handlers. Handlers are organized in classes with constructor-injected dependencies:
 
 ```python
+from typing import Any
+
 from psycopg_pool import AsyncConnectionPool
 from commandbus import Command, HandlerContext, handler
 
@@ -720,20 +722,52 @@ async def handle_payment(self, cmd: Command, ctx: HandlerContext):
 
 ### Long-Running Operations
 
-For operations that may exceed visibility timeout:
+For operations that may exceed visibility timeout, you have two options:
+
+**Option 1: Extend visibility timeout periodically**
 
 ```python
 @handler(domain="reports", command_type="GenerateReport")
 async def handle_report(self, cmd: Command, ctx: HandlerContext):
-    # Option 1: Break into smaller commands
-    for chunk in split_into_chunks(cmd.data["records"]):
-        await self._bus.send(
-            domain="reports",
-            command_type="ProcessReportChunk",
-            data={"chunk": chunk, "report_id": cmd.data["report_id"]}
-        )
+    records = cmd.data["records"]
+    results = []
 
-    return {"status": "chunked", "chunks": len(chunks)}
+    for i, record in enumerate(records):
+        # Extend visibility every 100 records to prevent timeout
+        if i > 0 and i % 100 == 0:
+            await ctx.extend_visibility(30)  # Add 30 more seconds
+
+        results.append(await process_record(record))
+
+    return {"status": "completed", "processed": len(results)}
+```
+
+**Option 2: Break into a tracked batch of smaller commands**
+
+```python
+@handler(domain="reports", command_type="GenerateReport")
+async def handle_report(self, cmd: Command, ctx: HandlerContext):
+    from uuid import uuid4
+    from commandbus import BatchCommand
+
+    chunks = split_into_chunks(cmd.data["records"], chunk_size=100)
+    report_id = cmd.data["report_id"]
+
+    # Create a batch to track all chunk processing
+    result = await self._bus.create_batch(
+        domain="reports",
+        commands=[
+            BatchCommand(
+                command_type="ProcessReportChunk",
+                command_id=uuid4(),
+                data={"chunk": chunk, "report_id": report_id, "chunk_index": i},
+            )
+            for i, chunk in enumerate(chunks)
+        ],
+        name=f"Report {report_id} chunks",
+    )
+
+    return {"status": "chunked", "batch_id": str(result.batch_id), "chunks": len(chunks)}
 ```
 
 ### Summary: Handler Checklist
