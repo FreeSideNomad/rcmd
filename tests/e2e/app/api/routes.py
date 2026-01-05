@@ -581,7 +581,7 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
 
 @api_router.get("/tsq", response_model=TSQListResponse)
 async def list_tsq_commands(
-    tsq: TSQ, pool: Pool, limit: int = 20, offset: int = 0
+    tsq: TSQ, pool: Pool, limit: int = 100, offset: int = 0
 ) -> TSQListResponse:
     """List commands in troubleshooting queue."""
     limit = min(limit, 100)
@@ -606,19 +606,27 @@ async def list_tsq_commands(
             for cmd in commands
         ]
 
-        # Get total count
+        # Get total count and all command IDs for "select all" feature
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    SELECT COUNT(*) FROM commandbus.command
+                    SELECT command_id FROM commandbus.command
                     WHERE domain = %s AND status = 'IN_TROUBLESHOOTING_QUEUE'
+                    ORDER BY created_at DESC
                 """,
                 (E2E_DOMAIN,),
             )
-            row = await cur.fetchone()
-            total = row[0] if row else 0
+            rows = await cur.fetchall()
+            all_command_ids = [str(row[0]) for row in rows]
+            total = len(all_command_ids)
 
-        return TSQListResponse(commands=result, total=total, limit=limit, offset=offset)
+        return TSQListResponse(
+            commands=result,
+            total=total,
+            limit=limit,
+            offset=offset,
+            all_command_ids=all_command_ids,
+        )
     except Exception as e:
         return TSQListResponse(commands=[], total=0, limit=limit, offset=offset, error=str(e))
 
@@ -690,17 +698,24 @@ async def complete_tsq_command(
 async def bulk_retry_tsq_commands(request: TSQBulkRetryRequest, tsq: TSQ) -> TSQBulkRetryResponse:
     """Retry multiple commands from TSQ."""
     retried = 0
+    errors = []
     for cmd_id in request.command_ids:
         try:
             await tsq.operator_retry(E2E_DOMAIN, UUID(cmd_id), operator=request.operator)
             retried += 1
-        except Exception:
-            pass  # Skip failed retries
+        except Exception as e:
+            errors.append(f"{cmd_id}: {e}")
+            if len(errors) <= 3:  # Only log first few errors
+                import logging
 
+                logging.error(f"Failed to retry {cmd_id}: {e}")
+
+    error_msg = f" (errors: {errors[0]})" if errors else None
     return TSQBulkRetryResponse(
         retried=retried,
         command_ids=request.command_ids,
         message=f"{retried} commands re-queued for processing",
+        error=error_msg,
     )
 
 

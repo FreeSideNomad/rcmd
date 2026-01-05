@@ -214,6 +214,7 @@ class TSQListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    all_command_ids: list[str] = []  # All command IDs for "select all" feature
     error: str | None = None
 
 
