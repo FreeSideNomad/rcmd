@@ -43,6 +43,7 @@ from commandbus.policies import DEFAULT_RETRY_POLICY, RetryPolicy
 from commandbus.repositories.audit import AuditEventType, PostgresAuditLogger
 from commandbus.repositories.batch import PostgresBatchRepository
 from commandbus.repositories.command import PostgresCommandRepository
+from commandbus.setup import check_schema_exists, get_schema_sql, setup_database
 from commandbus.worker import ReceivedCommand, Worker
 
 __all__ = [
@@ -86,11 +87,14 @@ __all__ = [
     "Worker",
     "__version__",
     "check_and_invoke_batch_callback",
+    "check_schema_exists",
     "clear_all_callbacks",
     "get_batch_callback",
+    "get_schema_sql",
     "handler",
     "register_batch_callback",
     "remove_batch_callback",
+    "setup_database",
 ]
 
 # Version is set dynamically by hatch-vcs from git tags
