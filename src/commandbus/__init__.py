@@ -97,6 +97,6 @@ __all__ = [
 try:
     from importlib.metadata import version
 
-    __version__ = version("commandbus")
+    __version__ = version("reliable-cmd")
 except Exception:
     __version__ = "0.0.0+unknown"

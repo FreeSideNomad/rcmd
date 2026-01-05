@@ -1,5 +1,5 @@
 [project]
-name = "commandbus"
+name = "reliable-cmd"
 dynamic = ["version"]
 description = "Command Bus abstraction over PostgreSQL + PGMQ for reliable async command processing"
 readme = "README.md"
