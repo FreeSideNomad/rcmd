@@ -1,8 +1,8 @@
 # rcmd - Reliable Commands
 
-[![PyPI version](https://badge.fury.io/py/reliable-cmd.svg)](https://badge.fury.io/py/reliable-cmd)
-[![Python Versions](https://img.shields.io/pypi/pyversions/reliable-cmd.svg)](https://pypi.org/project/reliable-cmd/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://img.shields.io/pypi/v/reliable-cmd)](https://pypi.org/project/reliable-cmd/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/reliable-cmd)](https://pypi.org/project/reliable-cmd/)
+[![License: MIT](https://img.shields.io/pypi/l/reliable-cmd)](https://opensource.org/licenses/MIT)
 
 A Python library providing Command Bus abstraction over PostgreSQL + PGMQ.
 
