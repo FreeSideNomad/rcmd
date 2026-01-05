@@ -117,25 +117,29 @@ class TestCommandRepository:
         async with self.pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    UPDATE e2e.test_command
-                    SET attempts = attempts + 1
-                    WHERE command_id = %s
-                    RETURNING attempts
-                    """,
+                UPDATE e2e.test_command
+                SET attempts = attempts + 1
+                WHERE command_id = %s
+                RETURNING attempts
+                """,
                 (command_id,),
             )
             row = await cur.fetchone()
             return row[0] if row else 0
 
-    async def mark_processed(self, command_id: UUID, result: dict[str, Any] | None = None) -> None:
+    async def mark_processed(
+        self,
+        command_id: UUID,
+        result: dict[str, Any] | None = None,
+    ) -> None:
         """Mark command as processed."""
         async with self.pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    UPDATE e2e.test_command
-                    SET processed_at = NOW(), result = %s
-                    WHERE command_id = %s
-                    """,
+                UPDATE e2e.test_command
+                SET processed_at = NOW(), result = %s
+                WHERE command_id = %s
+                """,
                 (Json(result) if result else None, command_id),
             )
 
