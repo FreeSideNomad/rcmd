@@ -4,23 +4,320 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/reliable-cmd)](https://pypi.org/project/reliable-cmd/)
 [![License: MIT](https://img.shields.io/pypi/l/reliable-cmd)](https://opensource.org/licenses/MIT)
 
-A Python library providing Command Bus abstraction over PostgreSQL + PGMQ.
+A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for reliable, transactional command processing.
+
+## Table of Contents
+
+- [Why Reliable Commands?](#why-reliable-commands)
+- [Ubiquitous Language](#ubiquitous-language)
+- [Architecture Overview](#architecture-overview)
+- [Command Lifecycle](#command-lifecycle)
+- [PGMQ Integration](#pgmq-integration)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Developer Guide](#developer-guide)
+- [Worker Best Practices](#worker-best-practices)
+- [E2E Test Application](#e2e-test-application)
+
+---
+
+## Why Reliable Commands?
+
+In distributed systems, ensuring that operations complete reliably is challenging. Consider these common problems:
+
+### The Lost Update Problem
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Client    │────▶│   Service   │────▶│  External   │
+│             │     │             │     │    API      │
+└─────────────┘     └─────────────┘     └─────────────┘
+                           │
+                    ❌ Crash here
+                           │
+                    Data saved to DB
+                    but API never called
+```
+
+When your service crashes between saving data and calling an external API, you end up with inconsistent state.
+
+### The Dual-Write Problem
+
+```python
+# DANGEROUS: Two separate operations, no atomicity
+await db.save(order)           # ✓ Succeeds
+await email_service.send(...)  # ❌ Fails - but order is already saved!
+```
+
+### The Solution: Transactional Outbox
+
+Reliable Commands implements the **Transactional Outbox Pattern**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    PostgreSQL                           │
+│  ┌─────────────────┐    ┌─────────────────┐            │
+│  │  Business Data  │    │  Command Queue  │            │
+│  │    (orders)     │    │     (PGMQ)      │            │
+│  └────────┬────────┘    └────────┬────────┘            │
+│           │                      │                      │
+│           └──────────┬───────────┘                      │
+│                      │                                  │
+│              SINGLE TRANSACTION                         │
+└──────────────────────┼──────────────────────────────────┘
+                       │
+                       ▼
+               ┌───────────────┐
+               │    Worker     │
+               │  (separate    │
+               │   process)    │
+               └───────────────┘
+```
+
+**Benefits:**
+- **Atomicity**: Command is queued in the same transaction as your business data
+- **Durability**: PostgreSQL guarantees persistence
+- **At-least-once delivery**: Failed commands are automatically retried
+- **Observability**: Full audit trail of all state transitions
+
+---
+
+## Ubiquitous Language
+
+Understanding these terms is essential for working with the library:
+
+### Core Concepts
+
+| Term | Definition |
+|------|------------|
+| **Command** | A request to perform an action. Immutable once created. Contains a unique ID, type, and payload data. |
+| **Domain** | A logical grouping of related commands (e.g., "orders", "payments", "inventory"). Each domain has its own queue. |
+| **Handler** | An async function that processes a specific command type. Registered via the `@handler` decorator. |
+| **Worker** | A long-running process that polls for commands and dispatches them to handlers. |
+
+### State & Lifecycle
+
+| Term | Definition |
+|------|------------|
+| **Pending** | Command is queued and waiting to be processed. |
+| **In Progress** | Worker has claimed the command and handler is executing. |
+| **Completed** | Handler returned successfully. Terminal state. |
+| **Failed** | Handler raised an error. May be retried or moved to TSQ. |
+| **Troubleshooting Queue (TSQ)** | Holds commands that exhausted retries or had permanent failures. Requires operator intervention. |
+
+### Reliability Mechanisms
+
+| Term | Definition |
+|------|------------|
+| **Visibility Timeout** | How long a worker has to process a command before it becomes visible to other workers again. Prevents message loss if a worker crashes. |
+| **Retry Policy** | Rules for how many times and how often to retry failed commands. |
+| **Backoff Schedule** | Increasing delays between retry attempts (e.g., 10s, 60s, 300s). |
+| **Transient Error** | Temporary failure (network timeout, database lock). Command will be retried. |
+| **Permanent Error** | Unrecoverable failure (invalid data, business rule violation). Command goes directly to TSQ. |
+
+### Batches & Correlation
+
+| Term | Definition |
+|------|------------|
+| **Batch** | A group of related commands tracked together. Useful for bulk operations. |
+| **Correlation ID** | Links related commands across a workflow. Useful for tracing. |
+| **Audit Event** | Immutable record of a state change. Provides complete history. |
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              Your Application                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌──────────────┐         ┌──────────────────────────────────────┐     │
+│   │  CommandBus  │         │              Worker                  │     │
+│   │              │         │  ┌────────────────────────────────┐  │     │
+│   │  .send()     │         │  │        HandlerRegistry         │  │     │
+│   │  .send_batch │         │  │  ┌──────────┐  ┌──────────┐    │  │     │
+│   │  .get_batch  │         │  │  │ Handler  │  │ Handler  │    │  │     │
+│   │              │         │  │  │ @orders  │  │ @payments│    │  │     │
+│   └──────┬───────┘         │  │  └──────────┘  └──────────┘    │  │     │
+│          │                 │  └────────────────────────────────┘  │     │
+│          │                 └──────────────────┬───────────────────┘     │
+│          │                                    │                          │
+└──────────┼────────────────────────────────────┼──────────────────────────┘
+           │                                    │
+           ▼                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            PostgreSQL + PGMQ                             │
+│                                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          │
+│  │  commandbus.    │  │    pgmq.        │  │  commandbus.    │          │
+│  │    command      │  │  q_<domain>     │  │    audit        │          │
+│  │                 │  │                 │  │                 │          │
+│  │  - command_id   │  │  - msg_id       │  │  - event_type   │          │
+│  │  - status       │  │  - payload      │  │  - timestamp    │          │
+│  │  - attempts     │  │  - vt (visible) │  │  - details      │          │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘          │
+│                                                                          │
+│  ┌─────────────────┐  ┌─────────────────┐                               │
+│  │  commandbus.    │  │  commandbus.    │                               │
+│  │    batch        │  │    tsq          │                               │
+│  │                 │  │                 │                               │
+│  │  - batch_id     │  │  - Failed       │                               │
+│  │  - total_count  │  │    commands     │                               │
+│  │  - completed    │  │    for review   │                               │
+│  └─────────────────┘  └─────────────────┘                               │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Command Lifecycle
+
+### State Machine
+
+```
+                                    ┌─────────────────────────────────┐
+                                    │                                 │
+                                    ▼                                 │
+┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌───────────┐       │
+│ PENDING │───▶│ IN_PROGRESS │───▶│ FAILED  │───▶│  PENDING  │───────┘
+└─────────┘    └──────┬──────┘    └────┬────┘    └───────────┘
+                      │                │          (retry with backoff)
+                      │                │
+                      ▼                ▼
+               ┌───────────┐    ┌─────────────┐
+               │ COMPLETED │    │     TSQ     │
+               │  (final)  │    │   (final)   │
+               └───────────┘    └─────────────┘
+```
+
+### State Transitions
+
+| From | To | Trigger |
+|------|----|---------|
+| — | PENDING | `bus.send()` or `bus.create_batch()` |
+| PENDING | IN_PROGRESS | Worker receives message from queue |
+| IN_PROGRESS | COMPLETED | Handler returns successfully |
+| IN_PROGRESS | FAILED | Handler raises exception |
+| FAILED | PENDING | Transient error + retries remaining |
+| FAILED | TSQ | Permanent error OR retries exhausted |
+
+### Visibility Timeout Flow
+
+```
+Time ──────────────────────────────────────────────────────────────▶
+
+Worker A claims message (VT = now + 30s)
+     │
+     ├─────────── Processing ───────────┤
+     │                                  │
+     │                          Worker A completes
+     │                          Message deleted ✓
+     │
+     │
+Alternative: Worker A crashes
+     │
+     ├─────────── Processing ───────────┤
+     │                                  │
+     X  Worker A dies                   │
+                                        │
+                              ┌─────────┴─────────┐
+                              │  VT expires       │
+                              │  Message visible  │
+                              │  again            │
+                              └─────────┬─────────┘
+                                        │
+                              Worker B claims message
+                              Processing continues...
+```
+
+---
+
+## PGMQ Integration
+
+### What is PGMQ?
+
+[PGMQ](https://github.com/tembo-io/pgmq) is a lightweight message queue built as a PostgreSQL extension. It provides:
+
+- **Transactional enqueue**: Messages are only visible after commit
+- **Visibility timeout**: Claimed messages are invisible to other consumers
+- **Delivery guarantees**: Messages persist until explicitly deleted
+
+### How rcmd Uses PGMQ
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Your Transaction                          │
+│                                                                  │
+│   BEGIN;                                                         │
+│                                                                  │
+│   -- Your business logic                                         │
+│   INSERT INTO orders (id, product, qty) VALUES (...);           │
+│                                                                  │
+│   -- rcmd: Queue command in same transaction                    │
+│   SELECT pgmq.send('q_orders', '{"type": "CreateOrder", ...}'); │
+│                                                                  │
+│   COMMIT;  ◀── Both succeed or both fail                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Queue Naming Convention
+
+Each domain gets its own PGMQ queue:
+
+| Domain | Queue Name |
+|--------|------------|
+| `orders` | `q_orders` |
+| `payments` | `q_payments` |
+| `inventory` | `q_inventory` |
+
+### Message Flow
+
+```
+Producer                           PGMQ                           Consumer
+   │                                │                                │
+   │  pgmq.send(queue, payload)     │                                │
+   ├───────────────────────────────▶│                                │
+   │                                │                                │
+   │                                │◀─── pgmq.read(queue, vt=30) ───┤
+   │                                │                                │
+   │                                │     Returns message + msg_id   │
+   │                                ├───────────────────────────────▶│
+   │                                │                                │
+   │                                │     (invisible for 30s)        │
+   │                                │                                │
+   │                                │◀─── pgmq.delete(queue, id) ────┤
+   │                                │                                │
+   │                                │     (on success)               │
+   │                                │                                │
+```
+
+### LISTEN/NOTIFY for Low Latency
+
+Instead of constant polling, rcmd uses PostgreSQL's LISTEN/NOTIFY:
+
+```
+┌──────────────┐                    ┌──────────────┐
+│   Producer   │                    │    Worker    │
+└──────┬───────┘                    └──────┬───────┘
+       │                                   │
+       │  INSERT + NOTIFY                  │  LISTEN q_orders
+       ├──────────────────────────────────▶│
+       │                                   │
+       │                                   │  Immediate wake-up!
+       │                                   │  (no polling delay)
+       │                                   │
+```
+
+---
 
 ## Installation
 
 ```bash
 pip install reliable-cmd
 ```
-
-## Overview
-
-Command Bus enables reliable command processing with:
-
-- **At-least-once delivery** via PGMQ visibility timeout
-- **Transactional guarantees** - commands sent atomically with business data
-- **Retry policies** with configurable backoff
-- **Troubleshooting queue** for failed commands with operator actions
-- **Audit trail** for all state transitions
 
 ## Requirements
 
@@ -73,6 +370,8 @@ Or copy the SQL file from the installed package:
 ```bash
 python -c "from commandbus import get_schema_sql; print(get_schema_sql())" > schema.sql
 ```
+
+---
 
 ## Developer Guide
 
@@ -288,7 +587,168 @@ async def monitor_batch(bus: CommandBus, batch_id: UUID) -> None:
 - `COMPLETED` → All commands completed successfully
 - `COMPLETED_WITH_FAILURES` → All commands finished, some failed (in TSQ)
 
-**Note:** Batch callbacks are in-memory only and will be lost on worker restart. For critical workflows, poll `get_batch()` as a fallback
+**Note:** Batch callbacks are in-memory only and will be lost on worker restart. For critical workflows, poll `get_batch()` as a fallback.
+
+---
+
+## Worker Best Practices
+
+Writing efficient and reliable handlers requires understanding how the worker processes commands.
+
+### Concurrency Model
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           Worker Process                             │
+│                                                                      │
+│   ┌─────────────┐                                                   │
+│   │  Event Loop │                                                   │
+│   │   (asyncio) │                                                   │
+│   └──────┬──────┘                                                   │
+│          │                                                          │
+│          ├──────────────┬──────────────┬──────────────┐            │
+│          ▼              ▼              ▼              ▼            │
+│   ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐       │
+│   │  Handler  │  │  Handler  │  │  Handler  │  │  Handler  │       │
+│   │  Task 1   │  │  Task 2   │  │  Task 3   │  │  Task 4   │       │
+│   │           │  │           │  │           │  │           │       │
+│   │  await    │  │  await    │  │  await    │  │  await    │       │
+│   │  db.query │  │  api.call │  │  db.save  │  │  sleeping │       │
+│   └───────────┘  └───────────┘  └───────────┘  └───────────┘       │
+│                                                                      │
+│   concurrency=4 means 4 handlers run concurrently                   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Critical: Use Async I/O
+
+**The #1 rule: Never block the event loop.**
+
+```python
+# ❌ BAD: Blocking call destroys concurrency
+@handler(domain="orders", command_type="ProcessOrder")
+async def handle_order(self, cmd: Command, ctx: HandlerContext):
+    import requests
+    response = requests.get("https://api.example.com")  # BLOCKS!
+    # While this runs, ALL other handlers are frozen
+
+# ✓ GOOD: Async call allows concurrency
+@handler(domain="orders", command_type="ProcessOrder")
+async def handle_order(self, cmd: Command, ctx: HandlerContext):
+    import httpx
+    async with httpx.AsyncClient() as client:
+        response = await client.get("https://api.example.com")  # Yields!
+        # Other handlers continue while waiting for response
+```
+
+### Impact of Blocking Code
+
+```
+concurrency=4, but with blocking I/O:
+
+Time ─────────────────────────────────────────────────▶
+
+Handler 1: ████████████████████████  (blocking HTTP call)
+Handler 2:                         ▓▓▓▓▓▓▓▓  (waiting)
+Handler 3:                                   ░░░░░░░░  (waiting)
+Handler 4:                                             (waiting)
+
+Effective throughput: 1 command at a time!
+
+
+concurrency=4, with async I/O:
+
+Time ─────────────────────────────────────────────────▶
+
+Handler 1: ██░░░░██░░░░██  (I/O waits yield to others)
+Handler 2: ░░██░░░░██░░░░██
+Handler 3: ░░░░██░░░░██░░░░██
+Handler 4: ██░░░░██░░░░██░░░░
+
+Effective throughput: 4 commands concurrently!
+```
+
+### Database Connections in Handlers
+
+Use async database connections and manage transactions carefully:
+
+```python
+@handler(domain="orders", command_type="CreateOrder")
+async def handle_create_order(self, cmd: Command, ctx: HandlerContext):
+    async with self._pool.connection() as conn:
+        async with conn.transaction():
+            # All operations in this block are atomic
+            await conn.execute(
+                "INSERT INTO orders (id, data) VALUES (%s, %s)",
+                (cmd.command_id, cmd.data)
+            )
+            await conn.execute(
+                "UPDATE inventory SET qty = qty - %s WHERE product_id = %s",
+                (cmd.data["quantity"], cmd.data["product_id"])
+            )
+            # If any operation fails, entire transaction rolls back
+
+    return {"status": "created"}
+```
+
+### Idempotency
+
+Commands may be delivered more than once (at-least-once delivery). Design handlers to be idempotent:
+
+```python
+@handler(domain="payments", command_type="ProcessPayment")
+async def handle_payment(self, cmd: Command, ctx: HandlerContext):
+    async with self._pool.connection() as conn:
+        # Check if already processed
+        result = await conn.execute(
+            "SELECT 1 FROM payments WHERE command_id = %s",
+            (cmd.command_id,)
+        )
+        if await result.fetchone():
+            # Already processed - return cached result
+            return {"status": "already_processed"}
+
+        # Process payment
+        await conn.execute(
+            "INSERT INTO payments (command_id, amount) VALUES (%s, %s)",
+            (cmd.command_id, cmd.data["amount"])
+        )
+
+    return {"status": "processed"}
+```
+
+### Long-Running Operations
+
+For operations that may exceed visibility timeout:
+
+```python
+@handler(domain="reports", command_type="GenerateReport")
+async def handle_report(self, cmd: Command, ctx: HandlerContext):
+    # Option 1: Break into smaller commands
+    for chunk in split_into_chunks(cmd.data["records"]):
+        await self._bus.send(
+            domain="reports",
+            command_type="ProcessReportChunk",
+            data={"chunk": chunk, "report_id": cmd.data["report_id"]}
+        )
+
+    return {"status": "chunked", "chunks": len(chunks)}
+```
+
+### Summary: Handler Checklist
+
+| Requirement | Why |
+|-------------|-----|
+| Use `async`/`await` for all I/O | Blocking calls kill concurrency |
+| Use async database drivers | psycopg3 with `AsyncConnection` |
+| Use async HTTP clients | httpx, aiohttp (not requests) |
+| Handle idempotency | Commands may be delivered multiple times |
+| Keep handlers fast | Long operations risk visibility timeout |
+| Use transactions | Ensure atomicity of database operations |
+| Raise appropriate errors | `TransientCommandError` vs `PermanentCommandError` |
+
+---
 
 ## E2E Test Application
 
@@ -380,6 +840,8 @@ The E2E UI provides:
 - **Commands**: List and filter commands by status
 - **Troubleshooting Queue**: View and action failed commands
 - **Audit Trail**: Full event history per command
+
+---
 
 ## Documentation
 
