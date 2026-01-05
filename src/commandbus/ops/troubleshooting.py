@@ -77,35 +77,43 @@ class TroubleshootingQueue:
         archive_table = f"pgmq.a_{queue_name}"
 
         # Build the query with optional command_type filter
-        query = f"""
-            SELECT
-                c.domain,
-                c.command_id,
-                c.command_type,
-                c.attempts,
-                c.max_attempts,
-                c.last_error_type,
-                c.last_error_code,
-                c.last_error_msg,
-                c.correlation_id,
-                c.reply_queue,
-                a.message,
-                c.created_at,
-                c.updated_at
-            FROM commandbus.command c
-            LEFT JOIN {archive_table} a ON a.message->>'command_id' = c.command_id::text
-            WHERE c.domain = %s
-              AND c.status = %s
-        """
-
+        # Use DISTINCT ON to avoid duplicates when multiple archive entries exist
+        # Wrap in subquery for proper ordering after deduplication
         params: list[Any] = [domain, CommandStatus.IN_TROUBLESHOOTING_QUEUE.value]
 
+        command_type_filter = ""
         if command_type is not None:
-            query += " AND c.command_type = %s"
+            command_type_filter = " AND c.command_type = %s"
             params.append(command_type)
 
-        query += " ORDER BY c.updated_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
+
+        query = f"""
+            SELECT * FROM (
+                SELECT DISTINCT ON (c.command_id)
+                    c.domain,
+                    c.command_id,
+                    c.command_type,
+                    c.attempts,
+                    c.max_attempts,
+                    c.last_error_type,
+                    c.last_error_code,
+                    c.last_error_msg,
+                    c.correlation_id,
+                    c.reply_queue,
+                    a.message,
+                    c.created_at,
+                    c.updated_at
+                FROM commandbus.command c
+                LEFT JOIN {archive_table} a ON a.message->>'command_id' = c.command_id::text
+                WHERE c.domain = %s
+                  AND c.status = %s
+                  {command_type_filter}
+                ORDER BY c.command_id, a.archived_at DESC NULLS LAST
+            ) sub
+            ORDER BY updated_at DESC
+            LIMIT %s OFFSET %s
+        """
 
         items: list[TroubleshootingItem] = []
 

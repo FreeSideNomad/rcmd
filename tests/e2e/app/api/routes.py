@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import time
 from datetime import datetime
 from typing import Any
@@ -97,68 +96,45 @@ async def create_command(
 async def create_bulk_commands(
     request: BulkCreateRequest, bus: Bus, pool: Pool
 ) -> BulkCreateResponse:
-    """Create multiple test commands for load testing.
+    """Create multiple test commands with probabilistic behavior.
 
     Uses batch operations for efficient bulk creation:
     - bus.send_batch() for PGMQ messages and command metadata
-    - repo.create_batch() for test command records (skipped for no_op)
+    - repo.create_batch() for test command records
+
+    All commands share the same probabilistic behavior configuration,
+    but each command's actual behavior is determined at execution time
+    by independent random rolls.
     """
     start_time = time.time()
 
-    count = request.count  # No artificial limit - let the bus handle chunking
-    behaviors_assigned: dict[str, int] = {}
+    count = request.count
     repo = TestCommandRepository(pool)
+    behavior = request.behavior.model_dump()
 
-    # Check if this is a no_op bulk request (performance testing)
-    is_no_op = request.behavior and request.behavior.type == "no_op"
-
-    # Build all commands first
+    # Build all commands
     send_requests: list[SendRequest] = []
     test_commands: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
 
     for _ in range(count):
         cmd_id = uuid4()
 
-        if is_no_op:
-            # NoOp commands don't need behavior configuration or test_command records
-            send_requests.append(
-                SendRequest(
-                    domain=E2E_DOMAIN,
-                    command_type="NoOp",
-                    command_id=cmd_id,
-                    data={},
-                    max_attempts=request.max_attempts,
-                )
+        # Prepare test command record
+        test_commands.append((cmd_id, behavior, {}))
+
+        # Prepare send request
+        send_requests.append(
+            SendRequest(
+                domain=E2E_DOMAIN,
+                command_type="TestCommand",
+                command_id=cmd_id,
+                data={"behavior": behavior},
+                max_attempts=request.max_attempts,
             )
-        else:
-            if request.behavior_distribution:
-                behavior = _select_behavior_from_distribution(
-                    request.behavior_distribution, request.execution_time_ms
-                )
-                btype = behavior["type"]
-                behaviors_assigned[btype] = behaviors_assigned.get(btype, 0) + 1
-            elif request.behavior:
-                behavior = request.behavior.model_dump()
-            else:
-                behavior = {"type": "success", "execution_time_ms": request.execution_time_ms}
+        )
 
-            # Prepare test command record
-            test_commands.append((cmd_id, behavior, {}))
-
-            # Prepare send request
-            send_requests.append(
-                SendRequest(
-                    domain=E2E_DOMAIN,
-                    command_type="TestCommand",
-                    command_id=cmd_id,
-                    data={"behavior": behavior},
-                    max_attempts=request.max_attempts,
-                )
-            )
-
-    # Batch insert test commands (skip for no_op)
-    if test_commands:
-        await repo.create_batch(test_commands)
+    # Batch insert test commands
+    await repo.create_batch(test_commands)
 
     # Batch send to command bus
     batch_result = await bus.send_batch(send_requests)
@@ -174,37 +150,8 @@ async def create_bulk_commands(
         total_command_ids=batch_result.total_commands,
         generation_time_ms=generation_time_ms,
         queue_time_ms=int((time.time() - start_time) * 1000),
-        behavior_distribution=behaviors_assigned if request.behavior_distribution else None,
         message=f"{batch_result.total_commands} commands in {batch_result.chunks_processed} chunks",
     )
-
-
-def _select_behavior_from_distribution(
-    distribution: dict[str, int], execution_time_ms: int
-) -> dict[str, Any]:
-    """Select a behavior based on weighted distribution."""
-    total = sum(distribution.values())
-    if total == 0:
-        return {"type": "success", "execution_time_ms": execution_time_ms}
-
-    rand = random.randint(1, total)
-    cumulative = 0
-
-    for behavior_type, weight in distribution.items():
-        cumulative += weight
-        if rand <= cumulative:
-            behavior: dict[str, Any] = {
-                "type": behavior_type,
-                "execution_time_ms": execution_time_ms,
-            }
-            if behavior_type == "fail_transient_then_succeed":
-                behavior["transient_failures"] = 2
-            elif behavior_type in ("fail_permanent", "fail_transient"):
-                behavior["error_code"] = "LOAD_TEST_ERROR"
-                behavior["error_message"] = "Load test simulated failure"
-            return behavior
-
-    return {"type": "success", "execution_time_ms": execution_time_ms}
 
 
 @api_router.get("/commands", response_model=CommandListResponse)
@@ -634,7 +581,7 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
 
 @api_router.get("/tsq", response_model=TSQListResponse)
 async def list_tsq_commands(
-    tsq: TSQ, pool: Pool, limit: int = 20, offset: int = 0
+    tsq: TSQ, pool: Pool, limit: int = 100, offset: int = 0
 ) -> TSQListResponse:
     """List commands in troubleshooting queue."""
     limit = min(limit, 100)
@@ -659,19 +606,27 @@ async def list_tsq_commands(
             for cmd in commands
         ]
 
-        # Get total count
+        # Get total count and all command IDs for "select all" feature
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    SELECT COUNT(*) FROM commandbus.command
+                    SELECT command_id FROM commandbus.command
                     WHERE domain = %s AND status = 'IN_TROUBLESHOOTING_QUEUE'
+                    ORDER BY created_at DESC
                 """,
                 (E2E_DOMAIN,),
             )
-            row = await cur.fetchone()
-            total = row[0] if row else 0
+            rows = await cur.fetchall()
+            all_command_ids = [str(row[0]) for row in rows]
+            total = len(all_command_ids)
 
-        return TSQListResponse(commands=result, total=total, limit=limit, offset=offset)
+        return TSQListResponse(
+            commands=result,
+            total=total,
+            limit=limit,
+            offset=offset,
+            all_command_ids=all_command_ids,
+        )
     except Exception as e:
         return TSQListResponse(commands=[], total=0, limit=limit, offset=offset, error=str(e))
 
@@ -743,17 +698,24 @@ async def complete_tsq_command(
 async def bulk_retry_tsq_commands(request: TSQBulkRetryRequest, tsq: TSQ) -> TSQBulkRetryResponse:
     """Retry multiple commands from TSQ."""
     retried = 0
+    errors = []
     for cmd_id in request.command_ids:
         try:
             await tsq.operator_retry(E2E_DOMAIN, UUID(cmd_id), operator=request.operator)
             retried += 1
-        except Exception:
-            pass  # Skip failed retries
+        except Exception as e:
+            errors.append(f"{cmd_id}: {e}")
+            if len(errors) <= 3:  # Only log first few errors
+                import logging
 
+                logging.error(f"Failed to retry {cmd_id}: {e}")
+
+    error_msg = f" (errors: {errors[0]})" if errors else None
     return TSQBulkRetryResponse(
         retried=retried,
         command_ids=request.command_ids,
         message=f"{retried} commands re-queued for processing",
+        error=error_msg,
     )
 
 
@@ -935,7 +897,7 @@ async def list_batches(
         async with pool.connection() as conn, conn.cursor() as cur:
             query = """
                 SELECT batch_id, name, status, total_count, completed_count,
-                       failed_count, canceled_count, in_troubleshooting_count, created_at
+                       canceled_count, in_troubleshooting_count, created_at
                 FROM commandbus.batch
                 WHERE domain = %s
             """
@@ -973,11 +935,11 @@ async def list_batches(
                     status=row[2],
                     total_count=total_count,
                     completed_count=completed,
-                    failed_count=row[5] or 0,
-                    canceled_count=row[6] or 0,
-                    in_troubleshooting_count=row[7] or 0,
+                    failed_count=0,  # Not tracked in database schema
+                    canceled_count=row[5] or 0,
+                    in_troubleshooting_count=row[6] or 0,
                     progress_percent=round(progress, 1),
-                    created_at=row[8],
+                    created_at=row[7],
                 )
             )
 
@@ -1009,7 +971,7 @@ async def get_batch(batch_id: UUID, bus: Bus) -> BatchDetailResponse:
         status=batch.status.value,
         total_count=total_count,
         completed_count=completed,
-        failed_count=batch.failed_count or 0,
+        failed_count=0,  # Not tracked in BatchMetadata model
         canceled_count=batch.canceled_count or 0,
         in_troubleshooting_count=batch.in_troubleshooting_count or 0,
         progress_percent=round(progress, 1),

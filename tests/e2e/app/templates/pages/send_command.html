@@ -5,7 +5,7 @@
 {% block content %}
 <div class="mb-4">
     <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Send Test Command</h1>
-    <p class="text-gray-500 dark:text-gray-400">Create test commands with configurable behaviors</p>
+    <p class="text-gray-500 dark:text-gray-400">Create test commands with probabilistic behaviors</p>
 </div>
 
 <!-- Current Configuration -->
@@ -23,60 +23,103 @@
     </div>
 </div>
 
-<!-- Command Form -->
+<!-- Single Command Form -->
 <div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Single Command</h2>
     <form id="command-form" class="space-y-6">
-        <!-- Behavior Type -->
-        <div>
-            <label for="behavior-type" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Behavior Type</label>
-            <select id="behavior-type" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-                <option value="success">Success</option>
-                <option value="fail_permanent">Fail Permanent</option>
-                <option value="fail_transient">Fail Transient</option>
-                <option value="fail_transient_then_succeed">Fail Transient Then Succeed</option>
-                <option value="timeout">Timeout</option>
-            </select>
+        <!-- Failure Probabilities -->
+        <div class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-4">Failure Probabilities</h3>
+            <div class="space-y-4">
+                <!-- Permanent Failure -->
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label for="fail-permanent-pct" class="text-sm font-medium text-gray-900 dark:text-white">Permanent Failure</label>
+                        <span class="text-sm text-gray-500 dark:text-gray-400"><span id="fail-permanent-value">0</span>%</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <input type="range" id="fail-permanent-pct" min="0" max="100" step="0.1" value="0" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600">
+                        <input type="number" id="fail-permanent-input" min="0" max="100" step="0.1" value="0" class="w-20 bg-white border border-gray-300 text-gray-900 text-sm rounded-lg p-2 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                    </div>
+                </div>
+                <!-- Transient Failure -->
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label for="fail-transient-pct" class="text-sm font-medium text-gray-900 dark:text-white">Transient Failure</label>
+                        <span class="text-sm text-gray-500 dark:text-gray-400"><span id="fail-transient-value">0</span>%</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <input type="range" id="fail-transient-pct" min="0" max="100" step="0.1" value="0" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600">
+                        <input type="number" id="fail-transient-input" min="0" max="100" step="0.1" value="0" class="w-20 bg-white border border-gray-300 text-gray-900 text-sm rounded-lg p-2 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                    </div>
+                </div>
+                <!-- Timeout -->
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label for="timeout-pct" class="text-sm font-medium text-gray-900 dark:text-white">Timeout</label>
+                        <span class="text-sm text-gray-500 dark:text-gray-400"><span id="timeout-value">0</span>%</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <input type="range" id="timeout-pct" min="0" max="100" step="0.1" value="0" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600">
+                        <input type="number" id="timeout-input" min="0" max="100" step="0.1" value="0" class="w-20 bg-white border border-gray-300 text-gray-900 text-sm rounded-lg p-2 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <!-- Failure Settings (shown conditionally) -->
-        <div id="failure-settings" class="hidden space-y-4 p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
-            <h3 class="text-sm font-medium text-gray-900 dark:text-white">Failure Settings</h3>
-
-            <div id="transient-failures-group" class="hidden">
-                <label for="transient-failures" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Transient Failures Before Success</label>
-                <input type="number" id="transient-failures" min="1" max="10" value="2" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+        <!-- Success Duration -->
+        <div class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-4">Success Duration (ms)</h3>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label for="min-duration" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Min</label>
+                    <input type="number" id="min-duration" min="0" max="120000" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                </div>
+                <div>
+                    <label for="max-duration" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Max</label>
+                    <input type="number" id="max-duration" min="0" max="120000" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                </div>
             </div>
+            <p id="duration-info" class="mt-2 text-xs text-gray-500 dark:text-gray-400">Duration uses normal distribution when min != max</p>
+        </div>
 
-            <div>
-                <label for="error-code" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Error Code</label>
-                <input type="text" id="error-code" placeholder="e.g., INVALID_ACCOUNT" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
-            </div>
-
-            <div>
-                <label for="error-message" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Error Message</label>
-                <input type="text" id="error-message" placeholder="e.g., Account not found" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+        <!-- Error Settings -->
+        <div class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-4">Error Settings (for failures)</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="error-code" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Error Code</label>
+                    <input type="text" id="error-code" placeholder="e.g., INVALID_ACCOUNT" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                </div>
+                <div>
+                    <label for="error-message" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Error Message</label>
+                    <input type="text" id="error-message" placeholder="e.g., Account not found" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                </div>
             </div>
         </div>
 
-        <!-- Execution Settings -->
+        <!-- Max Attempts and Payload -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-                <label for="execution-time" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Execution Time (ms)</label>
-                <input type="number" id="execution-time" min="0" max="120000" value="0" placeholder="0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">How long the command handler takes to execute</p>
-            </div>
-
             <div>
                 <label for="max-attempts" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Max Attempts (Override)</label>
                 <input type="number" id="max-attempts" min="1" max="10" placeholder="Use default" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave empty to use default from settings</p>
             </div>
+            <div>
+                <label for="payload" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Custom Payload (JSON)</label>
+                <textarea id="payload" rows="2" placeholder='{"key": "value"}' class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono"></textarea>
+            </div>
         </div>
 
-        <!-- Custom Payload -->
-        <div>
-            <label for="payload" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Custom Payload (JSON)</label>
-            <textarea id="payload" rows="3" placeholder='{"key": "value"}' class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white font-mono"></textarea>
+        <!-- Expected Outcomes -->
+        <div id="expected-outcomes" class="p-4 bg-blue-50 rounded-lg dark:bg-blue-900">
+            <h4 class="text-sm font-medium text-blue-800 dark:text-blue-300 mb-2">Expected Outcomes (per 1000 commands)</h4>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+                <div class="text-red-600 dark:text-red-400">Permanent: <span id="expected-permanent">0</span></div>
+                <div class="text-orange-600 dark:text-orange-400">Transient: <span id="expected-transient">0</span></div>
+                <div class="text-yellow-600 dark:text-yellow-400">Timeout: <span id="expected-timeout">0</span></div>
+                <div class="text-green-600 dark:text-green-400">Success: <span id="expected-success">1000</span></div>
+            </div>
         </div>
 
         <!-- Submit Button -->
@@ -95,26 +138,75 @@
 <div class="bg-white rounded-lg shadow p-6 mt-6 dark:bg-gray-800">
     <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Bulk Generation</h2>
     <form id="bulk-form" class="space-y-4">
+        <!-- Count -->
+        <div>
+            <label for="bulk-count" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Count</label>
+            <input type="number" id="bulk-count" min="1" max="1000000" value="100" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+        </div>
+
+        <!-- Failure Probabilities -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-                <label for="bulk-count" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Count</label>
-                <input type="number" id="bulk-count" min="1" max="1000000" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <label for="bulk-permanent-pct" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Permanent Failure %</label>
+                <input type="number" id="bulk-permanent-pct" min="0" max="100" step="0.1" value="0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
             </div>
             <div>
-                <label for="bulk-behavior" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Behavior</label>
-                <select id="bulk-behavior" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-                    <option value="no_op">No-Op (Performance Test)</option>
-                    <option value="success">Success</option>
-                    <option value="fail_permanent">Fail Permanent</option>
-                    <option value="fail_transient">Fail Transient</option>
-                    <option value="timeout">Timeout</option>
-                </select>
+                <label for="bulk-transient-pct" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Transient Failure %</label>
+                <input type="number" id="bulk-transient-pct" min="0" max="100" step="0.1" value="0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
             </div>
             <div>
-                <label for="bulk-execution-time" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Execution Time (ms)</label>
-                <input type="number" id="bulk-execution-time" min="0" max="120000" value="50" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <label for="bulk-timeout-pct" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Timeout %</label>
+                <input type="number" id="bulk-timeout-pct" min="0" max="100" step="0.1" value="0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
             </div>
         </div>
+
+        <!-- Duration -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label for="bulk-min-duration" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Min Duration (ms)</label>
+                <input type="number" id="bulk-min-duration" min="0" max="120000" value="0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            </div>
+            <div>
+                <label for="bulk-max-duration" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Max Duration (ms)</label>
+                <input type="number" id="bulk-max-duration" min="0" max="120000" value="0" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            </div>
+        </div>
+
+        <!-- Expected Distribution -->
+        <div id="bulk-expected" class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h4 class="text-sm font-medium text-gray-900 dark:text-white mb-3">Expected Distribution</h4>
+            <div class="space-y-2">
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-gray-600 dark:text-gray-400">Success</div>
+                    <div class="flex-1 h-4 bg-gray-200 rounded dark:bg-gray-600 overflow-hidden">
+                        <div id="bar-success" class="h-full bg-green-500 transition-all duration-300" style="width: 100%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-gray-600 dark:text-gray-400"><span id="bulk-success-count">100</span></div>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-gray-600 dark:text-gray-400">Permanent</div>
+                    <div class="flex-1 h-4 bg-gray-200 rounded dark:bg-gray-600 overflow-hidden">
+                        <div id="bar-permanent" class="h-full bg-red-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-gray-600 dark:text-gray-400"><span id="bulk-permanent-count">0</span></div>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-gray-600 dark:text-gray-400">Transient</div>
+                    <div class="flex-1 h-4 bg-gray-200 rounded dark:bg-gray-600 overflow-hidden">
+                        <div id="bar-transient" class="h-full bg-orange-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-gray-600 dark:text-gray-400"><span id="bulk-transient-count">0</span></div>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-gray-600 dark:text-gray-400">Timeout</div>
+                    <div class="flex-1 h-4 bg-gray-200 rounded dark:bg-gray-600 overflow-hidden">
+                        <div id="bar-timeout" class="h-full bg-yellow-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-gray-600 dark:text-gray-400"><span id="bulk-timeout-count">0</span></div>
+                </div>
+            </div>
+        </div>
+
         <div>
             <button type="submit" id="generate-bulk-btn" class="px-5 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 dark:focus:ring-green-800">
                 Generate Bulk Commands
@@ -130,19 +222,107 @@
     import { ApiClient } from '/static/src/api.js';
 
     const api = new ApiClient();
-    const behaviorType = document.getElementById('behavior-type');
-    const failureSettings = document.getElementById('failure-settings');
-    const transientFailuresGroup = document.getElementById('transient-failures-group');
 
-    // Show/hide failure settings based on behavior type
-    behaviorType.addEventListener('change', () => {
-        const type = behaviorType.value;
-        const showFailure = ['fail_permanent', 'fail_transient', 'fail_transient_then_succeed'].includes(type);
-        const showTransient = type === 'fail_transient_then_succeed';
+    // Calculate expected outcomes based on sequential probability evaluation
+    function calculateExpectedOutcomes(count, failPermanent, failTransient, timeout) {
+        const permanentCount = count * (failPermanent / 100);
+        const remainingAfterPermanent = count - permanentCount;
 
-        failureSettings.classList.toggle('hidden', !showFailure);
-        transientFailuresGroup.classList.toggle('hidden', !showTransient);
+        const transientCount = remainingAfterPermanent * (failTransient / 100);
+        const remainingAfterTransient = remainingAfterPermanent - transientCount;
+
+        const timeoutCount = remainingAfterTransient * (timeout / 100);
+        const successCount = remainingAfterTransient - timeoutCount;
+
+        return {
+            permanent: Math.round(permanentCount),
+            transient: Math.round(transientCount),
+            timeout: Math.round(timeoutCount),
+            success: Math.round(successCount),
+        };
+    }
+
+    // Sync slider and input values
+    function syncSliderInput(sliderId, inputId, valueId) {
+        const slider = document.getElementById(sliderId);
+        const input = document.getElementById(inputId);
+        const valueSpan = document.getElementById(valueId);
+
+        slider.addEventListener('input', () => {
+            input.value = slider.value;
+            valueSpan.textContent = slider.value;
+            updateSingleExpected();
+        });
+
+        input.addEventListener('input', () => {
+            slider.value = input.value;
+            valueSpan.textContent = input.value;
+            updateSingleExpected();
+        });
+    }
+
+    // Update single command expected outcomes
+    function updateSingleExpected() {
+        const failPermanent = parseFloat(document.getElementById('fail-permanent-pct').value) || 0;
+        const failTransient = parseFloat(document.getElementById('fail-transient-pct').value) || 0;
+        const timeout = parseFloat(document.getElementById('timeout-pct').value) || 0;
+
+        const outcomes = calculateExpectedOutcomes(1000, failPermanent, failTransient, timeout);
+
+        document.getElementById('expected-permanent').textContent = outcomes.permanent;
+        document.getElementById('expected-transient').textContent = outcomes.transient;
+        document.getElementById('expected-timeout').textContent = outcomes.timeout;
+        document.getElementById('expected-success').textContent = outcomes.success;
+    }
+
+    // Update bulk expected distribution
+    function updateBulkExpected() {
+        const count = parseInt(document.getElementById('bulk-count').value) || 100;
+        const failPermanent = parseFloat(document.getElementById('bulk-permanent-pct').value) || 0;
+        const failTransient = parseFloat(document.getElementById('bulk-transient-pct').value) || 0;
+        const timeout = parseFloat(document.getElementById('bulk-timeout-pct').value) || 0;
+
+        const outcomes = calculateExpectedOutcomes(count, failPermanent, failTransient, timeout);
+
+        // Update counts
+        document.getElementById('bulk-success-count').textContent = outcomes.success;
+        document.getElementById('bulk-permanent-count').textContent = outcomes.permanent;
+        document.getElementById('bulk-transient-count').textContent = outcomes.transient;
+        document.getElementById('bulk-timeout-count').textContent = outcomes.timeout;
+
+        // Update bars (percentage of total)
+        document.getElementById('bar-success').style.width = (outcomes.success / count * 100) + '%';
+        document.getElementById('bar-permanent').style.width = (outcomes.permanent / count * 100) + '%';
+        document.getElementById('bar-transient').style.width = (outcomes.transient / count * 100) + '%';
+        document.getElementById('bar-timeout').style.width = (outcomes.timeout / count * 100) + '%';
+    }
+
+    // Initialize slider-input sync
+    syncSliderInput('fail-permanent-pct', 'fail-permanent-input', 'fail-permanent-value');
+    syncSliderInput('fail-transient-pct', 'fail-transient-input', 'fail-transient-value');
+    syncSliderInput('timeout-pct', 'timeout-input', 'timeout-value');
+
+    // Update bulk expected on any input change
+    ['bulk-count', 'bulk-permanent-pct', 'bulk-transient-pct', 'bulk-timeout-pct'].forEach(id => {
+        document.getElementById(id).addEventListener('input', updateBulkExpected);
     });
+
+    // Update duration info
+    function updateDurationInfo() {
+        const min = parseInt(document.getElementById('min-duration').value) || 0;
+        const max = parseInt(document.getElementById('max-duration').value) || 0;
+        const info = document.getElementById('duration-info');
+
+        if (min === max) {
+            info.textContent = min === 0 ? 'No delay (immediate)' : `Fixed duration: ${min}ms`;
+        } else {
+            const mean = (min + max) / 2;
+            info.textContent = `Normal distribution (mean=${mean}ms, 99.7% in ${min}-${max}ms range)`;
+        }
+    }
+
+    document.getElementById('min-duration').addEventListener('input', updateDurationInfo);
+    document.getElementById('max-duration').addEventListener('input', updateDurationInfo);
 
     // Load config
     async function loadConfig() {
@@ -173,28 +353,27 @@
     document.getElementById('command-form').addEventListener('submit', async (e) => {
         e.preventDefault();
 
-        const type = document.getElementById('behavior-type').value;
-        const executionTime = parseInt(document.getElementById('execution-time').value) || 0;
+        const failPermanentPct = parseFloat(document.getElementById('fail-permanent-pct').value) || 0;
+        const failTransientPct = parseFloat(document.getElementById('fail-transient-pct').value) || 0;
+        const timeoutPct = parseFloat(document.getElementById('timeout-pct').value) || 0;
+        const minDuration = parseInt(document.getElementById('min-duration').value) || 0;
+        const maxDuration = parseInt(document.getElementById('max-duration').value) || 0;
         const maxAttempts = document.getElementById('max-attempts').value;
         const payloadText = document.getElementById('payload').value.trim();
+        const errorCode = document.getElementById('error-code').value.trim();
+        const errorMessage = document.getElementById('error-message').value.trim();
 
         // Build behavior object
-        const behavior = { type };
-        if (executionTime > 0) {
-            behavior.execution_time_ms = executionTime;
-        }
+        const behavior = {
+            fail_permanent_pct: failPermanentPct,
+            fail_transient_pct: failTransientPct,
+            timeout_pct: timeoutPct,
+            min_duration_ms: minDuration,
+            max_duration_ms: maxDuration,
+        };
 
-        // Add failure-specific settings
-        if (['fail_permanent', 'fail_transient', 'fail_transient_then_succeed'].includes(type)) {
-            const errorCode = document.getElementById('error-code').value.trim();
-            const errorMessage = document.getElementById('error-message').value.trim();
-            if (errorCode) behavior.error_code = errorCode;
-            if (errorMessage) behavior.error_message = errorMessage;
-        }
-
-        if (type === 'fail_transient_then_succeed') {
-            behavior.transient_failures = parseInt(document.getElementById('transient-failures').value) || 2;
-        }
+        if (errorCode) behavior.error_code = errorCode;
+        if (errorMessage) behavior.error_message = errorMessage;
 
         // Build request
         const requestData = { behavior };
@@ -233,14 +412,20 @@
     document.getElementById('bulk-form').addEventListener('submit', async (e) => {
         e.preventDefault();
 
-        const count = parseInt(document.getElementById('bulk-count').value) || 10;
-        const type = document.getElementById('bulk-behavior').value;
-        const executionTime = parseInt(document.getElementById('bulk-execution-time').value) || 0;
+        const count = parseInt(document.getElementById('bulk-count').value) || 100;
+        const failPermanentPct = parseFloat(document.getElementById('bulk-permanent-pct').value) || 0;
+        const failTransientPct = parseFloat(document.getElementById('bulk-transient-pct').value) || 0;
+        const timeoutPct = parseFloat(document.getElementById('bulk-timeout-pct').value) || 0;
+        const minDuration = parseInt(document.getElementById('bulk-min-duration').value) || 0;
+        const maxDuration = parseInt(document.getElementById('bulk-max-duration').value) || 0;
 
-        const behavior = { type };
-        if (executionTime > 0) {
-            behavior.execution_time_ms = executionTime;
-        }
+        const behavior = {
+            fail_permanent_pct: failPermanentPct,
+            fail_transient_pct: failTransientPct,
+            timeout_pct: timeoutPct,
+            min_duration_ms: minDuration,
+            max_duration_ms: maxDuration,
+        };
 
         try {
             const result = await api.post('/commands/bulk', { count, behavior });
@@ -248,9 +433,10 @@
                 showResult('bulk-result-message', true, `
                     <div class="font-medium">${result.created} commands created successfully!</div>
                     <div class="mt-2 text-sm">
-                        First 5 IDs: ${result.command_ids.slice(0, 5).map(id =>
+                        <div>Generation time: ${result.generation_time_ms}ms</div>
+                        <div class="mt-1">First 5 IDs: ${result.command_ids.slice(0, 5).map(id =>
                             `<code class="bg-gray-200 dark:bg-gray-700 px-1 rounded">${id.substring(0, 8)}...</code>`
-                        ).join(', ')}
+                        ).join(', ')}</div>
                     </div>
                 `);
             }
@@ -258,5 +444,8 @@
             showResult('bulk-result-message', false, `Error: ${err.message}`);
         }
     });
+
+    // Initialize
+    updateBulkExpected();
 </script>
 {% endblock %}

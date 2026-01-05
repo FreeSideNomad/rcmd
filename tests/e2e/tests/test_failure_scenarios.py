@@ -1,7 +1,7 @@
 """E2E tests for failure scenarios (S024).
 
 These tests verify error handling, retries, and TSQ functionality
-work correctly using the test command behavior specification.
+work correctly using the probabilistic test command behavior specification.
 """
 
 from __future__ import annotations
@@ -44,14 +44,14 @@ class TestPermanentFailure:
         """Test permanent failure goes directly to TSQ.
 
         Verifies:
-        - Command with fail_permanent behavior goes to TSQ
+        - Command with 100% fail_permanent_pct behavior goes to TSQ
         - Error details are preserved
         - Audit trail shows MOVED_TO_TSQ event
         """
         command_id = uuid4()
 
         # Create worker with max_attempts=3
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -70,7 +70,7 @@ class TestPermanentFailure:
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_permanent",
+                        "fail_permanent_pct": 100,
                         "error_code": "INVALID_ACCOUNT",
                         "error_message": "Account does not exist",
                     }
@@ -118,7 +118,7 @@ class TestPermanentFailure:
         """
         command_id = uuid4()
 
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -137,7 +137,7 @@ class TestPermanentFailure:
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_permanent",
+                        "fail_permanent_pct": 100,
                         "error_code": "VALIDATION_ERROR",
                         "error_message": "Missing required field: email",
                     }
@@ -186,7 +186,7 @@ class TestTransientFailure:
         command_id = uuid4()
         reset_failure_counts()
 
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -205,7 +205,6 @@ class TestTransientFailure:
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_transient_then_succeed",
                         "transient_failures": 2,
                         "error_code": "TIMEOUT",
                     }
@@ -247,7 +246,7 @@ class TestTransientFailure:
         """
         command_id = uuid4()
 
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -266,7 +265,7 @@ class TestTransientFailure:
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_transient",
+                        "fail_transient_pct": 100,
                         "error_code": "SERVICE_UNAVAILABLE",
                     }
                 },
@@ -320,7 +319,7 @@ class TestTSQOperations:
         command_id = uuid4()
         reset_failure_counts()
 
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -340,7 +339,6 @@ class TestTSQOperations:
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_transient_then_succeed",
                         "transient_failures": 1,
                         "error_code": "TEMP_ISSUE",
                     }
@@ -396,7 +394,7 @@ class TestTSQOperations:
         """
         command_id = uuid4()
 
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -415,7 +413,7 @@ class TestTSQOperations:
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_permanent",
+                        "fail_permanent_pct": 100,
                         "error_code": "UNRECOVERABLE",
                     }
                 },
@@ -468,7 +466,7 @@ class TestTSQOperations:
         """
         command_id = uuid4()
 
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -487,7 +485,7 @@ class TestTSQOperations:
                 command_id=command_id,
                 data={
                     "behavior": {
-                        "type": "fail_permanent",
+                        "fail_permanent_pct": 100,
                         "error_code": "NEEDS_MANUAL",
                     }
                 },
@@ -539,7 +537,7 @@ class TestTSQOperations:
         """
         command_ids = [uuid4(), uuid4()]
 
-        registry = create_handler_registry({"type": "success"})
+        registry = create_handler_registry({})
         worker = Worker(
             pool,
             domain="e2e",
@@ -560,7 +558,7 @@ class TestTSQOperations:
                     command_id=cmd_id,
                     data={
                         "behavior": {
-                            "type": "fail_permanent",
+                            "fail_permanent_pct": 100,
                             "error_code": "BATCH_FAILURE",
                         }
                     },

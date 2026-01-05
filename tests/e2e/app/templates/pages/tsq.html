@@ -160,6 +160,8 @@
 
     const api = new ApiClient();
     let commands = [];
+    let allCommandIds = [];  // All command IDs in TSQ (for select all)
+    let totalCount = 0;
     let selectedIds = new Set();
     let completeCommandId = null;
 
@@ -200,12 +202,22 @@
         const domain = document.getElementById('filter-domain').value.trim();
         const params = new URLSearchParams();
         if (domain) params.set('domain', domain);
+        params.set('limit', '100');  // Show more items per page
 
         const result = await api.get(`/tsq?${params}`);
         if (!result) return;
 
         commands = result.commands;
-        document.getElementById('total-count').textContent = result.total;
+        totalCount = result.total;
+        allCommandIds = result.all_command_ids || commands.map(c => c.command_id);
+        document.getElementById('total-count').textContent = totalCount;
+
+        // Update select-all label to show total
+        const selectAllLabel = document.querySelector('label[for="select-all"]');
+        if (selectAllLabel && totalCount > 0) {
+            selectAllLabel.textContent = `Select All (${totalCount})`;
+        }
+
         renderCommands();
     }
 
@@ -406,14 +418,16 @@
     });
 
     document.getElementById('select-all').addEventListener('change', (e) => {
+        if (e.target.checked) {
+            // Select ALL commands in TSQ, not just visible ones
+            allCommandIds.forEach(id => selectedIds.add(id));
+        } else {
+            selectedIds.clear();
+        }
+        // Update visible checkboxes to match
         const checkboxes = document.querySelectorAll('.cmd-checkbox');
         checkboxes.forEach(cb => {
             cb.checked = e.target.checked;
-            if (e.target.checked) {
-                selectedIds.add(cb.dataset.id);
-            } else {
-                selectedIds.delete(cb.dataset.id);
-            }
         });
         updateSelectionCount();
     });

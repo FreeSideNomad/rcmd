@@ -12,19 +12,45 @@ from pydantic import BaseModel, Field
 
 
 class CommandBehavior(BaseModel):
-    """Test command behavior specification."""
+    """Probabilistic test command behavior specification.
 
-    type: str = Field(
-        default="success",
-        description="Behavior type: no_op, success, fail_permanent, fail_transient, "
-        "fail_transient_then_succeed, timeout",
+    Commands are evaluated sequentially:
+    1. Roll for fail_permanent_pct -> PermanentCommandError
+    2. Roll for fail_transient_pct -> TransientCommandError
+    3. Roll for timeout_pct -> Sleep > visibility_timeout
+    4. Otherwise -> Success with duration from normal distribution
+    """
+
+    fail_permanent_pct: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+        description="Probability (0-100) of permanent failure",
     )
-    transient_failures: int = Field(
-        default=0, description="Number of transient failures before success"
+    fail_transient_pct: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+        description="Probability (0-100) of transient failure",
     )
-    execution_time_ms: int = Field(default=0, description="Simulated execution time in ms")
-    error_code: str | None = Field(default=None, description="Error code for failure types")
-    error_message: str | None = Field(default=None, description="Error message for failure types")
+    timeout_pct: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+        description="Probability (0-100) of timeout",
+    )
+    min_duration_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Minimum execution duration in ms for success",
+    )
+    max_duration_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Maximum execution duration in ms for success",
+    )
+    error_code: str | None = Field(default=None, description="Error code for failures")
+    error_message: str | None = Field(default=None, description="Error message for failures")
 
 
 class CreateCommandRequest(BaseModel):
@@ -46,13 +72,11 @@ class CreateCommandResponse(BaseModel):
 
 
 class BulkCreateRequest(BaseModel):
-    """Request to create multiple test commands."""
+    """Request to create multiple test commands with probabilistic behavior."""
 
     count: int = Field(default=1, ge=1, le=1000000)
-    behavior: CommandBehavior | None = None
-    behavior_distribution: dict[str, int] | None = None
-    execution_time_ms: int = Field(default=0)
-    max_attempts: int = Field(default=3)
+    behavior: CommandBehavior = Field(default_factory=CommandBehavior)
+    max_attempts: int = Field(default=3, ge=1, le=10)
 
 
 class BulkCreateResponse(BaseModel):
@@ -63,7 +87,6 @@ class BulkCreateResponse(BaseModel):
     total_command_ids: int
     generation_time_ms: int
     queue_time_ms: int
-    behavior_distribution: dict[str, int] | None = None
     message: str
 
 
@@ -191,6 +214,7 @@ class TSQListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    all_command_ids: list[str] = []  # All command IDs for "select all" feature
     error: str | None = None
 
 

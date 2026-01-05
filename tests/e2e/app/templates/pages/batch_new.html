@@ -12,7 +12,7 @@
         </ol>
     </nav>
     <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Create New Batch</h1>
-    <p class="text-gray-500 dark:text-gray-400">Create a batch of test commands with configurable behavior</p>
+    <p class="text-gray-500 dark:text-gray-400">Create a batch of test commands with probabilistic behavior</p>
 </div>
 
 <!-- Batch Form -->
@@ -27,49 +27,43 @@
         <!-- Command Count -->
         <div>
             <label for="command-count" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Number of Commands</label>
-            <input type="number" id="command-count" min="1" max="10000" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            <input type="number" id="command-count" min="1" max="10000" value="100" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Maximum 10,000 commands per batch</p>
         </div>
 
-        <!-- Behavior Type -->
-        <div>
-            <label class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Command Behavior</label>
-            <div class="space-y-2">
-                <div class="flex items-center">
-                    <input id="behavior-success" type="radio" name="behavior" value="success" checked class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600">
-                    <label for="behavior-success" class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">
-                        Success
-                        <span class="text-gray-500 dark:text-gray-400 font-normal">- Commands complete successfully</span>
-                    </label>
+        <!-- Failure Probabilities -->
+        <div class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-4">Failure Probabilities</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label for="fail-permanent-pct" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Permanent Failure %</label>
+                    <input type="number" id="fail-permanent-pct" min="0" max="100" step="0.1" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
                 </div>
-                <div class="flex items-center">
-                    <input id="behavior-permanent" type="radio" name="behavior" value="fail_permanent" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600">
-                    <label for="behavior-permanent" class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">
-                        Fail Permanent
-                        <span class="text-gray-500 dark:text-gray-400 font-normal">- Commands fail immediately and move to TSQ</span>
-                    </label>
+                <div>
+                    <label for="fail-transient-pct" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Transient Failure %</label>
+                    <input type="number" id="fail-transient-pct" min="0" max="100" step="0.1" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
                 </div>
-                <div class="flex items-center">
-                    <input id="behavior-transient" type="radio" name="behavior" value="fail_transient_then_succeed" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600">
-                    <label for="behavior-transient" class="ml-2 text-sm font-medium text-gray-900 dark:text-gray-300">
-                        Fail Transient Then Succeed
-                        <span class="text-gray-500 dark:text-gray-400 font-normal">- Commands fail a few times then succeed</span>
-                    </label>
+                <div>
+                    <label for="timeout-pct" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Timeout %</label>
+                    <input type="number" id="timeout-pct" min="0" max="100" step="0.1" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
                 </div>
             </div>
         </div>
 
-        <!-- Transient Failures (shown conditionally) -->
-        <div id="transient-settings" class="hidden p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
-            <label for="transient-failures" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Transient Failures Before Success</label>
-            <input type="number" id="transient-failures" min="1" max="10" value="2" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
-        </div>
-
-        <!-- Execution Time -->
-        <div>
-            <label for="execution-time" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Execution Time (ms)</label>
-            <input type="number" id="execution-time" min="0" max="120000" value="100" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">How long each command handler takes to execute (simulated)</p>
+        <!-- Duration -->
+        <div class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-4">Success Duration (ms)</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="min-duration" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Min</label>
+                    <input type="number" id="min-duration" min="0" max="120000" value="50" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                </div>
+                <div>
+                    <label for="max-duration" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Max</label>
+                    <input type="number" id="max-duration" min="0" max="120000" value="100" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                </div>
+            </div>
+            <p id="duration-info" class="mt-2 text-xs text-gray-500 dark:text-gray-400">Duration uses normal distribution (mean=75ms)</p>
         </div>
 
         <!-- Max Attempts -->
@@ -77,6 +71,41 @@
             <label for="max-attempts" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Max Attempts</label>
             <input type="number" id="max-attempts" min="1" max="10" value="3" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Maximum retry attempts before moving to TSQ</p>
+        </div>
+
+        <!-- Expected Distribution -->
+        <div id="expected-distribution" class="p-4 bg-blue-50 rounded-lg dark:bg-blue-900">
+            <h4 class="text-sm font-medium text-blue-800 dark:text-blue-300 mb-3">Expected Distribution</h4>
+            <div class="space-y-2">
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-blue-700 dark:text-blue-400">Success</div>
+                    <div class="flex-1 h-4 bg-blue-100 rounded dark:bg-blue-800 overflow-hidden">
+                        <div id="bar-success" class="h-full bg-green-500 transition-all duration-300" style="width: 100%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-blue-700 dark:text-blue-400"><span id="expected-success">100</span></div>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-blue-700 dark:text-blue-400">Permanent</div>
+                    <div class="flex-1 h-4 bg-blue-100 rounded dark:bg-blue-800 overflow-hidden">
+                        <div id="bar-permanent" class="h-full bg-red-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-blue-700 dark:text-blue-400"><span id="expected-permanent">0</span></div>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-blue-700 dark:text-blue-400">Transient</div>
+                    <div class="flex-1 h-4 bg-blue-100 rounded dark:bg-blue-800 overflow-hidden">
+                        <div id="bar-transient" class="h-full bg-orange-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-blue-700 dark:text-blue-400"><span id="expected-transient">0</span></div>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-24 text-sm text-blue-700 dark:text-blue-400">Timeout</div>
+                    <div class="flex-1 h-4 bg-blue-100 rounded dark:bg-blue-800 overflow-hidden">
+                        <div id="bar-timeout" class="h-full bg-yellow-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-blue-700 dark:text-blue-400"><span id="expected-timeout">0</span></div>
+                </div>
+            </div>
         </div>
 
         <!-- Submit Button -->
@@ -100,15 +129,70 @@
     import { ApiClient } from '/static/src/api.js';
 
     const api = new ApiClient();
-    const transientSettings = document.getElementById('transient-settings');
 
-    // Show/hide transient settings based on behavior type
-    document.querySelectorAll('input[name="behavior"]').forEach(radio => {
-        radio.addEventListener('change', () => {
-            const showTransient = document.getElementById('behavior-transient').checked;
-            transientSettings.classList.toggle('hidden', !showTransient);
-        });
+    // Calculate expected outcomes based on sequential probability evaluation
+    function calculateExpectedOutcomes(count, failPermanent, failTransient, timeout) {
+        const permanentCount = count * (failPermanent / 100);
+        const remainingAfterPermanent = count - permanentCount;
+
+        const transientCount = remainingAfterPermanent * (failTransient / 100);
+        const remainingAfterTransient = remainingAfterPermanent - transientCount;
+
+        const timeoutCount = remainingAfterTransient * (timeout / 100);
+        const successCount = remainingAfterTransient - timeoutCount;
+
+        return {
+            permanent: Math.round(permanentCount),
+            transient: Math.round(transientCount),
+            timeout: Math.round(timeoutCount),
+            success: Math.round(successCount),
+        };
+    }
+
+    // Update expected distribution
+    function updateExpected() {
+        const count = parseInt(document.getElementById('command-count').value) || 100;
+        const failPermanent = parseFloat(document.getElementById('fail-permanent-pct').value) || 0;
+        const failTransient = parseFloat(document.getElementById('fail-transient-pct').value) || 0;
+        const timeout = parseFloat(document.getElementById('timeout-pct').value) || 0;
+
+        const outcomes = calculateExpectedOutcomes(count, failPermanent, failTransient, timeout);
+
+        // Update counts
+        document.getElementById('expected-success').textContent = outcomes.success;
+        document.getElementById('expected-permanent').textContent = outcomes.permanent;
+        document.getElementById('expected-transient').textContent = outcomes.transient;
+        document.getElementById('expected-timeout').textContent = outcomes.timeout;
+
+        // Update bars
+        document.getElementById('bar-success').style.width = (outcomes.success / count * 100) + '%';
+        document.getElementById('bar-permanent').style.width = (outcomes.permanent / count * 100) + '%';
+        document.getElementById('bar-transient').style.width = (outcomes.transient / count * 100) + '%';
+        document.getElementById('bar-timeout').style.width = (outcomes.timeout / count * 100) + '%';
+    }
+
+    // Update duration info
+    function updateDurationInfo() {
+        const min = parseInt(document.getElementById('min-duration').value) || 0;
+        const max = parseInt(document.getElementById('max-duration').value) || 0;
+        const info = document.getElementById('duration-info');
+
+        if (min === max) {
+            info.textContent = min === 0 ? 'No delay (immediate)' : `Fixed duration: ${min}ms`;
+        } else {
+            const mean = (min + max) / 2;
+            info.textContent = `Duration uses normal distribution (mean=${mean}ms)`;
+        }
+    }
+
+    // Add event listeners for all probability inputs
+    ['command-count', 'fail-permanent-pct', 'fail-transient-pct', 'timeout-pct'].forEach(id => {
+        document.getElementById(id).addEventListener('input', updateExpected);
     });
+
+    // Add event listeners for duration inputs
+    document.getElementById('min-duration').addEventListener('input', updateDurationInfo);
+    document.getElementById('max-duration').addEventListener('input', updateDurationInfo);
 
     // Show result message
     function showResult(success, message) {
@@ -131,19 +215,22 @@
         createBtn.textContent = 'Creating...';
 
         const name = document.getElementById('batch-name').value.trim() || 'Test Batch';
-        const commandCount = parseInt(document.getElementById('command-count').value) || 10;
-        const behaviorType = document.querySelector('input[name="behavior"]:checked').value;
-        const executionTime = parseInt(document.getElementById('execution-time').value) || 0;
+        const commandCount = parseInt(document.getElementById('command-count').value) || 100;
+        const failPermanentPct = parseFloat(document.getElementById('fail-permanent-pct').value) || 0;
+        const failTransientPct = parseFloat(document.getElementById('fail-transient-pct').value) || 0;
+        const timeoutPct = parseFloat(document.getElementById('timeout-pct').value) || 0;
+        const minDuration = parseInt(document.getElementById('min-duration').value) || 0;
+        const maxDuration = parseInt(document.getElementById('max-duration').value) || 0;
         const maxAttempts = parseInt(document.getElementById('max-attempts').value) || 3;
 
         // Build behavior object
-        const behavior = { type: behaviorType };
-        if (executionTime > 0) {
-            behavior.execution_time_ms = executionTime;
-        }
-        if (behaviorType === 'fail_transient_then_succeed') {
-            behavior.transient_failures = parseInt(document.getElementById('transient-failures').value) || 2;
-        }
+        const behavior = {
+            fail_permanent_pct: failPermanentPct,
+            fail_transient_pct: failTransientPct,
+            timeout_pct: timeoutPct,
+            min_duration_ms: minDuration,
+            max_duration_ms: maxDuration,
+        };
 
         const requestData = {
             name,
@@ -162,7 +249,7 @@
                         <div>Commands: <span class="font-medium">${result.total_commands}</span></div>
                     </div>
                     <div class="mt-3">
-                        <a href="/batches/${result.batch_id}" class="text-blue-600 hover:underline dark:text-blue-400">View Batch Details →</a>
+                        <a href="/batches/${result.batch_id}" class="text-blue-600 hover:underline dark:text-blue-400">View Batch Details</a>
                     </div>
                 `);
             }
@@ -173,5 +260,9 @@
             createBtn.textContent = 'Create Batch';
         }
     });
+
+    // Initialize
+    updateExpected();
+    updateDurationInfo();
 </script>
 {% endblock %}
