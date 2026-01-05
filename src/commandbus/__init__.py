@@ -84,6 +84,7 @@ __all__ = [
     "TroubleshootingItem",
     "TroubleshootingQueue",
     "Worker",
+    "__version__",
     "check_and_invoke_batch_callback",
     "clear_all_callbacks",
     "get_batch_callback",
@@ -92,4 +93,10 @@ __all__ = [
     "remove_batch_callback",
 ]
 
-__version__ = "0.1.0"
+# Version is set dynamically by hatch-vcs from git tags
+try:
+    from importlib.metadata import version
+
+    __version__ = version("commandbus")
+except Exception:
+    __version__ = "0.0.0+unknown"

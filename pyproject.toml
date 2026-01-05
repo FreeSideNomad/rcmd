@@ -1,17 +1,15 @@
 [project]
 name = "commandbus"
-version = "0.1.0"
-description = "Command Bus abstraction over PostgreSQL + PGMQ"
+dynamic = ["version"]
+description = "Command Bus abstraction over PostgreSQL + PGMQ for reliable async command processing"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "Your Name", email = "you@example.com" }
-]
-maintainers = [
-    { name = "Your Name", email = "you@example.com" }
+    { name = "FreeSideNomad" }
 ]
 keywords = [
+    "commandbus",
     "command-bus",
     "cqrs",
     "postgresql",
@@ -20,14 +18,16 @@ keywords = [
     "async",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
@@ -61,15 +61,25 @@ e2e = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/commandbus"
-Documentation = "https://github.com/your-org/commandbus#readme"
-Repository = "https://github.com/your-org/commandbus"
-Issues = "https://github.com/your-org/commandbus/issues"
-Changelog = "https://github.com/your-org/commandbus/releases"
+Homepage = "https://github.com/FreeSideNomad/rcmd"
+Documentation = "https://github.com/FreeSideNomad/rcmd#readme"
+Repository = "https://github.com/FreeSideNomad/rcmd"
+Issues = "https://github.com/FreeSideNomad/rcmd/issues"
+Changelog = "https://github.com/FreeSideNomad/rcmd/releases"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/commandbus",
+    "/README.md",
+    "/LICENSE",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/commandbus"]
