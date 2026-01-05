@@ -65,3 +65,9 @@ async def batch_new(request: Request) -> HTMLResponse:
 async def batch_detail(request: Request, batch_id: str) -> HTMLResponse:
     """Batch detail page."""
     return templates.TemplateResponse(request, "pages/batch_detail.html", {"batch_id": batch_id})
+
+
+@web_router.get("/replies", response_class=HTMLResponse)
+async def replies(request: Request) -> HTMLResponse:
+    """Replies queue page."""
+    return templates.TemplateResponse(request, "pages/replies.html")

@@ -51,6 +51,14 @@ class CommandBehavior(BaseModel):
     )
     error_code: str | None = Field(default=None, description="Error code for failures")
     error_message: str | None = Field(default=None, description="Error message for failures")
+    send_response: bool = Field(
+        default=False,
+        description="If true, handler returns response data to reply queue",
+    )
+    response_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Custom data to include in reply (when send_response=true)",
+    )
 
 
 class CreateCommandRequest(BaseModel):
@@ -59,6 +67,10 @@ class CreateCommandRequest(BaseModel):
     behavior: CommandBehavior = Field(default_factory=CommandBehavior)
     payload: dict[str, Any] = Field(default_factory=dict)
     max_attempts: int = Field(default=3, ge=1, le=10)
+    reply_to: str | None = Field(
+        default=None,
+        description="Queue name to send reply to (e.g., 'e2e__replies')",
+    )
 
 
 class CreateCommandResponse(BaseModel):
@@ -68,6 +80,7 @@ class CreateCommandResponse(BaseModel):
     status: str = "PENDING"
     behavior: CommandBehavior
     payload: dict[str, Any]
+    reply_to: str | None = None
     message: str
 
 
@@ -441,4 +454,55 @@ class HealthResponse(BaseModel):
 
     status: str
     database: str
+    error: str | None = None
+
+
+# =============================================================================
+# Reply Queue Schemas
+# =============================================================================
+
+
+class ReplyMessage(BaseModel):
+    """A reply message from the reply queue."""
+
+    msg_id: int
+    command_id: str
+    correlation_id: str | None = None
+    outcome: str
+    result: dict[str, Any] | None = None
+    enqueued_at: str | None = None
+
+
+class ReplyQueueResponse(BaseModel):
+    """List of reply messages."""
+
+    messages: list[ReplyMessage]
+    queue_name: str
+    queue_depth: int
+    error: str | None = None
+
+
+class ReplySummaryResponse(BaseModel):
+    """Reply aggregation summary for a batch."""
+
+    id: int
+    batch_id: UUID
+    domain: str
+    total_expected: int
+    success_count: int
+    failed_count: int
+    canceled_count: int
+    total_received: int
+    is_complete: bool
+    created_at: datetime | None
+    completed_at: datetime | None
+
+
+class ReplySummaryListResponse(BaseModel):
+    """List of reply summaries."""
+
+    summaries: list[ReplySummaryResponse]
+    total: int
+    limit: int
+    offset: int
     error: str | None = None
