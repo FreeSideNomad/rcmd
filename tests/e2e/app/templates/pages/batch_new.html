@@ -73,6 +73,27 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Maximum retry attempts before moving to TSQ</p>
         </div>
 
+        <!-- Reply Options -->
+        <div class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
+            <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-4">Reply Options</h3>
+            <div class="space-y-4">
+                <div class="flex items-center gap-3">
+                    <input type="checkbox" id="send-response" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <label for="send-response" class="text-sm font-medium text-gray-900 dark:text-white">Send response to reply queue</label>
+                </div>
+                <div id="reply-options-container" class="hidden space-y-4">
+                    <div>
+                        <label for="reply-to" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Reply Queue Name</label>
+                        <input type="text" id="reply-to" value="e2e__replies" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white font-mono">
+                    </div>
+                    <div>
+                        <label for="response-data" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Response Data (optional JSON)</label>
+                        <textarea id="response-data" rows="2" placeholder='{"key": "value"}' class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white font-mono"></textarea>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Expected Distribution -->
         <div id="expected-distribution" class="p-4 bg-blue-50 rounded-lg dark:bg-blue-900">
             <h4 class="text-sm font-medium text-blue-800 dark:text-blue-300 mb-3">Expected Distribution</h4>
@@ -194,6 +215,12 @@
     document.getElementById('min-duration').addEventListener('input', updateDurationInfo);
     document.getElementById('max-duration').addEventListener('input', updateDurationInfo);
 
+    // Toggle reply options visibility
+    document.getElementById('send-response').addEventListener('change', (e) => {
+        const container = document.getElementById('reply-options-container');
+        container.classList.toggle('hidden', !e.target.checked);
+    });
+
     // Show result message
     function showResult(success, message) {
         const resultDiv = document.getElementById('result-message');
@@ -223,6 +250,11 @@
         const maxDuration = parseInt(document.getElementById('max-duration').value) || 0;
         const maxAttempts = parseInt(document.getElementById('max-attempts').value) || 3;
 
+        // Reply options
+        const sendResponse = document.getElementById('send-response').checked;
+        const replyTo = document.getElementById('reply-to').value.trim();
+        const responseDataText = document.getElementById('response-data').value.trim();
+
         // Build behavior object
         const behavior = {
             fail_permanent_pct: failPermanentPct,
@@ -232,12 +264,32 @@
             max_duration_ms: maxDuration,
         };
 
+        // Add reply behavior options
+        if (sendResponse) {
+            behavior.send_response = true;
+            if (responseDataText) {
+                try {
+                    behavior.response_data = JSON.parse(responseDataText);
+                } catch (err) {
+                    showResult(false, `Invalid JSON in response data: ${err.message}`);
+                    createBtn.disabled = false;
+                    createBtn.textContent = 'Create Batch';
+                    return;
+                }
+            }
+        }
+
         const requestData = {
             name,
             command_count: commandCount,
             behavior,
             max_attempts: maxAttempts
         };
+
+        // Add reply_to if sending response
+        if (sendResponse && replyTo) {
+            requestData.reply_to = replyTo;
+        }
 
         try {
             const result = await api.post('/batches', requestData);
