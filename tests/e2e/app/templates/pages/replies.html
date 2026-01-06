@@ -9,6 +9,9 @@
         <p class="text-gray-500 dark:text-gray-400">View command replies and batch summaries</p>
     </div>
     <div class="flex gap-2">
+        <button id="process-btn" class="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700">
+            Process Replies
+        </button>
         <button id="refresh-btn" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
             Refresh
         </button>
@@ -339,7 +342,30 @@
         document.getElementById('content-summaries').classList.toggle('hidden', tab !== 'summaries');
     }
 
+    // Process replies and update batch summaries
+    async function processReplies() {
+        const btn = document.getElementById('process-btn');
+        btn.disabled = true;
+        btn.textContent = 'Processing...';
+
+        try {
+            const result = await api.post('/replies/process');
+            if (result) {
+                showToast(`Processed ${result.processed} replies (${result.success} success, ${result.failed} failed, ${result.canceled} canceled)`);
+                await loadReplies();
+                await loadSummaries();
+            }
+        } catch (err) {
+            showToast('Error processing replies', 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Process Replies';
+        }
+    }
+
     // Event listeners
+    document.getElementById('process-btn').addEventListener('click', processReplies);
+
     document.getElementById('refresh-btn').addEventListener('click', () => {
         loadReplies();
         loadSummaries();
