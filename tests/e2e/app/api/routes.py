@@ -41,6 +41,10 @@ from .schemas import (
     LoadTestResponse,
     ProcessingRate,
     RecentActivityResponse,
+    ReplyMessage,
+    ReplyQueueResponse,
+    ReplySummaryListResponse,
+    ReplySummaryResponse,
     RetryConfigSchema,
     StatsOverviewResponse,
     ThroughputResponse,
@@ -82,12 +86,14 @@ async def create_command(
         command_id=command_id,
         data={"behavior": behavior, "payload": request.payload},
         max_attempts=request.max_attempts,
+        reply_to=request.reply_to,
     )
 
     return CreateCommandResponse(
         command_id=command_id,
         behavior=request.behavior,
         payload=request.payload,
+        reply_to=request.reply_to,
         message="Command created and queued",
     )
 
@@ -1050,3 +1056,195 @@ async def get_batch_commands(
         return BatchCommandsListResponse(
             commands=[], total=0, limit=limit, offset=offset, error=str(e)
         )
+
+
+# =============================================================================
+# Reply Queue Endpoints
+# =============================================================================
+
+REPLY_QUEUE = "e2e__replies"
+
+
+@api_router.get("/replies", response_model=ReplyQueueResponse)
+async def list_replies(pool: Pool, limit: int = 20) -> ReplyQueueResponse:
+    """List messages in the reply queue.
+
+    Uses a short visibility timeout to peek at messages without consuming them.
+    """
+    from commandbus.pgmq.client import PgmqClient
+
+    limit = min(limit, 100)
+    pgmq = PgmqClient(pool)
+
+    try:
+        # Read messages with very short visibility timeout (1 second)
+        # This allows peeking without permanently consuming
+        messages = await pgmq.read(REPLY_QUEUE, visibility_timeout=1, batch_size=limit)
+
+        # Get queue depth
+        async with pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(f"SELECT COUNT(*) FROM pgmq.q_{REPLY_QUEUE}")
+            row = await cur.fetchone()
+            queue_depth = row[0] if row else 0
+
+        reply_messages = []
+        for msg in messages:
+            reply_messages.append(
+                ReplyMessage(
+                    msg_id=msg.msg_id,
+                    command_id=msg.message.get("command_id", ""),
+                    correlation_id=msg.message.get("correlation_id"),
+                    outcome=msg.message.get("outcome", "UNKNOWN"),
+                    result=msg.message.get("result"),
+                    enqueued_at=msg.enqueued_at,
+                )
+            )
+
+        return ReplyQueueResponse(
+            messages=reply_messages,
+            queue_name=REPLY_QUEUE,
+            queue_depth=queue_depth,
+        )
+    except Exception as e:
+        return ReplyQueueResponse(
+            messages=[],
+            queue_name=REPLY_QUEUE,
+            queue_depth=0,
+            error=str(e),
+        )
+
+
+@api_router.delete("/replies/{msg_id}")
+async def delete_reply(msg_id: int, pool: Pool) -> dict[str, Any]:
+    """Delete a specific reply message from the queue."""
+    from commandbus.pgmq.client import PgmqClient
+
+    pgmq = PgmqClient(pool)
+    try:
+        await pgmq.delete(REPLY_QUEUE, msg_id)
+        return {"status": "ok", "msg_id": msg_id, "message": "Reply deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@api_router.delete("/replies")
+async def clear_reply_queue(pool: Pool) -> dict[str, Any]:
+    """Clear all messages from the reply queue."""
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(f"DELETE FROM pgmq.q_{REPLY_QUEUE}")
+        return {"status": "ok", "message": "Reply queue cleared"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@api_router.get("/reply-summaries", response_model=ReplySummaryListResponse)
+async def list_reply_summaries(
+    pool: Pool, limit: int = 20, offset: int = 0
+) -> ReplySummaryListResponse:
+    """List batch reply summaries."""
+    limit = min(limit, 100)
+
+    try:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, batch_id, domain, total_expected,
+                       success_count, failed_count, canceled_count,
+                       created_at, completed_at
+                FROM e2e.batch_summary
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset),
+            )
+            rows = await cur.fetchall()
+
+            # Get total count
+            await cur.execute("SELECT COUNT(*) FROM e2e.batch_summary")
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
+
+        summaries = []
+        for row in rows:
+            success = row[4] or 0
+            failed = row[5] or 0
+            canceled = row[6] or 0
+            total_received = success + failed + canceled
+            total_expected = row[3] or 0
+
+            summaries.append(
+                ReplySummaryResponse(
+                    id=row[0],
+                    batch_id=row[1],
+                    domain=row[2],
+                    total_expected=total_expected,
+                    success_count=success,
+                    failed_count=failed,
+                    canceled_count=canceled,
+                    total_received=total_received,
+                    is_complete=total_received >= total_expected,
+                    created_at=row[7],
+                    completed_at=row[8],
+                )
+            )
+
+        return ReplySummaryListResponse(
+            summaries=summaries,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        return ReplySummaryListResponse(
+            summaries=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+            error=str(e),
+        )
+
+
+@api_router.get("/reply-summaries/{batch_id}", response_model=ReplySummaryResponse)
+async def get_reply_summary(batch_id: UUID, pool: Pool) -> ReplySummaryResponse:
+    """Get a specific batch reply summary."""
+    try:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, batch_id, domain, total_expected,
+                       success_count, failed_count, canceled_count,
+                       created_at, completed_at
+                FROM e2e.batch_summary
+                WHERE batch_id = %s
+                """,
+                (batch_id,),
+            )
+            row = await cur.fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Batch summary not found")
+
+            success = row[4] or 0
+            failed = row[5] or 0
+            canceled = row[6] or 0
+            total_received = success + failed + canceled
+            total_expected = row[3] or 0
+
+            return ReplySummaryResponse(
+                id=row[0],
+                batch_id=row[1],
+                domain=row[2],
+                total_expected=total_expected,
+                success_count=success,
+                failed_count=failed,
+                canceled_count=canceled,
+                total_received=total_received,
+                is_complete=total_received >= total_expected,
+                created_at=row[7],
+                completed_at=row[8],
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e

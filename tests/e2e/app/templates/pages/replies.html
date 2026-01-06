@@ -1,0 +1,368 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Replies - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex justify-between items-center">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Reply Queue</h1>
+        <p class="text-gray-500 dark:text-gray-400">View command replies and batch summaries</p>
+    </div>
+    <div class="flex gap-2">
+        <button id="refresh-btn" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+            Refresh
+        </button>
+        <button id="clear-queue-btn" class="px-4 py-2 text-sm font-medium text-red-600 bg-red-100 rounded-lg hover:bg-red-200 dark:text-red-400 dark:bg-red-900 dark:hover:bg-red-800">
+            Clear Queue
+        </button>
+    </div>
+</div>
+
+<!-- Queue Stats -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm text-gray-500 dark:text-gray-400">Queue Depth</div>
+        <div id="queue-depth" class="text-2xl font-bold text-gray-900 dark:text-white">0</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm text-gray-500 dark:text-gray-400">Queue Name</div>
+        <div id="queue-name" class="text-lg font-mono text-gray-900 dark:text-white">e2e__replies</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="text-sm text-gray-500 dark:text-gray-400">Batch Summaries</div>
+        <div id="summary-count" class="text-2xl font-bold text-gray-900 dark:text-white">0</div>
+    </div>
+</div>
+
+<!-- Tabs -->
+<div class="mb-4 border-b border-gray-200 dark:border-gray-700">
+    <ul class="flex flex-wrap -mb-px text-sm font-medium text-center" role="tablist">
+        <li class="me-2">
+            <button id="tab-queue" class="inline-block p-4 border-b-2 border-blue-600 text-blue-600 rounded-t-lg" type="button" role="tab">
+                Reply Queue
+            </button>
+        </li>
+        <li class="me-2">
+            <button id="tab-summaries" class="inline-block p-4 border-b-2 border-transparent hover:text-gray-600 hover:border-gray-300 rounded-t-lg" type="button" role="tab">
+                Batch Summaries
+            </button>
+        </li>
+    </ul>
+</div>
+
+<!-- Reply Queue Tab Content -->
+<div id="content-queue" class="bg-white rounded-lg shadow dark:bg-gray-800">
+    <div class="p-4 border-b dark:border-gray-700">
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+            Showing <span id="message-count">0</span> messages
+        </div>
+    </div>
+
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                    <th scope="col" class="px-4 py-3">Msg ID</th>
+                    <th scope="col" class="px-4 py-3">Command ID</th>
+                    <th scope="col" class="px-4 py-3">Correlation ID</th>
+                    <th scope="col" class="px-4 py-3">Outcome</th>
+                    <th scope="col" class="px-4 py-3">Enqueued</th>
+                    <th scope="col" class="px-4 py-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="queue-table-body">
+                <tr>
+                    <td colspan="6" class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                        Loading...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Batch Summaries Tab Content -->
+<div id="content-summaries" class="bg-white rounded-lg shadow dark:bg-gray-800 hidden">
+    <div class="p-4 border-b dark:border-gray-700">
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+            <span id="summary-total">0</span> batch summaries
+        </div>
+    </div>
+
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                    <th scope="col" class="px-4 py-3">Batch ID</th>
+                    <th scope="col" class="px-4 py-3">Expected</th>
+                    <th scope="col" class="px-4 py-3">Success</th>
+                    <th scope="col" class="px-4 py-3">Failed</th>
+                    <th scope="col" class="px-4 py-3">Canceled</th>
+                    <th scope="col" class="px-4 py-3">Progress</th>
+                    <th scope="col" class="px-4 py-3">Status</th>
+                </tr>
+            </thead>
+            <tbody id="summaries-table-body">
+                <tr>
+                    <td colspan="7" class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                        Loading...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Result Modal -->
+<div id="result-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+    <div class="flex items-center justify-center min-h-screen p-4">
+        <div class="fixed inset-0 bg-black bg-opacity-50" id="result-modal-backdrop"></div>
+        <div class="relative bg-white rounded-lg shadow-xl max-w-2xl w-full dark:bg-gray-800">
+            <div class="flex justify-between items-center p-4 border-b dark:border-gray-700">
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Reply Result</h3>
+                <button id="close-result-modal" class="text-gray-400 hover:text-gray-500 dark:hover:text-gray-300">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-4">
+                <pre id="result-json" class="p-4 bg-gray-100 dark:bg-gray-900 rounded-lg text-sm font-mono overflow-x-auto max-h-96"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast Notification -->
+<div id="toast" class="hidden fixed bottom-4 right-4 z-50 flex items-center p-4 mb-4 text-gray-500 bg-white rounded-lg shadow dark:text-gray-400 dark:bg-gray-800">
+    <div id="toast-icon" class="inline-flex items-center justify-center flex-shrink-0 w-8 h-8 rounded-lg"></div>
+    <div id="toast-message" class="ml-3 text-sm font-normal"></div>
+    <button id="close-toast" class="ml-auto -mx-1.5 -my-1.5 bg-white text-gray-400 hover:text-gray-900 rounded-lg p-1.5 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-500 dark:hover:text-white dark:hover:bg-gray-700">
+        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+        </svg>
+    </button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '/static/src/api.js';
+
+    const api = new ApiClient();
+    let activeTab = 'queue';
+
+    // Format date
+    function formatDate(isoString) {
+        if (!isoString) return '-';
+        const date = new Date(isoString);
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
+
+    // Show toast notification
+    function showToast(message, type = 'success') {
+        const toast = document.getElementById('toast');
+        const icon = document.getElementById('toast-icon');
+        const msg = document.getElementById('toast-message');
+
+        msg.textContent = message;
+
+        if (type === 'success') {
+            icon.className = 'inline-flex items-center justify-center flex-shrink-0 w-8 h-8 text-green-500 bg-green-100 rounded-lg dark:bg-green-800 dark:text-green-200';
+            icon.innerHTML = '<svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>';
+        } else {
+            icon.className = 'inline-flex items-center justify-center flex-shrink-0 w-8 h-8 text-red-500 bg-red-100 rounded-lg dark:bg-red-800 dark:text-red-200';
+            icon.innerHTML = '<svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path></svg>';
+        }
+
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 5000);
+    }
+
+    // Get outcome badge class
+    function getOutcomeBadgeClass(outcome) {
+        switch (outcome) {
+            case 'SUCCESS':
+                return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300';
+            case 'FAILED':
+                return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300';
+            case 'CANCELED':
+                return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300';
+            default:
+                return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
+        }
+    }
+
+    // Load reply queue
+    async function loadReplies() {
+        const result = await api.get('/replies?limit=50');
+        if (!result) return;
+
+        document.getElementById('queue-depth').textContent = result.queue_depth;
+        document.getElementById('queue-name').textContent = result.queue_name;
+        document.getElementById('message-count').textContent = result.messages.length;
+
+        const tbody = document.getElementById('queue-table-body');
+
+        if (result.messages.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                        No messages in the reply queue.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = result.messages.map(msg => `
+            <tr class="bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700">
+                <td class="px-4 py-4 font-mono text-xs">${msg.msg_id}</td>
+                <td class="px-4 py-4 font-mono text-xs">${msg.command_id.substring(0, 8)}...</td>
+                <td class="px-4 py-4 font-mono text-xs">${msg.correlation_id ? msg.correlation_id.substring(0, 8) + '...' : '-'}</td>
+                <td class="px-4 py-4">
+                    <span class="px-2 py-1 rounded text-xs font-medium ${getOutcomeBadgeClass(msg.outcome)}">
+                        ${msg.outcome}
+                    </span>
+                </td>
+                <td class="px-4 py-4 text-xs">${formatDate(msg.enqueued_at)}</td>
+                <td class="px-4 py-4">
+                    <div class="flex gap-2">
+                        <button class="view-result-btn p-1.5 text-blue-600 hover:bg-blue-100 rounded dark:text-blue-400 dark:hover:bg-blue-900" title="View Result" data-result='${JSON.stringify(msg.result || {})}'>
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                        </button>
+                        <button class="delete-btn p-1.5 text-red-600 hover:bg-red-100 rounded dark:text-red-400 dark:hover:bg-red-900" title="Delete" data-id="${msg.msg_id}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+
+        // Add event listeners
+        tbody.querySelectorAll('.view-result-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const result = JSON.parse(btn.dataset.result);
+                document.getElementById('result-json').textContent = JSON.stringify(result, null, 2);
+                document.getElementById('result-modal').classList.remove('hidden');
+            });
+        });
+
+        tbody.querySelectorAll('.delete-btn').forEach(btn => {
+            btn.addEventListener('click', () => deleteReply(btn.dataset.id));
+        });
+    }
+
+    // Load batch summaries
+    async function loadSummaries() {
+        const result = await api.get('/reply-summaries?limit=50');
+        if (!result) return;
+
+        document.getElementById('summary-count').textContent = result.total;
+        document.getElementById('summary-total').textContent = result.total;
+
+        const tbody = document.getElementById('summaries-table-body');
+
+        if (result.summaries.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="px-4 py-8 text-center text-gray-500 dark:text-gray-400">
+                        No batch summaries found.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = result.summaries.map(s => {
+            const progress = s.total_expected > 0 ? Math.round((s.total_received / s.total_expected) * 100) : 0;
+            return `
+                <tr class="bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    <td class="px-4 py-4 font-mono text-xs">${s.batch_id.substring(0, 8)}...</td>
+                    <td class="px-4 py-4">${s.total_expected}</td>
+                    <td class="px-4 py-4 text-green-600 dark:text-green-400">${s.success_count}</td>
+                    <td class="px-4 py-4 text-red-600 dark:text-red-400">${s.failed_count}</td>
+                    <td class="px-4 py-4 text-yellow-600 dark:text-yellow-400">${s.canceled_count}</td>
+                    <td class="px-4 py-4">
+                        <div class="flex items-center gap-2">
+                            <div class="w-24 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+                                <div class="bg-blue-600 h-2.5 rounded-full" style="width: ${progress}%"></div>
+                            </div>
+                            <span class="text-xs">${progress}%</span>
+                        </div>
+                    </td>
+                    <td class="px-4 py-4">
+                        ${s.is_complete
+                            ? '<span class="px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300">Complete</span>'
+                            : '<span class="px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300">In Progress</span>'
+                        }
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    // Delete single reply
+    async function deleteReply(msgId) {
+        const result = await api.delete(`/replies/${msgId}`);
+        if (result) {
+            showToast('Reply deleted');
+            await loadReplies();
+        }
+    }
+
+    // Clear reply queue
+    async function clearQueue() {
+        if (!confirm('Are you sure you want to clear all messages from the reply queue?')) return;
+
+        const result = await api.delete('/replies');
+        if (result) {
+            showToast('Reply queue cleared');
+            await loadReplies();
+        }
+    }
+
+    // Switch tabs
+    function switchTab(tab) {
+        activeTab = tab;
+
+        // Update tab styles
+        document.getElementById('tab-queue').className = tab === 'queue'
+            ? 'inline-block p-4 border-b-2 border-blue-600 text-blue-600 rounded-t-lg'
+            : 'inline-block p-4 border-b-2 border-transparent hover:text-gray-600 hover:border-gray-300 rounded-t-lg';
+        document.getElementById('tab-summaries').className = tab === 'summaries'
+            ? 'inline-block p-4 border-b-2 border-blue-600 text-blue-600 rounded-t-lg'
+            : 'inline-block p-4 border-b-2 border-transparent hover:text-gray-600 hover:border-gray-300 rounded-t-lg';
+
+        // Show/hide content
+        document.getElementById('content-queue').classList.toggle('hidden', tab !== 'queue');
+        document.getElementById('content-summaries').classList.toggle('hidden', tab !== 'summaries');
+    }
+
+    // Event listeners
+    document.getElementById('refresh-btn').addEventListener('click', () => {
+        loadReplies();
+        loadSummaries();
+    });
+
+    document.getElementById('clear-queue-btn').addEventListener('click', clearQueue);
+
+    document.getElementById('tab-queue').addEventListener('click', () => switchTab('queue'));
+    document.getElementById('tab-summaries').addEventListener('click', () => switchTab('summaries'));
+
+    document.getElementById('close-result-modal').addEventListener('click', () => {
+        document.getElementById('result-modal').classList.add('hidden');
+    });
+    document.getElementById('result-modal-backdrop').addEventListener('click', () => {
+        document.getElementById('result-modal').classList.add('hidden');
+    });
+
+    document.getElementById('close-toast').addEventListener('click', () => {
+        document.getElementById('toast').classList.add('hidden');
+    });
+
+    // Initial load
+    loadReplies();
+    loadSummaries();
+</script>
+{% endblock %}
