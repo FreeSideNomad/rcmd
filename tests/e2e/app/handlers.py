@@ -128,6 +128,13 @@ class TestCommandHandlers:
 
         # Update attempt count and mark processed
         attempt = await repo.increment_attempts(cmd.command_id)
-        result = {"status": "success", "attempt": attempt}
+        result: dict[str, Any] = {"status": "success", "attempt": attempt}
+
+        # Include response_data if send_response is enabled
+        if behavior.get("send_response", False):
+            response_data = behavior.get("response_data", {})
+            if response_data:
+                result["response_data"] = response_data
+
         await repo.mark_processed(cmd.command_id, result)
         return result
