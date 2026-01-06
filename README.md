@@ -16,6 +16,7 @@ A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for re
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Developer Guide](#developer-guide)
+  - [Using Reply Queues](#6-using-reply-queues)
 - [Worker Best Practices](#worker-best-practices)
 - [E2E Test Application](#e2e-test-application)
 
@@ -124,6 +125,14 @@ Understanding these terms is essential for working with the library:
 | **Batch** | A group of related commands tracked together. Useful for bulk operations. |
 | **Correlation ID** | Links related commands across a workflow. Useful for tracing. |
 | **Audit Event** | Immutable record of a state change. Provides complete history. |
+
+### Reply Queues
+
+| Term | Definition |
+|------|------------|
+| **Reply Queue** | A PGMQ queue where command results are sent after processing. Enables async request-reply patterns. |
+| **Reply To** | The queue name specified when sending a command. If set, the worker sends results there on completion. |
+| **Reply Outcome** | The result status: `SUCCESS`, `FAILED`, or `CANCELED`. |
 
 ---
 
@@ -600,6 +609,126 @@ async def monitor_batch(bus: CommandBus, batch_id: UUID) -> None:
 - `COMPLETED_WITH_FAILURES` → All commands finished, some failed (in TSQ)
 
 **Note:** Batch callbacks are in-memory only and will be lost on worker restart. For critical workflows, poll `get_batch()` as a fallback.
+
+### 6. Using Reply Queues
+
+Reply queues enable the async request-reply pattern. When a command completes, the worker sends the result to a specified queue that the caller can monitor.
+
+**Sending a command with reply_to:**
+
+```python
+from uuid import uuid4
+from commandbus import CommandBus
+
+async def create_order_with_reply(bus: CommandBus, order_data: dict) -> UUID:
+    command_id = uuid4()
+
+    await bus.send(
+        domain="orders",
+        command_type="CreateOrder",
+        command_id=command_id,
+        data=order_data,
+        reply_to="orders__replies",  # Results sent here
+        correlation_id=uuid4(),      # Optional: for tracking related commands
+    )
+
+    return command_id
+```
+
+**Returning result data from handlers:**
+
+The dict returned by your handler is included in the reply message:
+
+```python
+@handler(domain="orders", command_type="CreateOrder")
+async def handle_create_order(self, cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
+    order = await self._create_order(cmd.data)
+
+    # This result dict is sent to the reply queue
+    return {
+        "status": "created",
+        "order_id": str(order.id),
+        "total": str(order.total),
+        "custom_data": {"any": "data you want to return"},
+    }
+```
+
+**Reply message structure:**
+
+When `reply_to` is configured, the worker sends this message to the reply queue:
+
+```json
+{
+  "command_id": "550e8400-e29b-41d4-a716-446655440000",
+  "correlation_id": "660e8400-e29b-41d4-a716-446655440001",
+  "outcome": "SUCCESS",
+  "result": {
+    "status": "created",
+    "order_id": "ord_12345",
+    "total": "99.99",
+    "custom_data": {"any": "data you want to return"}
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `command_id` | The unique ID of the processed command |
+| `correlation_id` | The correlation ID (if provided when sending) |
+| `outcome` | `SUCCESS`, `FAILED`, or `CANCELED` |
+| `result` | The dict returned by the handler (on success) |
+
+**Reading replies from the queue:**
+
+Use the PGMQ client to read replies:
+
+```python
+from commandbus.pgmq.client import PgmqClient
+
+async def process_replies(pool: AsyncConnectionPool) -> None:
+    pgmq = PgmqClient(pool)
+
+    # Read up to 10 replies with 30s visibility timeout
+    messages = await pgmq.read("orders__replies", visibility_timeout=30, batch_size=10)
+
+    for msg in messages:
+        command_id = msg.message["command_id"]
+        outcome = msg.message["outcome"]
+        result = msg.message.get("result")
+
+        if outcome == "SUCCESS":
+            print(f"Command {command_id} succeeded: {result}")
+        else:
+            print(f"Command {command_id} failed with outcome: {outcome}")
+
+        # Delete after processing
+        await pgmq.delete("orders__replies", msg.msg_id)
+```
+
+**Using batches with reply queues:**
+
+For batch operations, set `correlation_id` to the `batch_id` to track which batch each reply belongs to:
+
+```python
+from commandbus import BatchCommand
+
+result = await bus.create_batch(
+    domain="orders",
+    commands=[
+        BatchCommand(
+            command_type="ProcessOrder",
+            command_id=uuid4(),
+            data=order_data,
+            correlation_id=batch_id,  # Link replies to batch
+            reply_to="orders__replies",
+        )
+        for order_data in orders
+    ],
+    batch_id=batch_id,
+)
+```
+
+Then aggregate replies by `correlation_id` to track batch completion.
 
 ---
 
