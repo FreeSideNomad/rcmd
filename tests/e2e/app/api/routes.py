@@ -868,6 +868,7 @@ async def create_batch(request: CreateBatchRequest, bus: Bus, pool: Pool) -> Cre
                 command_id=cmd_id,
                 data={"behavior": behavior},
                 max_attempts=request.max_attempts,
+                reply_to=request.reply_to,
             )
         )
         test_commands.append((cmd_id, behavior, {}))
@@ -875,12 +876,33 @@ async def create_batch(request: CreateBatchRequest, bus: Bus, pool: Pool) -> Cre
     # Create test command records
     await repo.create_batch(test_commands)
 
+    # Generate batch_id upfront so we can use it as correlation_id
+    batch_id = uuid4()
+
+    # Update commands to use batch_id as correlation_id for reply tracking
+    if request.reply_to:
+        for cmd in batch_commands:
+            cmd.correlation_id = batch_id
+
     # Create batch via CommandBus
     result = await bus.create_batch(
         domain=E2E_DOMAIN,
         commands=batch_commands,
         name=request.name,
+        batch_id=batch_id,
     )
+
+    # Create batch summary if reply_to is configured
+    if request.reply_to:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO e2e.batch_summary (batch_id, domain, total_expected)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (batch_id) DO NOTHING
+                """,
+                (result.batch_id, E2E_DOMAIN, result.total_commands),
+            )
 
     return CreateBatchResponse(
         batch_id=result.batch_id,
@@ -1123,6 +1145,77 @@ async def delete_reply(msg_id: int, pool: Pool) -> dict[str, Any]:
     try:
         await pgmq.delete(REPLY_QUEUE, msg_id)
         return {"status": "ok", "msg_id": msg_id, "message": "Reply deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@api_router.post("/replies/process")
+async def process_replies(pool: Pool, limit: int = 100) -> dict[str, Any]:
+    """Process replies from queue and update batch summaries.
+
+    Reads replies, updates the corresponding batch_summary counts,
+    and deletes processed messages.
+    """
+    from commandbus.pgmq.client import PgmqClient
+
+    pgmq = PgmqClient(pool)
+    processed = 0
+    success_count = 0
+    failed_count = 0
+    canceled_count = 0
+
+    try:
+        # Read messages with longer visibility timeout for processing
+        messages = await pgmq.read(REPLY_QUEUE, visibility_timeout=30, batch_size=limit)
+
+        for msg in messages:
+            # Get batch_id from correlation_id (batches set correlation_id = batch_id)
+            correlation_id = msg.message.get("correlation_id")
+            outcome = msg.message.get("outcome", "UNKNOWN")
+
+            if correlation_id:
+                # Update the appropriate counter based on outcome
+                column = None
+                if outcome == "SUCCESS":
+                    column = "success_count"
+                    success_count += 1
+                elif outcome == "FAILED":
+                    column = "failed_count"
+                    failed_count += 1
+                elif outcome == "CANCELED":
+                    column = "canceled_count"
+                    canceled_count += 1
+
+                if column:
+                    async with pool.connection() as conn, conn.cursor() as cur:
+                        # Update count and check if complete
+                        await cur.execute(
+                            f"""
+                            UPDATE e2e.batch_summary
+                            SET {column} = {column} + 1,
+                                completed_at = CASE
+                                    WHEN success_count + failed_count + canceled_count + 1
+                                         >= total_expected
+                                    THEN NOW()
+                                    ELSE completed_at
+                                END
+                            WHERE batch_id = %s
+                            """,
+                            (correlation_id,),
+                        )
+
+            # Delete processed message
+            await pgmq.delete(REPLY_QUEUE, msg.msg_id)
+            processed += 1
+
+        return {
+            "status": "ok",
+            "processed": processed,
+            "success": success_count,
+            "failed": failed_count,
+            "canceled": canceled_count,
+            "message": f"Processed {processed} replies",
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
