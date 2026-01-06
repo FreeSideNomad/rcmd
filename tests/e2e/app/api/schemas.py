@@ -323,6 +323,10 @@ class CreateBatchRequest(BaseModel):
     command_count: int = Field(default=10, ge=1, le=10000)
     behavior: CommandBehavior = Field(default_factory=CommandBehavior)
     max_attempts: int = Field(default=3, ge=1, le=10)
+    reply_to: str | None = Field(
+        default=None,
+        description="Queue name to send replies to (e.g., 'e2e__replies')",
+    )
 
 
 class CreateBatchResponse(BaseModel):

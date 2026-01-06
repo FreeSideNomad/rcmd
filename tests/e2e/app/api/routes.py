@@ -868,6 +868,7 @@ async def create_batch(request: CreateBatchRequest, bus: Bus, pool: Pool) -> Cre
                 command_id=cmd_id,
                 data={"behavior": behavior},
                 max_attempts=request.max_attempts,
+                reply_to=request.reply_to,
             )
         )
         test_commands.append((cmd_id, behavior, {}))
