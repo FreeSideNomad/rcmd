@@ -857,6 +857,9 @@ async def create_batch(request: CreateBatchRequest, bus: Bus, pool: Pool) -> Cre
     behavior = request.behavior.model_dump()
 
     # Build batch commands
+    # Generate batch_id upfront so we can use it as correlation_id for reply tracking
+    batch_id = uuid4()
+
     batch_commands: list[BatchCommand] = []
     test_commands: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
 
@@ -869,20 +872,14 @@ async def create_batch(request: CreateBatchRequest, bus: Bus, pool: Pool) -> Cre
                 data={"behavior": behavior},
                 max_attempts=request.max_attempts,
                 reply_to=request.reply_to,
+                # Use batch_id as correlation_id when reply_to is set for reply tracking
+                correlation_id=batch_id if request.reply_to else None,
             )
         )
         test_commands.append((cmd_id, behavior, {}))
 
     # Create test command records
     await repo.create_batch(test_commands)
-
-    # Generate batch_id upfront so we can use it as correlation_id
-    batch_id = uuid4()
-
-    # Update commands to use batch_id as correlation_id for reply tracking
-    if request.reply_to:
-        for cmd in batch_commands:
-            cmd.correlation_id = batch_id
 
     # Create batch via CommandBus
     result = await bus.create_batch(
