@@ -67,6 +67,11 @@ class MockProcessManager(BaseProcessManager[MockState, MockStep]):
             return MockStep.STEP_2
         return None
 
+    def get_compensation_step(self, step: MockStep) -> MockStep | None:
+        if step == MockStep.STEP_2:
+            return MockStep.STEP_1
+        return None
+
 
 @pytest.fixture
 def mock_bus():
@@ -78,10 +83,8 @@ def mock_bus():
 @pytest.fixture
 def mock_repo():
     repo = AsyncMock()
+    repo.get_completed_steps.return_value = ["step_2", "step_1"]
     return repo
-
-
-# ... imports ...
 
 
 @pytest.fixture
@@ -122,6 +125,18 @@ async def test_start(manager, mock_repo, mock_bus):
     updated_process = mock_repo.update.call_args[0][0]
     assert updated_process.status == ProcessStatus.WAITING_FOR_REPLY
     assert updated_process.current_step == MockStep.STEP_1
+
+
+@pytest.mark.asyncio
+async def test_start_with_conn(manager, mock_repo, mock_bus):
+    conn = AsyncMock(spec=AsyncConnection)
+    pid = await manager.start({"value": 10}, conn=conn)
+
+    assert isinstance(pid, uuid4().__class__)
+    assert mock_repo.save.called
+    # Verify save called with conn
+    # call_args is (args, kwargs). args[0] is process. kwargs['conn'] is conn.
+    assert mock_repo.save.call_args[1]["conn"] == conn
 
 
 @pytest.mark.asyncio
@@ -203,4 +218,28 @@ async def test_handle_failure(manager, mock_repo, mock_bus):
     assert process.status == ProcessStatus.WAITING_FOR_TSQ
     assert process.error_code == "ERR"
     assert not mock_bus.send.called
+    assert mock_repo.update.called
+
+
+@pytest.mark.asyncio
+async def test_handle_cancel(manager, mock_repo, mock_bus):
+    process = ProcessMetadata(
+        domain="d",
+        process_id=uuid4(),
+        process_type="t",
+        state=MockState(15),
+        status=ProcessStatus.WAITING_FOR_TSQ,
+        current_step=MockStep.STEP_2,
+    )
+
+    reply = Reply(
+        command_id=uuid4(), correlation_id=process.process_id, outcome=ReplyOutcome.CANCELED
+    )
+
+    await manager.handle_reply(reply, process)
+
+    assert process.status == ProcessStatus.COMPENSATED
+    assert process.completed_at is not None
+    # Compensation logic check
+    assert mock_bus.send.call_count == 1
     assert mock_repo.update.called

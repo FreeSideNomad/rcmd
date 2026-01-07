@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from psycopg import AsyncConnection
 
 from commandbus.models import ReplyOutcome
 from commandbus.process import (
@@ -52,6 +53,26 @@ async def test_save(repo, mock_pool):
     assert "INSERT INTO commandbus.process" in args[0]
     assert args[1][0] == "d"  # domain
     assert args[1][5] == {"foo": "bar"}  # state
+
+
+@pytest.mark.asyncio
+async def test_save_with_conn(repo, mock_pool):
+    process = ProcessMetadata(
+        domain="d",
+        process_id=uuid4(),
+        process_type="t",
+        state={"foo": "bar"},
+        status=ProcessStatus.PENDING,
+    )
+
+    conn = AsyncMock(spec=AsyncConnection)
+    await repo.save(process, conn=conn)
+
+    assert conn.execute.called
+    args = conn.execute.call_args[0]
+    assert "INSERT INTO commandbus.process" in args[0]
+    # Pool connection NOT used
+    assert not mock_pool.connection.called
 
 
 @pytest.mark.asyncio
