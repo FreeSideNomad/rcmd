@@ -7,6 +7,9 @@ from psycopg_pool import AsyncConnectionPool
 
 from commandbus.bus import CommandBus
 from commandbus.ops.troubleshooting import TroubleshootingQueue
+from commandbus.process import ProcessRepository
+
+from .process.statement_report import StatementReportProcess
 
 
 async def get_pool(request: Request) -> AsyncConnectionPool:
@@ -26,7 +29,19 @@ async def get_tsq(
     return TroubleshootingQueue(pool)
 
 
+async def get_process_repo(request: Request) -> ProcessRepository:
+    """Get ProcessRepository from app state."""
+    return request.app.state.process_repo
+
+
+async def get_report_process(request: Request) -> StatementReportProcess:
+    """Get StatementReportProcess from app state."""
+    return request.app.state.report_process
+
+
 # Type aliases for cleaner route signatures
 Pool = Annotated[AsyncConnectionPool, Depends(get_pool)]
 Bus = Annotated[CommandBus, Depends(get_command_bus)]
 TSQ = Annotated[TroubleshootingQueue, Depends(get_tsq)]
+ProcessRepo = Annotated[ProcessRepository, Depends(get_process_repo)]
+ReportProcess = Annotated[StatementReportProcess, Depends(get_report_process)]

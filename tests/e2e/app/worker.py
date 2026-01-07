@@ -5,10 +5,12 @@ import logging
 
 from psycopg_pool import AsyncConnectionPool
 
-from commandbus import HandlerRegistry, RetryPolicy, Worker
+from commandbus import CommandBus, HandlerRegistry, RetryPolicy, Worker
+from commandbus.process import PostgresProcessRepository, ProcessReplyRouter
 
 from .config import Config, ConfigStore, RetryConfig
-from .handlers import NoOpHandlers, TestCommandHandlers
+from .handlers import NoOpHandlers, ReportingHandlers, TestCommandHandlers
+from .process.statement_report import StatementReportProcess
 
 logger = logging.getLogger(__name__)
 
@@ -41,25 +43,24 @@ def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
     # Create handler instances with dependencies
     test_handlers = TestCommandHandlers(pool)
     no_op_handlers = NoOpHandlers(pool)
+    reporting_handlers = ReportingHandlers(pool)
 
     # Register all decorated handlers
     registry = HandlerRegistry()
     registry.register_instance(test_handlers)
     registry.register_instance(no_op_handlers)
+    registry.register_instance(reporting_handlers)
 
     return registry
 
 
 def create_worker(
     pool: AsyncConnectionPool,
+    domain: str = "e2e",
     retry_config: RetryConfig | None = None,
     visibility_timeout: int = 30,
 ) -> Worker:
-    """Create a worker with configurable settings.
-
-    Note: concurrency and poll_interval are passed to worker.run(),
-    not to the constructor.
-    """
+    """Create a worker for a specific domain with configurable settings."""
     if retry_config is None:
         retry_config = RetryConfig()
 
@@ -72,7 +73,7 @@ def create_worker(
 
     return Worker(
         pool=pool,
-        domain="e2e",
+        domain=domain,
         registry=registry,
         retry_policy=retry_policy,
         visibility_timeout=visibility_timeout,
@@ -80,32 +81,74 @@ def create_worker(
 
 
 async def run_worker() -> None:
-    """Run the worker with configuration from database."""
+    """Run workers and reply router with configuration from database."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     pool = await create_pool()
+    bus = CommandBus(pool)
+    process_repo = PostgresProcessRepository(pool)
+
+    # Process Managers
+    report_process = StatementReportProcess(
+        command_bus=bus,
+        process_repo=process_repo,
+        reply_queue="reporting__process_replies",
+        pool=pool,
+    )
+    managers = {report_process.process_type: report_process}
 
     try:
         config_store = await get_config_store(pool)
-        worker = create_worker(
+
+        # Workers
+        e2e_worker = create_worker(
             pool,
+            domain="e2e",
             retry_config=config_store.retry,
             visibility_timeout=config_store.worker.visibility_timeout,
         )
 
+        reporting_worker = create_worker(
+            pool,
+            domain="reporting",
+            retry_config=config_store.retry,
+            visibility_timeout=config_store.worker.visibility_timeout,
+        )
+
+        # Router
+        router = ProcessReplyRouter(
+            pool=pool,
+            process_repo=process_repo,
+            managers=managers,
+            reply_queue="reporting__process_replies",
+            domain="reporting",
+        )
+
         logger.info(
-            "Starting E2E worker with concurrency=%d, visibility_timeout=%ds, poll_interval=%.1fs",
+            "Starting E2E workers and router with concurrency=%d, "
+            "visibility_timeout=%ds, poll_interval=%.1fs",
             config_store.worker.concurrency,
             config_store.worker.visibility_timeout,
             config_store.worker.poll_interval,
         )
 
-        await worker.run(
-            concurrency=config_store.worker.concurrency,
-            poll_interval=config_store.worker.poll_interval,
+        # Run everything concurrently
+        await asyncio.gather(
+            e2e_worker.run(
+                concurrency=config_store.worker.concurrency,
+                poll_interval=config_store.worker.poll_interval,
+            ),
+            reporting_worker.run(
+                concurrency=config_store.worker.concurrency,
+                poll_interval=config_store.worker.poll_interval,
+            ),
+            router.run(
+                concurrency=config_store.worker.concurrency,
+                poll_interval=config_store.worker.poll_interval,
+            ),
         )
     finally:
         await pool.close()

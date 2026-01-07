@@ -1,0 +1,114 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Create Process Batch - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Create Process Batch</h1>
+    <p class="text-gray-500 dark:text-gray-400">Initiate a batch of Statement Report Processes</p>
+</div>
+
+<!-- Batch Form -->
+<div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+    <form id="process-batch-form" class="space-y-6">
+        <!-- Count -->
+        <div>
+            <label for="count" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Number of Processes</label>
+            <input type="number" id="count" min="1" max="100" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Limit 100 for demo performance</p>
+        </div>
+
+        <!-- Date Range -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label for="from-date" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">From Date</label>
+                <input type="date" id="from-date" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            </div>
+            <div>
+                <label for="to-date" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">To Date</label>
+                <input type="date" id="to-date" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            </div>
+        </div>
+
+        <!-- Output Type -->
+        <div>
+            <label for="output-type" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Output Type</label>
+            <select id="output-type" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <option value="pdf">PDF Report</option>
+                <option value="html">HTML Report</option>
+                <option value="csv">CSV Data</option>
+            </select>
+        </div>
+
+        <!-- Submit Button -->
+        <div class="flex gap-3 pt-4">
+            <button type="submit" id="create-btn" class="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+                Create Batch
+            </button>
+            <a href="/processes" class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 focus:ring-4 focus:ring-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700">
+                Cancel
+            </a>
+        </div>
+    </form>
+
+    <!-- Result Message -->
+    <div id="result-message" class="hidden mt-4 p-4 rounded-lg"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '/static/src/api.js';
+
+    const api = new ApiClient();
+
+    // Set default dates
+    const today = new Date();
+    const lastMonth = new Date();
+    lastMonth.setMonth(today.getMonth() - 1);
+
+    document.getElementById('to-date').valueAsDate = today;
+    document.getElementById('from-date').valueAsDate = lastMonth;
+
+    document.getElementById('process-batch-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const btn = document.getElementById('create-btn');
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Creating...';
+
+        const data = {
+            count: parseInt(document.getElementById('count').value),
+            from_date: document.getElementById('from-date').value,
+            to_date: document.getElementById('to-date').value,
+            output_type: document.getElementById('output-type').value
+        };
+
+        try {
+            const result = await api.post('/processes/batch', data);
+
+            const msgDiv = document.getElementById('result-message');
+            msgDiv.className = 'mt-4 p-4 rounded-lg bg-green-50 text-green-800 dark:bg-green-900 dark:text-green-300';
+            msgDiv.innerHTML = `
+                <div class="font-medium">Batch created successfully!</div>
+                <div class="mt-1 text-sm">Created ${result.total} processes. Redirecting...</div>
+            `;
+            msgDiv.classList.remove('hidden');
+
+            setTimeout(() => {
+                window.location.href = '/processes';
+            }, 1500);
+
+        } catch (err) {
+            const msgDiv = document.getElementById('result-message');
+            msgDiv.className = 'mt-4 p-4 rounded-lg bg-red-50 text-red-800 dark:bg-red-900 dark:text-red-300';
+            msgDiv.innerHTML = `Error: ${err.message}`;
+            msgDiv.classList.remove('hidden');
+
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    });
+</script>
+{% endblock %}
