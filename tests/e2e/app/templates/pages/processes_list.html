@@ -1,0 +1,199 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Process List - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex justify-between items-center">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Process List</h1>
+        <p class="text-gray-500 dark:text-gray-400">View and monitor process execution</p>
+    </div>
+    <a href="/processes/new-batch" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+        Create Batch
+    </a>
+</div>
+
+<!-- Filters -->
+<div class="bg-white rounded-lg shadow p-4 mb-6 dark:bg-gray-800">
+    <div class="flex gap-4">
+        <div class="w-48">
+            <label for="status-filter" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Status</label>
+            <select id="status-filter" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <option value="">All Statuses</option>
+                <option value="PENDING">PENDING</option>
+                <option value="IN_PROGRESS">IN_PROGRESS</option>
+                <option value="WAITING">WAITING</option>
+                <option value="WAITING_FOR_TSQ">WAITING_FOR_TSQ</option>
+                <option value="COMPENSATING">COMPENSATING</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="COMPENSATED">COMPENSATED</option>
+                <option value="FAILED">FAILED</option>
+                <option value="CANCELED">CANCELED</option>
+            </select>
+        </div>
+        <div class="flex items-end">
+            <button id="refresh-btn" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 focus:ring-4 focus:ring-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700">
+                Refresh
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Process Table -->
+<div class="bg-white rounded-lg shadow overflow-hidden dark:bg-gray-800">
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                    <th scope="col" class="px-6 py-3">Process ID</th>
+                    <th scope="col" class="px-6 py-3">Type</th>
+                    <th scope="col" class="px-6 py-3">Status</th>
+                    <th scope="col" class="px-6 py-3">Current Step</th>
+                    <th scope="col" class="px-6 py-3">Created At</th>
+                    <th scope="col" class="px-6 py-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="processes-table-body">
+                <!-- Populated by JS -->
+            </tbody>
+        </table>
+    </div>
+    <!-- Pagination -->
+    <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
+        <span class="text-sm text-gray-700 dark:text-gray-400">
+            Showing <span id="page-start">0</span> to <span id="page-end">0</span> of <span id="total-count">0</span> processes
+        </span>
+        <div class="inline-flex mt-2 xs:mt-0">
+            <button id="prev-page" class="px-4 py-2 text-sm font-medium text-white bg-gray-800 rounded-l hover:bg-gray-900 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white">
+                Prev
+            </button>
+            <button id="next-page" class="px-4 py-2 text-sm font-medium text-white bg-gray-800 border-0 border-l border-gray-700 rounded-r hover:bg-gray-900 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white">
+                Next
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '/static/src/api.js';
+    import { formatDate } from '/static/src/utils.js';
+
+    const api = new ApiClient();
+    let currentPage = 1;
+    const limit = 20;
+
+    function getStatusBadge(status) {
+        const colors = {
+            'PENDING': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+            'IN_PROGRESS': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+            'WAITING': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
+            'WAITING_FOR_TSQ': 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
+            'COMPENSATING': 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
+            'COMPLETED': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+            'COMPENSATED': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+            'FAILED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+            'CANCELED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+        };
+        const color = colors[status] || colors['PENDING'];
+        return `<span class="${color} text-xs font-medium mr-2 px-2.5 py-0.5 rounded">${status}</span>`;
+    }
+
+    async function loadProcesses() {
+        const status = document.getElementById('status-filter').value;
+        const offset = (currentPage - 1) * limit;
+
+        const params = { limit, offset };
+        if (status) params.status = status;
+
+        try {
+            const data = await api.get('/processes', params);
+            if (data) {
+                renderTable(data.processes);
+                updatePagination(data.total, offset);
+            }
+        } catch (err) {
+            console.error('Failed to load processes:', err);
+        }
+    }
+
+    function renderTable(processes) {
+        const tbody = document.getElementById('processes-table-body');
+        tbody.innerHTML = '';
+
+        if (!processes || processes.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="px-6 py-4 text-center">No processes found</td></tr>';
+            return;
+        }
+
+        processes.forEach(proc => {
+            const tr = document.createElement('tr');
+            tr.className = 'bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600';
+
+            tr.innerHTML = `
+                <td class="px-6 py-4 font-medium text-gray-900 whitespace-nowrap dark:text-white">
+                    <a href="/processes/${proc.process_id}" class="text-blue-600 hover:underline font-mono">${proc.process_id.substring(0, 8)}...</a>
+                </td>
+                <td class="px-6 py-4">${proc.process_type}</td>
+                <td class="px-6 py-4">${getStatusBadge(proc.status)}</td>
+                <td class="px-6 py-4 font-mono text-xs">${proc.current_step || '-'}</td>
+                <td class="px-6 py-4">${formatDate(proc.created_at)}</td>
+                <td class="px-6 py-4">
+                    <a href="/processes/${proc.process_id}" class="font-medium text-blue-600 dark:text-blue-500 hover:underline">View</a>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function updatePagination(total, offset) {
+        const start = total === 0 ? 0 : offset + 1;
+        const end = Math.min(offset + limit, total);
+
+        document.getElementById('page-start').textContent = start;
+        document.getElementById('page-end').textContent = end;
+        document.getElementById('total-count').textContent = total;
+
+        const prevBtn = document.getElementById('prev-page');
+        const nextBtn = document.getElementById('next-page');
+
+        prevBtn.disabled = currentPage === 1;
+        nextBtn.disabled = end >= total;
+
+        const enabledClass = "px-4 py-2 text-sm font-medium text-white bg-gray-800 rounded-l hover:bg-gray-900 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white";
+        const disabledClass = "px-4 py-2 text-sm font-medium text-gray-400 bg-gray-700 rounded-l cursor-not-allowed dark:bg-gray-700 dark:text-gray-500";
+
+        // Note: Tailwind classes logic for buttons is a bit manual here, simplified
+        prevBtn.className = prevBtn.disabled ? disabledClass : enabledClass.replace('rounded-r', 'rounded-l');
+        nextBtn.className = nextBtn.disabled ? disabledClass.replace('rounded-l', 'rounded-r') : enabledClass.replace('rounded-l', 'rounded-r');
+    }
+
+    // Event Listeners
+    document.getElementById('status-filter').addEventListener('change', () => {
+        currentPage = 1;
+        loadProcesses();
+    });
+
+    document.getElementById('refresh-btn').addEventListener('click', loadProcesses);
+
+    document.getElementById('prev-page').addEventListener('click', () => {
+        if (currentPage > 1) {
+            currentPage--;
+            loadProcesses();
+        }
+    });
+
+    document.getElementById('next-page').addEventListener('click', () => {
+        // We assume we can go next if button enabled
+        currentPage++;
+        loadProcesses();
+    });
+
+    // Auto-refresh every 5 seconds
+    setInterval(loadProcesses, 5000);
+
+    // Initial load
+    loadProcesses();
+</script>
+{% endblock %}
