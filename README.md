@@ -984,6 +984,108 @@ async def handle_report(self, cmd: Command, ctx: HandlerContext):
 
 ---
 
+## Process Manager
+
+The Process Manager feature orchestrates long-running, multi-step workflows by sending commands with a shared `process_id` (stored as `correlation_id`) and consuming replies from a dedicated queue. Each process tracks typed state, enforces step ordering, persists audit history, and pauses automatically if any command moves into the Troubleshooting Queue.
+
+### Building a Custom Process
+
+1. **Model your steps and state** – use `StrEnum` to describe each step and create a dataclass for your persisted state. The Statement Report example in `tests/e2e/app/process/statement_report.py` tracks the reporting window, account list, and intermediate file paths:
+
+   ```python
+   class StatementReportStep(StrEnum):
+       QUERY = "StatementQuery"
+       AGGREGATE = "StatementDataAggregation"
+       RENDER = "StatementRender"
+
+   @dataclass
+   class StatementReportState:
+       from_date: date
+       to_date: date
+       account_list: list[str]
+       output_type: OutputType
+       query_result_path: str | None = None
+       aggregated_data_path: str | None = None
+       rendered_file_path: str | None = None
+   ```
+
+2. **Subclass `BaseProcessManager`** – implement `process_type`, `domain`, `state_class`, and the lifecycle hooks:
+
+   ```python
+   class StatementReportProcess(
+       BaseProcessManager[StatementReportState, StatementReportStep]
+   ):
+       @property
+       def process_type(self) -> str:
+           return "StatementReport"
+
+       @property
+       def domain(self) -> str:
+           return "reporting"
+
+       @property
+       def state_class(self) -> type[StatementReportState]:
+           return StatementReportState
+
+       def get_first_step(self, state: StatementReportState) -> StatementReportStep:
+           return StatementReportStep.QUERY
+
+       async def build_command(
+           self, step: StatementReportStep, state: StatementReportState
+       ) -> ProcessCommand[Any]:
+           match step:
+               case StatementReportStep.QUERY:
+                   return ProcessCommand(
+                       command_type=step,
+                       data=StatementQueryRequest(
+                           from_date=state.from_date,
+                           to_date=state.to_date,
+                           account_list=state.account_list,
+                       ),
+                   )
+               case StatementReportStep.AGGREGATE:
+                   return ProcessCommand(
+                       command_type=step,
+                       data=StatementAggregationRequest(
+                           data_path=state.query_result_path or ""
+                       ),
+                   )
+               case StatementReportStep.RENDER:
+                   return ProcessCommand(
+                       command_type=step,
+                       data=StatementRenderRequest(
+                           aggregated_data_path=state.aggregated_data_path or "",
+                           output_type=state.output_type,
+                       ),
+                   )
+   ```
+
+   - `update_state` consumes `Reply` objects (optionally via `ProcessResponse.from_reply`) to mutate the in-memory state before it is persisted.
+   - `get_next_step` decides which step to execute next, or returns `None` when the process is finished.
+   - Optional: override `get_compensation_step` for sagas that require undo steps.
+
+3. **Wire up infrastructure**
+   - Create the process metadata/audit tables by running the latest migrations.
+   - Instantiate `PostgresProcessRepository` and your `BaseProcessManager` subclass with a `CommandBus`, connection pool, and reply queue name (e.g., `reporting__process_replies`). See `tests/e2e/app/main.py` for the FastAPI wiring.
+   - Start the `ProcessReplyRouter` alongside your workers so replies from the process queue are routed to the correct manager:
+
+     ```python
+     router = ProcessReplyRouter(
+         pool=pool,
+         process_repo=process_repo,
+         managers={report_process.process_type: report_process},
+         reply_queue="reporting__process_replies",
+         domain="reporting",
+     )
+     await router.run(concurrency=4)
+     ```
+
+4. **Start processes** – call `await process_manager.start(initial_payload)` to persist the initial state, send the first command, and begin tracking audit entries. Each command the manager sends automatically sets `correlation_id=process_id` and `reply_to=<process queue>`, allowing the router to deliver responses back to the manager.
+
+The complete Statement Report flow lives in `tests/e2e/app/process/statement_report.py` and demonstrates all extension points, including typed request/response dataclasses and state updates as each report step completes.
+
+---
+
 ## E2E Test Application
 
 The repository includes an end-to-end test application with a web UI for testing command processing with **probabilistic behaviors**.
