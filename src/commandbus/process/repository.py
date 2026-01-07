@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
+from psycopg.types.json import Jsonb
+
 from commandbus.models import ReplyOutcome
 from commandbus.process.models import (
     ProcessAuditEntry,
@@ -149,7 +151,7 @@ class PostgresProcessRepository:
                 process.process_type,
                 process.status.value,
                 process.current_step,
-                state_data,  # psycopg adapts dict to JSONB automatically
+                Jsonb(state_data),
                 process.error_code,
                 process.error_message,
                 process.created_at,
@@ -204,7 +206,7 @@ class PostgresProcessRepository:
             (
                 process.status.value,
                 process.current_step,
-                state_data,
+                Jsonb(state_data),
                 process.error_code,
                 process.error_message,
                 # updated_at is handled by NOW() in SQL as per AC3
@@ -337,10 +339,10 @@ class PostgresProcessRepository:
                 entry.step_name,
                 entry.command_id,
                 entry.command_type,
-                entry.command_data,
+                Jsonb(entry.command_data),
                 entry.sent_at,
                 entry.reply_outcome.value if entry.reply_outcome else None,
-                entry.reply_data,
+                Jsonb(entry.reply_data),
                 entry.received_at,
             ),
         )

@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from psycopg import AsyncConnection
+from psycopg.types.json import Jsonb
 
 from commandbus.models import ReplyOutcome
 from commandbus.process import (
@@ -52,7 +53,8 @@ async def test_save(repo, mock_pool):
     args = conn.execute.call_args[0]
     assert "INSERT INTO commandbus.process" in args[0]
     assert args[1][0] == "d"  # domain
-    assert args[1][5] == {"foo": "bar"}  # state
+    assert isinstance(args[1][5], Jsonb)
+    assert args[1][5].obj == {"foo": "bar"}  # state
 
 
 @pytest.mark.asyncio
@@ -122,7 +124,8 @@ async def test_update(repo, mock_pool):
     assert conn.execute.called
     args = conn.execute.call_args[0]
     assert "UPDATE commandbus.process" in args[0]
-    assert args[1][2] == {"foo": "baz"}  # state
+    assert isinstance(args[1][2], Jsonb)
+    assert args[1][2].obj == {"foo": "baz"}  # state
 
 
 @pytest.mark.asyncio
