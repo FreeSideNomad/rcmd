@@ -649,16 +649,26 @@ async def list_tsq_commands(
 
         # Get total count and all command IDs for "select all" feature
         async with pool.connection() as conn, conn.cursor() as cur:
-            await cur.execute(
-                """
-                    SELECT command_id
-                    FROM commandbus.command
-                    WHERE (%s IS NULL OR domain = %s)
-                      AND status = 'IN_TROUBLESHOOTING_QUEUE'
-                    ORDER BY created_at DESC
-                """,
-                (domain, domain if domain else None),
-            )
+            if domain:
+                await cur.execute(
+                    """
+                        SELECT command_id
+                        FROM commandbus.command
+                        WHERE domain = %s
+                          AND status = 'IN_TROUBLESHOOTING_QUEUE'
+                        ORDER BY created_at DESC
+                    """,
+                    (domain,),
+                )
+            else:
+                await cur.execute(
+                    """
+                        SELECT command_id
+                        FROM commandbus.command
+                        WHERE status = 'IN_TROUBLESHOOTING_QUEUE'
+                        ORDER BY created_at DESC
+                    """
+                )
             rows = await cur.fetchall()
             all_command_ids = [str(row[0]) for row in rows]
             total = len(all_command_ids)
