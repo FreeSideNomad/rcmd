@@ -594,13 +594,18 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
 
 @api_router.get("/tsq", response_model=TSQListResponse)
 async def list_tsq_commands(
-    tsq: TSQ, pool: Pool, limit: int = 100, offset: int = 0
+    tsq: TSQ,
+    pool: Pool,
+    limit: int = 100,
+    offset: int = 0,
+    domain: str | None = None,
 ) -> TSQListResponse:
     """List commands in troubleshooting queue."""
     limit = min(limit, 100)
 
     try:
-        commands = await tsq.list_troubleshooting(E2E_DOMAIN, limit=limit, offset=offset)
+        tsq_domain = domain or E2E_DOMAIN
+        commands = await tsq.list_troubleshooting(tsq_domain, limit=limit, offset=offset)
 
         result = [
             TSQCommandResponse(
@@ -624,10 +629,11 @@ async def list_tsq_commands(
             await cur.execute(
                 """
                     SELECT command_id FROM commandbus.command
-                    WHERE domain = %s AND status = 'IN_TROUBLESHOOTING_QUEUE'
+                    WHERE (%s IS NULL OR domain = %s)
+                      AND status = 'IN_TROUBLESHOOTING_QUEUE'
                     ORDER BY created_at DESC
                 """,
-                (E2E_DOMAIN,),
+                (domain, domain or tsq_domain),
             )
             rows = await cur.fetchall()
             all_command_ids = [str(row[0]) for row in rows]
