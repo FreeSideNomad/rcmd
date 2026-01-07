@@ -517,13 +517,25 @@ class ReplySummaryListResponse(BaseModel):
 # =============================================================================
 
 
+class ProcessStepBehavior(BaseModel):
+    """Probabilistic behavior configuration for each process step."""
+
+    query: CommandBehavior | None = None
+    aggregation: CommandBehavior | None = None
+    render: CommandBehavior | None = None
+
+
 class ProcessBatchCreateRequest(BaseModel):
     """Request to create a batch of statement report processes."""
 
-    count: int = Field(default=1, ge=1, le=100)
+    count: int = Field(default=1, ge=1, le=100_000)
     from_date: date = Field(default_factory=date.today)
     to_date: date = Field(default_factory=date.today)
     output_type: str = Field(default="pdf")
+    behavior: ProcessStepBehavior | None = Field(
+        default=None,
+        description="Optional behavior per process step (Query/Aggregation/Render)",
+    )
 
 
 class ProcessResponseSchema(BaseModel):
@@ -571,3 +583,11 @@ class ProcessDetailResponse(BaseModel):
     process: ProcessResponseSchema
     audit_trail: list[ProcessAuditEntrySchema]
     error: str | None = None
+
+
+class ProcessStepBehavior(BaseModel):
+    """Behavior configuration for each process step."""
+
+    query: CommandBehavior | None = None
+    aggregation: CommandBehavior | None = None
+    render: CommandBehavior | None = None

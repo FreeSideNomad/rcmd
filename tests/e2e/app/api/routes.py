@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime
 from typing import Any
@@ -45,6 +46,7 @@ from .schemas import (
     ProcessingRate,
     ProcessListResponse,
     ProcessResponseSchema,
+    ProcessStepBehavior,
     RecentActivityResponse,
     ReplyMessage,
     ReplyQueueResponse,
@@ -1348,6 +1350,25 @@ async def get_reply_summary(batch_id: UUID, pool: Pool) -> ReplySummaryResponse:
 # =============================================================================
 
 
+PROCESS_BATCH_CHUNK_SIZE = 500
+
+
+def _behavior_to_state(
+    behavior: ProcessStepBehavior | None,
+) -> dict[str, dict[str, Any]] | None:
+    """Convert ProcessStepBehavior to map keyed by StatementReportStep."""
+    if behavior is None:
+        return None
+    mapping: dict[str, dict[str, Any]] = {}
+    if behavior.query:
+        mapping["StatementQuery"] = behavior.query.model_dump(exclude_none=True)
+    if behavior.aggregation:
+        mapping["StatementDataAggregation"] = behavior.aggregation.model_dump(exclude_none=True)
+    if behavior.render:
+        mapping["StatementRender"] = behavior.render.model_dump(exclude_none=True)
+    return mapping or None
+
+
 @api_router.post("/processes/batch", response_model=ProcessListResponse, status_code=201)
 async def create_process_batch(
     request: ProcessBatchCreateRequest,
@@ -1362,23 +1383,31 @@ async def create_process_batch(
     def generate_accounts(count: int = 3) -> list[str]:
         return [f"ACC-{''.join(random.choices(string.digits, k=5))}" for _ in range(count)]
 
-    created_processes = []
+    created_processes: list[ProcessResponseSchema] = []
+    behavior_state = _behavior_to_state(request.behavior)
 
-    # Create processes sequentially (could be parallelized but this is fine for demo)
-    for _ in range(request.count):
-        initial_data = {
-            "from_date": request.from_date.isoformat(),
-            "to_date": request.to_date.isoformat(),
-            "account_list": generate_accounts(),
-            "output_type": request.output_type,
-        }
+    # Create processes in chunks to support large counts without timeouts
+    total = request.count
+    for chunk_start in range(0, total, PROCESS_BATCH_CHUNK_SIZE):
+        chunk_size = min(PROCESS_BATCH_CHUNK_SIZE, total - chunk_start)
+        payloads: list[dict[str, Any]] = []
+        for _ in range(chunk_size):
+            initial_data = {
+                "from_date": request.from_date.isoformat(),
+                "to_date": request.to_date.isoformat(),
+                "account_list": generate_accounts(),
+                "output_type": request.output_type,
+            }
+            if behavior_state:
+                initial_data["behavior"] = behavior_state
+            payloads.append(initial_data)
 
-        process_id = await report_process.start(initial_data)
+        process_ids = await asyncio.gather(*(report_process.start(data) for data in payloads))
 
-        # Fetch the created process to return details
-        process = await process_repo.get_by_id(report_process.domain, process_id)
-        if process:
-            # Rehydrate state for response
+        for process_id in process_ids:
+            process = await process_repo.get_by_id(report_process.domain, process_id)
+            if not process:
+                continue
             typed_state = report_process.state_class.from_dict(process.state)
             created_processes.append(
                 ProcessResponseSchema(

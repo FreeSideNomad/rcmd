@@ -262,6 +262,16 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
             async with self.pool.connection() as new_conn, new_conn.transaction():
                 await _handle_impl(new_conn)
 
+    async def before_send_command(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        step: TStep,
+        command_id: UUID,
+        command_payload: dict[str, Any],
+        conn: AsyncConnection[Any],
+    ) -> None:
+        """Hook for subclasses to mutate state or side effects before sending command."""
+
     async def _execute_step(
         self,
         process: ProcessMetadata[TState, TStep],
@@ -277,6 +287,7 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
             command.data.to_dict() if hasattr(command.data, "to_dict") else command.data
         )
 
+        await self.before_send_command(process, step, command_id, command_payload, conn)
         await self.command_bus.send(
             domain=self.domain,
             command_type=command.command_type,
