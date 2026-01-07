@@ -1,0 +1,240 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Process Detail - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex justify-between items-center">
+    <div>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Process Detail</h1>
+        <p class="text-gray-500 dark:text-gray-400 font-mono text-sm" id="process-id-header">...</p>
+    </div>
+    <a href="/processes" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 focus:ring-4 focus:ring-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700">
+        Back to List
+    </a>
+</div>
+
+<!-- Metadata & State -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <!-- Metadata -->
+    <div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Metadata</h2>
+        <div class="space-y-3 text-sm">
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Type</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="proc-type">...</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Domain</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="proc-domain">...</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Status</span>
+                <span id="proc-status">...</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Current Step</span>
+                <span class="font-mono text-gray-900 dark:text-white" id="proc-step">...</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Created At</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="proc-created">...</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Updated At</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="proc-updated">...</span>
+            </div>
+            <div class="flex justify-between">
+                <span class="text-gray-500 dark:text-gray-400">Completed At</span>
+                <span class="font-medium text-gray-900 dark:text-white" id="proc-completed">-</span>
+            </div>
+        </div>
+
+        <!-- Error Section (hidden by default) -->
+        <div id="error-section" class="hidden mt-6 p-4 bg-red-50 rounded-lg dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+            <h3 class="text-sm font-medium text-red-800 dark:text-red-300 mb-2">Error Information</h3>
+            <div class="text-sm text-red-700 dark:text-red-400">
+                <div>Code: <span id="error-code" class="font-mono font-bold"></span></div>
+                <div class="mt-1">Message: <span id="error-msg"></span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- State -->
+    <div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800 flex flex-col">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">State</h2>
+        <div class="flex-1 bg-gray-50 dark:bg-gray-900 rounded-lg p-4 overflow-auto max-h-96">
+            <pre class="text-xs font-mono text-gray-800 dark:text-gray-300 whitespace-pre-wrap" id="proc-state">Loading...</pre>
+        </div>
+    </div>
+</div>
+
+<!-- Audit Trail -->
+<div class="bg-white rounded-lg shadow overflow-hidden dark:bg-gray-800">
+    <div class="p-6 border-b border-gray-200 dark:border-gray-700">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Audit Trail</h2>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                    <th scope="col" class="px-6 py-3">Step</th>
+                    <th scope="col" class="px-6 py-3">Command</th>
+                    <th scope="col" class="px-6 py-3">Sent At</th>
+                    <th scope="col" class="px-6 py-3">Duration</th>
+                    <th scope="col" class="px-6 py-3">Outcome</th>
+                    <th scope="col" class="px-6 py-3">Data</th>
+                </tr>
+            </thead>
+            <tbody id="audit-table-body">
+                <!-- Populated by JS -->
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '/static/src/api.js';
+    import { formatDate, formatDuration } from '/static/src/utils.js';
+
+    const api = new ApiClient();
+    const processId = "{{ process_id }}";
+
+    function getStatusBadge(status) {
+        const colors = {
+            'PENDING': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+            'IN_PROGRESS': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+            'WAITING': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
+            'WAITING_FOR_TSQ': 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
+            'COMPENSATING': 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
+            'COMPLETED': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+            'COMPENSATED': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+            'FAILED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+            'CANCELED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+        };
+        const color = colors[status] || colors['PENDING'];
+        return `<span class="${color} text-xs font-medium px-2.5 py-0.5 rounded">${status}</span>`;
+    }
+
+    function getOutcomeBadge(outcome) {
+        if (!outcome) return '<span class="bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300 text-xs font-medium px-2.5 py-0.5 rounded">PENDING</span>';
+
+        const colors = {
+            'SUCCESS': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+            'FAILED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+            'CANCELED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+        };
+        const color = colors[outcome] || 'bg-gray-100 text-gray-800';
+        return `<span class="${color} text-xs font-medium px-2.5 py-0.5 rounded">${outcome}</span>`;
+    }
+
+    async function loadProcess() {
+        try {
+            const data = await api.get(`/processes/${processId}`);
+            if (data) {
+                renderProcess(data.process);
+                renderAudit(data.audit_trail);
+            }
+        } catch (err) {
+            console.error('Failed to load process:', err);
+        }
+    }
+
+    function renderProcess(proc) {
+        document.getElementById('process-id-header').textContent = proc.process_id;
+        document.getElementById('proc-type').textContent = proc.process_type;
+        document.getElementById('proc-domain').textContent = proc.domain;
+        document.getElementById('proc-status').innerHTML = getStatusBadge(proc.status);
+        document.getElementById('proc-step').textContent = proc.current_step || '-';
+        document.getElementById('proc-created').textContent = formatDate(proc.created_at);
+        document.getElementById('proc-updated').textContent = formatDate(proc.updated_at);
+        document.getElementById('proc-completed').textContent = formatDate(proc.completed_at);
+
+        document.getElementById('proc-state').textContent = JSON.stringify(proc.state, null, 2);
+
+        if (proc.error_code || proc.error_message) {
+            document.getElementById('error-section').classList.remove('hidden');
+            document.getElementById('error-code').textContent = proc.error_code || '-';
+            document.getElementById('error-msg').textContent = proc.error_message || '-';
+        }
+    }
+
+    function renderAudit(trail) {
+        const tbody = document.getElementById('audit-table-body');
+        tbody.innerHTML = '';
+
+        if (!trail || trail.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="px-6 py-4 text-center">No audit trail found</td></tr>';
+            return;
+        }
+
+        trail.forEach((entry, index) => {
+            const tr = document.createElement('tr');
+            tr.className = 'bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600';
+
+            let duration = '-';
+            if (entry.sent_at && entry.received_at) {
+                const start = new Date(entry.sent_at);
+                const end = new Date(entry.received_at);
+                duration = formatDuration(end - start);
+            }
+
+            // Expandable details ID
+            const detailsId = `details-${index}`;
+
+            tr.innerHTML = `
+                <td class="px-6 py-4 font-medium text-gray-900 whitespace-nowrap dark:text-white">${entry.step_name}</td>
+                <td class="px-6 py-4">
+                    <div class="text-xs font-mono">${entry.command_type}</div>
+                    <div class="text-[10px] font-mono text-gray-500">${entry.command_id.substring(0, 8)}...</div>
+                </td>
+                <td class="px-6 py-4">${formatDate(entry.sent_at)}</td>
+                <td class="px-6 py-4">${duration}</td>
+                <td class="px-6 py-4">${getOutcomeBadge(entry.reply_outcome)}</td>
+                <td class="px-6 py-4">
+                    <button onclick="document.getElementById('${detailsId}').classList.toggle('hidden')" class="text-blue-600 hover:underline text-xs">
+                        Details
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+
+            // Details row
+            const detailsTr = document.createElement('tr');
+            detailsTr.id = detailsId;
+            detailsTr.className = 'hidden bg-gray-50 dark:bg-gray-900';
+            detailsTr.innerHTML = `
+                <td colspan="6" class="px-6 py-4">
+                    <div class="grid grid-cols-2 gap-4 text-xs font-mono">
+                        <div>
+                            <div class="font-semibold mb-1 text-gray-700 dark:text-gray-300">Command Data:</div>
+                            <pre class="bg-gray-100 dark:bg-gray-800 p-2 rounded overflow-auto max-h-40">${JSON.stringify(entry.command_data, null, 2)}</pre>
+                        </div>
+                        <div>
+                            <div class="font-semibold mb-1 text-gray-700 dark:text-gray-300">Reply Data:</div>
+                            <pre class="bg-gray-100 dark:bg-gray-800 p-2 rounded overflow-auto max-h-40">${entry.reply_data ? JSON.stringify(entry.reply_data, null, 2) : 'No reply data'}</pre>
+                        </div>
+                    </div>
+                </td>
+            `;
+            tbody.appendChild(detailsTr);
+        });
+    }
+
+    // Refresh every 5 seconds if status is active
+    setInterval(() => {
+        // Check if we should refresh (simple heuristic: status element exists)
+        if (document.getElementById('proc-status')) {
+            const statusText = document.getElementById('proc-status').innerText;
+            if (['IN_PROGRESS', 'WAITING', 'COMPENSATING'].includes(statusText)) {
+                loadProcess();
+            }
+        }
+    }, 5000);
+
+    // Initial load
+    loadProcess();
+</script>
+{% endblock %}
