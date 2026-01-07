@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from psycopg.types.json import Json
 
 from commandbus import BatchCommand
-from commandbus.models import SendRequest
+from commandbus.models import SendRequest, TroubleshootingItem
 
 from ..dependencies import TSQ, Bus, Pool, ProcessRepo, ReportProcess
 from ..models import TestCommandRepository
@@ -604,8 +604,31 @@ async def list_tsq_commands(
     limit = min(limit, 100)
 
     try:
-        tsq_domain = domain or E2E_DOMAIN
-        commands = await tsq.list_troubleshooting(tsq_domain, limit=limit, offset=offset)
+        domains = await _get_tsq_domains(pool, domain)
+        if not domains and not domain:
+            domains = [E2E_DOMAIN]
+
+        remaining = limit
+        start = offset
+        items: list[TroubleshootingItem] = []
+
+        for dom in domains:
+            if remaining <= 0:
+                break
+
+            dom_total = await tsq.count_troubleshooting(dom)
+            if start >= dom_total:
+                start -= dom_total
+                continue
+
+            fetch_limit = min(remaining, dom_total - start)
+            dom_items = await tsq.list_troubleshooting(dom, limit=fetch_limit, offset=start)
+            items.extend(dom_items)
+
+            remaining -= len(dom_items)
+            start = 0
+
+        commands = items
 
         result = [
             TSQCommandResponse(
@@ -628,12 +651,13 @@ async def list_tsq_commands(
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                    SELECT command_id FROM commandbus.command
+                    SELECT command_id
+                    FROM commandbus.command
                     WHERE (%s IS NULL OR domain = %s)
                       AND status = 'IN_TROUBLESHOOTING_QUEUE'
                     ORDER BY created_at DESC
                 """,
-                (domain, domain or tsq_domain),
+                (domain, domain if domain else None),
             )
             rows = await cur.fetchall()
             all_command_ids = [str(row[0]) for row in rows]
@@ -652,13 +676,14 @@ async def list_tsq_commands(
 
 @api_router.post("/tsq/{command_id}/retry", response_model=TSQActionResponse)
 async def retry_tsq_command(
-    command_id: str, tsq: TSQ, request: TSQOperatorRequest | None = None
+    command_id: str, tsq: TSQ, pool: Pool, request: TSQOperatorRequest | None = None
 ) -> TSQActionResponse:
     """Retry a command from TSQ."""
     operator = request.operator if request else "e2e-ui"
 
     try:
-        await tsq.operator_retry(E2E_DOMAIN, UUID(command_id), operator=operator)
+        domain = await _get_command_domain(pool, UUID(command_id))
+        await tsq.operator_retry(domain, UUID(command_id), operator=operator)
         return TSQActionResponse(
             command_id=command_id,
             status="PENDING",
@@ -670,14 +695,15 @@ async def retry_tsq_command(
 
 @api_router.post("/tsq/{command_id}/cancel", response_model=TSQActionResponse)
 async def cancel_tsq_command(
-    command_id: str, tsq: TSQ, request: TSQOperatorRequest | None = None
+    command_id: str, tsq: TSQ, pool: Pool, request: TSQOperatorRequest | None = None
 ) -> TSQActionResponse:
     """Cancel a command in TSQ."""
     operator = request.operator if request else "e2e-ui"
     reason = request.reason if request else "Cancelled via UI"
 
     try:
-        await tsq.operator_cancel(E2E_DOMAIN, UUID(command_id), operator=operator, reason=reason)
+        domain = await _get_command_domain(pool, UUID(command_id))
+        await tsq.operator_cancel(domain, UUID(command_id), operator=operator, reason=reason)
         return TSQActionResponse(
             command_id=command_id,
             status="CANCELLED",
@@ -689,15 +715,16 @@ async def cancel_tsq_command(
 
 @api_router.post("/tsq/{command_id}/complete", response_model=TSQActionResponse)
 async def complete_tsq_command(
-    command_id: str, tsq: TSQ, request: TSQOperatorRequest | None = None
+    command_id: str, tsq: TSQ, pool: Pool, request: TSQOperatorRequest | None = None
 ) -> TSQActionResponse:
     """Manually complete a command in TSQ."""
     operator = request.operator if request else "e2e-ui"
     result_data = request.result_data if request else None
 
     try:
+        domain = await _get_command_domain(pool, UUID(command_id))
         await tsq.operator_complete(
-            E2E_DOMAIN,
+            domain,
             UUID(command_id),
             result_data=result_data,
             operator=operator,
@@ -714,13 +741,16 @@ async def complete_tsq_command(
 
 
 @api_router.post("/tsq/bulk-retry", response_model=TSQBulkRetryResponse)
-async def bulk_retry_tsq_commands(request: TSQBulkRetryRequest, tsq: TSQ) -> TSQBulkRetryResponse:
+async def bulk_retry_tsq_commands(
+    request: TSQBulkRetryRequest, tsq: TSQ, pool: Pool
+) -> TSQBulkRetryResponse:
     """Retry multiple commands from TSQ."""
     retried = 0
     errors = []
     for cmd_id in request.command_ids:
         try:
-            await tsq.operator_retry(E2E_DOMAIN, UUID(cmd_id), operator=request.operator)
+            domain = await _get_command_domain(pool, UUID(cmd_id))
+            await tsq.operator_retry(domain, UUID(cmd_id), operator=request.operator)
             retried += 1
         except Exception as e:
             errors.append(f"{cmd_id}: {e}")
@@ -1551,3 +1581,38 @@ async def get_process_detail(
     ]
 
     return ProcessDetailResponse(process=process_resp, audit_trail=audit_resp)
+
+
+async def _get_tsq_domains(pool: Pool, domain: str | None) -> list[str]:
+    """Return list of domains with commands in TSQ (filtered if provided)."""
+    if domain:
+        return [domain]
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+                SELECT DISTINCT domain
+                FROM commandbus.command
+                WHERE status = 'IN_TROUBLESHOOTING_QUEUE'
+                ORDER BY domain
+            """
+        )
+        rows = await cur.fetchall()
+    return [row[0] for row in rows] if rows else []
+
+
+async def _get_command_domain(pool: Pool, command_id: UUID) -> str:
+    """Resolve the domain for a command ID."""
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+                SELECT domain FROM commandbus.command WHERE command_id = %s
+            """,
+            (command_id,),
+        )
+        row = await cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Command {command_id} not found")
+
+    return row[0]
