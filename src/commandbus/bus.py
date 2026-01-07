@@ -27,6 +27,7 @@ from commandbus.repositories.batch import PostgresBatchRepository
 from commandbus.repositories.command import PostgresCommandRepository
 
 if TYPE_CHECKING:
+    from psycopg import AsyncConnection
     from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,7 @@ class CommandBus:
         reply_to: str | None = None,
         max_attempts: int | None = None,
         batch_id: UUID | None = None,
+        conn: AsyncConnection[Any] | None = None,
     ) -> SendResult:
         """Send a command to a domain queue.
 
@@ -126,6 +128,7 @@ class CommandBus:
             reply_to: Optional reply queue name
             max_attempts: Max retry attempts (defaults to bus default)
             batch_id: Optional batch ID to associate this command with
+            conn: Optional database connection (for external transaction)
 
         Returns:
             SendResult with command_id and msg_id
@@ -134,77 +137,116 @@ class CommandBus:
             DuplicateCommandError: If command_id already exists in this domain
             BatchNotFoundError: If batch_id is provided but batch does not exist
         """
+        if conn is not None:
+            return await self._send_impl(
+                conn,
+                domain,
+                command_type,
+                command_id,
+                data,
+                correlation_id,
+                reply_to,
+                max_attempts,
+                batch_id,
+            )
+
+        async with self._pool.connection() as new_conn, new_conn.transaction():
+            return await self._send_impl(
+                new_conn,
+                domain,
+                command_type,
+                command_id,
+                data,
+                correlation_id,
+                reply_to,
+                max_attempts,
+                batch_id,
+            )
+
+    async def _send_impl(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        command_type: str,
+        command_id: UUID,
+        data: dict[str, Any],
+        correlation_id: UUID | None,
+        reply_to: str | None,
+        max_attempts: int | None,
+        batch_id: UUID | None,
+    ) -> SendResult:
+        """Internal implementation of send."""
         queue_name = _make_queue_name(domain)
         effective_max_attempts = max_attempts or self._default_max_attempts
         effective_correlation_id = correlation_id if correlation_id is not None else uuid4()
 
-        async with self._pool.connection() as conn, conn.transaction():
-            # Validate batch_id if provided
-            if batch_id is not None and not await self._batch_repo.exists(domain, batch_id, conn):
-                raise BatchNotFoundError(domain, str(batch_id))
+        # Validate batch_id if provided
+        if batch_id is not None and not await self._batch_repo.exists(domain, batch_id, conn):
+            raise BatchNotFoundError(domain, str(batch_id))
 
-            # Check for duplicate command
-            if await self._command_repo.exists(domain, command_id, conn):
-                raise DuplicateCommandError(domain, str(command_id))
+        # Check for duplicate command
+        if await self._command_repo.exists(domain, command_id, conn):
+            raise DuplicateCommandError(domain, str(command_id))
 
-            # Create the command message payload
-            message = self._build_message(
-                domain=domain,
-                command_type=command_type,
-                command_id=command_id,
-                data=data,
-                correlation_id=effective_correlation_id,
-                reply_to=reply_to,
-            )
+        # Create the command message payload
+        message = self._build_message(
+            domain=domain,
+            command_type=command_type,
+            command_id=command_id,
+            data=data,
+            correlation_id=effective_correlation_id,
+            reply_to=reply_to,
+        )
 
-            # Send to PGMQ queue
-            msg_id = await self._pgmq.send(queue_name, message, conn=conn)
+        # Send to PGMQ queue
+        msg_id = await self._pgmq.send(queue_name, message, conn=conn)
 
-            # Create metadata record
-            now = datetime.now(UTC)
-            metadata = CommandMetadata(
-                domain=domain,
-                command_id=command_id,
-                command_type=command_type,
-                status=CommandStatus.PENDING,
-                attempts=0,
-                max_attempts=effective_max_attempts,
-                msg_id=msg_id,
-                correlation_id=effective_correlation_id,
-                reply_to=reply_to,
-                created_at=now,
-                updated_at=now,
-                batch_id=batch_id,
-            )
+        # Create metadata record
+        now = datetime.now(UTC)
+        metadata = CommandMetadata(
+            domain=domain,
+            command_id=command_id,
+            command_type=command_type,
+            status=CommandStatus.PENDING,
+            attempts=0,
+            max_attempts=effective_max_attempts,
+            msg_id=msg_id,
+            correlation_id=effective_correlation_id,
+            reply_to=reply_to,
+            created_at=now,
+            updated_at=now,
+            batch_id=batch_id,
+        )
 
-            # Save metadata
-            await self._command_repo.save(metadata, queue_name, conn)
+        # Save metadata
+        await self._command_repo.save(metadata, queue_name, conn)
 
-            # Record audit event
-            await self._audit_logger.log(
-                domain=domain,
-                command_id=command_id,
-                event_type=AuditEventType.SENT,
-                details={
-                    "command_type": command_type,
-                    "correlation_id": str(effective_correlation_id),
-                    "reply_to": reply_to,
-                    "msg_id": msg_id,
-                    "batch_id": str(batch_id) if batch_id else None,
-                },
-                conn=conn,
-            )
+        # Record audit event
+        await self._audit_logger.log(
+            domain=domain,
+            command_id=command_id,
+            event_type=AuditEventType.SENT,
+            details={
+                "command_type": command_type,
+                "correlation_id": str(effective_correlation_id),
+                "reply_to": reply_to,
+                "msg_id": msg_id,
+                "batch_id": str(batch_id) if batch_id else None,
+            },
+            conn=conn,
+        )
 
-            logger.info(
-                f"Sent command {domain}.{command_type} (command_id={command_id}, msg_id={msg_id})"
-            )
+        logger.info(
+            f"Sent command {domain}.{command_type} (command_id={command_id}, msg_id={msg_id})"
+        )
 
-            return SendResult(command_id=command_id, msg_id=msg_id)
+        return SendResult(command_id=command_id, msg_id=msg_id)
 
     async def send_batch(
         self,
         requests: list[SendRequest],
         chunk_size: int = DEFAULT_BATCH_CHUNK_SIZE,
+        conn: AsyncConnection[Any] | None = None,
     ) -> BatchSendResult:
         """Send multiple commands efficiently in batched transactions.
 
@@ -214,6 +256,8 @@ class CommandBus:
         Args:
             requests: List of SendRequest objects
             chunk_size: Max commands per transaction (default 10,000)
+            conn: Optional database connection (for external transaction).
+                  If provided, all chunks are sent on this connection (caller manages transaction).
 
         Returns:
             BatchSendResult with all results and stats
@@ -244,9 +288,17 @@ class CommandBus:
         domain_chunks = _chunked(requests, chunk_size)
 
         for chunk in domain_chunks:
-            chunk_results = await self._send_batch_chunk(chunk)
-            all_results.extend(chunk_results)
-            chunks_processed += 1
+            if conn is not None:
+                # Use provided connection (caller manages transaction)
+                chunk_results = await self._send_batch_chunk(conn, chunk)
+                all_results.extend(chunk_results)
+                chunks_processed += 1
+            else:
+                # Create new connection and transaction for each chunk
+                async with self._pool.connection() as new_conn, new_conn.transaction():
+                    chunk_results = await self._send_batch_chunk(new_conn, chunk)
+                    all_results.extend(chunk_results)
+                    chunks_processed += 1
 
         logger.info(f"Sent {len(all_results)} commands in {chunks_processed} chunks")
 
@@ -258,11 +310,13 @@ class CommandBus:
 
     async def _send_batch_chunk(
         self,
+        conn: AsyncConnection[Any],
         requests: list[SendRequest],
     ) -> list[SendResult]:
         """Process a single chunk of send requests in one transaction.
 
         Args:
+            conn: Database connection
             requests: List of requests to process
 
         Returns:
@@ -280,89 +334,88 @@ class CommandBus:
         all_results: list[SendResult] = []
         now = datetime.now(UTC)
 
-        async with self._pool.connection() as conn, conn.transaction():
-            for domain, domain_requests in by_domain.items():
-                queue_name = _make_queue_name(domain)
+        for domain, domain_requests in by_domain.items():
+            queue_name = _make_queue_name(domain)
 
-                # Check for duplicates
-                command_ids = [r.command_id for r in domain_requests]
-                existing = await self._command_repo.exists_batch(domain, command_ids, conn)
-                if existing:
-                    # Find first duplicate for error message
-                    first_dup = next(r for r in domain_requests if r.command_id in existing)
-                    raise DuplicateCommandError(domain, str(first_dup.command_id))
+            # Check for duplicates
+            command_ids = [r.command_id for r in domain_requests]
+            existing = await self._command_repo.exists_batch(domain, command_ids, conn)
+            if existing:
+                # Find first duplicate for error message
+                first_dup = next(r for r in domain_requests if r.command_id in existing)
+                raise DuplicateCommandError(domain, str(first_dup.command_id))
 
-                # Build all messages
-                messages: list[dict[str, Any]] = []
-                metadata_list: list[CommandMetadata] = []
-                audit_events: list[tuple[str, UUID, AuditEventType, dict[str, Any] | None]] = []
+            # Build all messages
+            messages: list[dict[str, Any]] = []
+            metadata_list: list[CommandMetadata] = []
+            audit_events: list[tuple[str, UUID, AuditEventType, dict[str, Any] | None]] = []
 
-                for req in domain_requests:
-                    effective_max_attempts = req.max_attempts or self._default_max_attempts
-                    effective_correlation_id = (
-                        req.correlation_id if req.correlation_id is not None else uuid4()
+            for req in domain_requests:
+                effective_max_attempts = req.max_attempts or self._default_max_attempts
+                effective_correlation_id = (
+                    req.correlation_id if req.correlation_id is not None else uuid4()
+                )
+
+                message = self._build_message(
+                    domain=req.domain,
+                    command_type=req.command_type,
+                    command_id=req.command_id,
+                    data=req.data,
+                    correlation_id=effective_correlation_id,
+                    reply_to=req.reply_to,
+                )
+                messages.append(message)
+
+            # Batch send to PGMQ (no NOTIFY yet)
+            msg_ids = await self._pgmq.send_batch(queue_name, messages, conn=conn)
+
+            # Build metadata and audit events with msg_ids
+            for i, req in enumerate(domain_requests):
+                msg_id = msg_ids[i]
+                effective_max_attempts = req.max_attempts or self._default_max_attempts
+                effective_correlation_id = (
+                    req.correlation_id if req.correlation_id is not None else uuid4()
+                )
+
+                metadata = CommandMetadata(
+                    domain=req.domain,
+                    command_id=req.command_id,
+                    command_type=req.command_type,
+                    status=CommandStatus.PENDING,
+                    attempts=0,
+                    max_attempts=effective_max_attempts,
+                    msg_id=msg_id,
+                    correlation_id=effective_correlation_id,
+                    reply_to=req.reply_to,
+                    created_at=now,
+                    updated_at=now,
+                )
+                metadata_list.append(metadata)
+
+                audit_events.append(
+                    (
+                        req.domain,
+                        req.command_id,
+                        AuditEventType.SENT,
+                        {
+                            "command_type": req.command_type,
+                            "correlation_id": str(effective_correlation_id),
+                            "reply_to": req.reply_to,
+                            "msg_id": msg_id,
+                        },
                     )
+                )
 
-                    message = self._build_message(
-                        domain=req.domain,
-                        command_type=req.command_type,
-                        command_id=req.command_id,
-                        data=req.data,
-                        correlation_id=effective_correlation_id,
-                        reply_to=req.reply_to,
-                    )
-                    messages.append(message)
+                all_results.append(SendResult(command_id=req.command_id, msg_id=msg_id))
 
-                # Batch send to PGMQ (no NOTIFY yet)
-                msg_ids = await self._pgmq.send_batch(queue_name, messages, conn=conn)
+            # Batch save metadata
+            await self._command_repo.save_batch(metadata_list, queue_name, conn)
 
-                # Build metadata and audit events with msg_ids
-                for i, req in enumerate(domain_requests):
-                    msg_id = msg_ids[i]
-                    effective_max_attempts = req.max_attempts or self._default_max_attempts
-                    effective_correlation_id = (
-                        req.correlation_id if req.correlation_id is not None else uuid4()
-                    )
+            # Batch log audit events
+            await self._audit_logger.log_batch(audit_events, conn)
 
-                    metadata = CommandMetadata(
-                        domain=req.domain,
-                        command_id=req.command_id,
-                        command_type=req.command_type,
-                        status=CommandStatus.PENDING,
-                        attempts=0,
-                        max_attempts=effective_max_attempts,
-                        msg_id=msg_id,
-                        correlation_id=effective_correlation_id,
-                        reply_to=req.reply_to,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    metadata_list.append(metadata)
-
-                    audit_events.append(
-                        (
-                            req.domain,
-                            req.command_id,
-                            AuditEventType.SENT,
-                            {
-                                "command_type": req.command_type,
-                                "correlation_id": str(effective_correlation_id),
-                                "reply_to": req.reply_to,
-                                "msg_id": msg_id,
-                            },
-                        )
-                    )
-
-                    all_results.append(SendResult(command_id=req.command_id, msg_id=msg_id))
-
-                # Batch save metadata
-                await self._command_repo.save_batch(metadata_list, queue_name, conn)
-
-                # Batch log audit events
-                await self._audit_logger.log_batch(audit_events, conn)
-
-                # Send NOTIFY for this domain (once per chunk per domain)
-                await self._pgmq.notify(queue_name, conn)
+            # Send NOTIFY for this domain (once per chunk per domain)
+            await self._pgmq.notify(queue_name, conn)
 
         return all_results
 
