@@ -8,29 +8,13 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import AsyncConnectionPool
 
-from commandbus import CommandBus, HandlerRegistry
+from commandbus import CommandBus
 from commandbus.pgmq import PgmqClient
 from commandbus.process import PostgresProcessRepository
 
 from .config import Config
-from .handlers import ReportingHandlers, TestCommandHandlers
+from .handlers import create_registry
 from .process.statement_report import StatementReportProcess
-
-
-def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
-    """Composition root - wire all handler dependencies.
-
-    Following F007 pattern: repositories -> services -> handlers.
-    For E2E demo, handlers are simple - no service layer needed.
-    """
-    handlers = TestCommandHandlers(pool)
-    reporting_handlers = ReportingHandlers(pool)
-
-    registry = HandlerRegistry()
-    registry.register_instance(handlers)
-    registry.register_instance(reporting_handlers)
-
-    return registry
 
 
 @asynccontextmanager
