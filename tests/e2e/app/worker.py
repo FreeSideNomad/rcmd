@@ -59,12 +59,14 @@ def create_worker(
     domain: str = "e2e",
     retry_config: RetryConfig | None = None,
     visibility_timeout: int = 30,
+    registry: HandlerRegistry | None = None,
 ) -> Worker:
     """Create a worker for a specific domain with configurable settings."""
     if retry_config is None:
         retry_config = RetryConfig()
 
-    registry = create_registry(pool)
+    if registry is None:
+        registry = create_registry(pool)
 
     retry_policy = RetryPolicy(
         max_attempts=retry_config.max_attempts,
@@ -88,6 +90,7 @@ async def run_worker() -> None:
     )
 
     pool = await create_pool()
+    registry = create_registry(pool)
     bus = CommandBus(pool)
     process_repo = PostgresProcessRepository(pool)
 
@@ -109,6 +112,7 @@ async def run_worker() -> None:
             domain="e2e",
             retry_config=config_store.retry,
             visibility_timeout=config_store.worker.visibility_timeout,
+            registry=registry,
         )
 
         reporting_worker = create_worker(
@@ -116,6 +120,7 @@ async def run_worker() -> None:
             domain="reporting",
             retry_config=config_store.retry,
             visibility_timeout=config_store.worker.visibility_timeout,
+            registry=registry,
         )
 
         # Router
