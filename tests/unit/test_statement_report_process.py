@@ -52,18 +52,20 @@ async def test_before_send_command_persists_behavior():
     metadata = build_metadata(state)
 
     command_id = uuid4()
+    conn = AsyncMock()
     await process.before_send_command(
         metadata,
         StatementReportStep.QUERY,
         command_id,
         {},
-        AsyncMock(),
+        conn,
     )
 
     behavior_repo.create.assert_awaited_once_with(
         command_id,
         {"fail_permanent_pct": 10.0},
         {"process_id": str(metadata.process_id), "step": "StatementQuery"},
+        conn=conn,
     )
 
 
