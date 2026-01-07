@@ -339,10 +339,10 @@ class PostgresProcessRepository:
                 entry.step_name,
                 entry.command_id,
                 entry.command_type,
-                Jsonb(entry.command_data),
+                Jsonb(entry.command_data) if entry.command_data is not None else None,
                 entry.sent_at,
                 entry.reply_outcome.value if entry.reply_outcome else None,
-                Jsonb(entry.reply_data),
+                Jsonb(entry.reply_data) if entry.reply_data is not None else None,
                 entry.received_at,
             ),
         )
@@ -380,7 +380,7 @@ class PostgresProcessRepository:
             """,
             (
                 entry.reply_outcome.value if entry.reply_outcome else None,
-                entry.reply_data,
+                Jsonb(entry.reply_data) if entry.reply_data is not None else None,
                 entry.received_at,
                 domain,
                 process_id,
