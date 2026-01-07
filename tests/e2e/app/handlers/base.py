@@ -9,7 +9,7 @@ from psycopg_pool import AsyncConnectionPool
 from commandbus import Command, HandlerContext, handler
 from commandbus.exceptions import PermanentCommandError, TransientCommandError
 
-from .models import TestCommandRepository
+from ..models import TestCommandRepository
 
 # Default visibility timeout for timeout simulation
 DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 30

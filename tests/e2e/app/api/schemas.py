@@ -1,6 +1,6 @@
 """Pydantic schema definitions for E2E API."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -509,4 +509,65 @@ class ReplySummaryListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    error: str | None = None
+
+
+# =============================================================================
+# Process Schemas
+# =============================================================================
+
+
+class ProcessBatchCreateRequest(BaseModel):
+    """Request to create a batch of statement report processes."""
+
+    count: int = Field(default=1, ge=1, le=100)
+    from_date: date = Field(default_factory=date.today)
+    to_date: date = Field(default_factory=date.today)
+    output_type: str = Field(default="pdf")
+
+
+class ProcessResponseSchema(BaseModel):
+    """Details of a process instance."""
+
+    domain: str
+    process_id: UUID
+    process_type: str
+    status: str
+    current_step: str | None = None
+    state: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class ProcessListResponse(BaseModel):
+    """Paginated list of processes."""
+
+    processes: list[ProcessResponseSchema]
+    total: int
+    limit: int
+    offset: int
+    error: str | None = None
+
+
+class ProcessAuditEntrySchema(BaseModel):
+    """Audit entry for a process step."""
+
+    step_name: str
+    command_id: UUID
+    command_type: str
+    command_data: dict[str, Any] | None = None
+    sent_at: datetime
+    reply_outcome: str | None = None
+    reply_data: dict[str, Any] | None = None
+    received_at: datetime | None = None
+
+
+class ProcessDetailResponse(BaseModel):
+    """Full process details including audit trail."""
+
+    process: ProcessResponseSchema
+    audit_trail: list[ProcessAuditEntrySchema]
     error: str | None = None

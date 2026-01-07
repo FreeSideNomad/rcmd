@@ -9,9 +9,12 @@ from fastapi.staticfiles import StaticFiles
 from psycopg_pool import AsyncConnectionPool
 
 from commandbus import CommandBus, HandlerRegistry
+from commandbus.pgmq import PgmqClient
+from commandbus.process import PostgresProcessRepository
 
 from .config import Config
-from .handlers import TestCommandHandlers
+from .handlers import ReportingHandlers, TestCommandHandlers
+from .process.statement_report import StatementReportProcess
 
 
 def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
@@ -21,9 +24,11 @@ def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
     For E2E demo, handlers are simple - no service layer needed.
     """
     handlers = TestCommandHandlers(pool)
+    reporting_handlers = ReportingHandlers(pool)
 
     registry = HandlerRegistry()
     registry.register_instance(handlers)
+    registry.register_instance(reporting_handlers)
 
     return registry
 
@@ -46,7 +51,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Store in app state for access via dependencies
     app.state.pool = pool
     app.state.registry = registry
-    app.state.bus = CommandBus(pool)
+    bus = CommandBus(pool)
+    app.state.bus = bus
+
+    # Ensure reporting queues exist
+    pgmq = PgmqClient(pool)
+    await pgmq.create_queue("reporting__commands")
+    await pgmq.create_queue("reporting__process_replies")
+
+    # Process Manager setup
+    process_repo = PostgresProcessRepository(pool)
+    app.state.process_repo = process_repo
+    app.state.report_process = StatementReportProcess(
+        command_bus=bus,
+        process_repo=process_repo,
+        reply_queue="reporting__process_replies",
+        pool=pool,
+    )
 
     yield
 

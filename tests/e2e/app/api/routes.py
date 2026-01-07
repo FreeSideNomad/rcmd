@@ -13,7 +13,7 @@ from psycopg.types.json import Json
 from commandbus import BatchCommand
 from commandbus.models import SendRequest
 
-from ..dependencies import TSQ, Bus, Pool
+from ..dependencies import TSQ, Bus, Pool, ProcessRepo, ReportProcess
 from ..models import TestCommandRepository
 from .schemas import (
     ActivityEvent,
@@ -39,7 +39,12 @@ from .schemas import (
     CreateCommandResponse,
     HealthResponse,
     LoadTestResponse,
+    ProcessAuditEntrySchema,
+    ProcessBatchCreateRequest,
+    ProcessDetailResponse,
     ProcessingRate,
+    ProcessListResponse,
+    ProcessResponseSchema,
     RecentActivityResponse,
     ReplyMessage,
     ReplyQueueResponse,
@@ -1334,7 +1339,180 @@ async def get_reply_summary(batch_id: UUID, pool: Pool) -> ReplySummaryResponse:
                 created_at=row[7],
                 completed_at=row[8],
             )
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# =============================================================================
+# Process Endpoints
+# =============================================================================
+
+
+@api_router.post("/processes/batch", response_model=ProcessListResponse, status_code=201)
+async def create_process_batch(
+    request: ProcessBatchCreateRequest,
+    report_process: ReportProcess,
+    process_repo: ProcessRepo,
+) -> ProcessListResponse:
+    """Create a batch of statement report processes."""
+    import random
+    import string
+
+    # Helper to generate random account IDs
+    def generate_accounts(count: int = 3) -> list[str]:
+        return [f"ACC-{''.join(random.choices(string.digits, k=5))}" for _ in range(count)]
+
+    created_processes = []
+
+    # Create processes sequentially (could be parallelized but this is fine for demo)
+    for _ in range(request.count):
+        initial_data = {
+            "from_date": request.from_date.isoformat(),
+            "to_date": request.to_date.isoformat(),
+            "account_list": generate_accounts(),
+            "output_type": request.output_type,
+        }
+
+        process_id = await report_process.start(initial_data)
+
+        # Fetch the created process to return details
+        process = await process_repo.get_by_id(report_process.domain, process_id)
+        if process:
+            # Rehydrate state for response
+            typed_state = report_process.state_class.from_dict(process.state)
+            created_processes.append(
+                ProcessResponseSchema(
+                    domain=process.domain,
+                    process_id=process.process_id,
+                    process_type=process.process_type,
+                    status=process.status.value,
+                    current_step=str(process.current_step) if process.current_step else None,
+                    state=typed_state.to_dict(),
+                    created_at=process.created_at,
+                    updated_at=process.updated_at,
+                    completed_at=process.completed_at,
+                    error_code=process.error_code,
+                    error_message=process.error_message,
+                )
+            )
+
+    return ProcessListResponse(
+        processes=created_processes,
+        total=len(created_processes),
+        limit=request.count,
+        offset=0,
+    )
+
+
+@api_router.get("/processes", response_model=ProcessListResponse)
+async def list_processes(
+    pool: Pool,
+    status: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> ProcessListResponse:
+    """List processes."""
+    limit = min(limit, 100)
+    domain = "reporting"  # Hardcoded for now as we only have one process type in demo
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        query = """
+            SELECT domain, process_id, process_type, status, current_step,
+                   state, error_code, error_message,
+                   created_at, updated_at, completed_at
+            FROM commandbus.process
+            WHERE domain = %s
+        """
+        params: list[Any] = [domain]
+
+        if status:
+            query += " AND status = %s"
+            params.append(status)
+
+        query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        await cur.execute(query, params)
+        rows = await cur.fetchall()
+
+        # Get total count
+        count_query = "SELECT COUNT(*) FROM commandbus.process WHERE domain = %s"
+        count_params: list[Any] = [domain]
+        if status:
+            count_query += " AND status = %s"
+            count_params.append(status)
+        await cur.execute(count_query, count_params)
+        total_row = await cur.fetchone()
+        total = total_row[0] if total_row else 0
+
+    processes = []
+    for row in rows:
+        processes.append(
+            ProcessResponseSchema(
+                domain=row[0],
+                process_id=row[1],
+                process_type=row[2],
+                status=row[3],
+                current_step=row[4],
+                state=row[5],
+                error_code=row[6],
+                error_message=row[7],
+                created_at=row[8],
+                updated_at=row[9],
+                completed_at=row[10],
+            )
+        )
+
+    return ProcessListResponse(
+        processes=processes,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@api_router.get("/processes/{process_id}", response_model=ProcessDetailResponse)
+async def get_process_detail(
+    process_id: UUID,
+    process_repo: ProcessRepo,
+    report_process: ReportProcess,
+) -> ProcessDetailResponse:
+    """Get process details and audit trail."""
+    process = await process_repo.get_by_id(report_process.domain, process_id)
+    if not process:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    audit_trail = await process_repo.get_audit_trail(report_process.domain, process_id)
+
+    # Convert to response schema
+    typed_state = report_process.state_class.from_dict(process.state)
+
+    process_resp = ProcessResponseSchema(
+        domain=process.domain,
+        process_id=process.process_id,
+        process_type=process.process_type,
+        status=process.status.value,
+        current_step=str(process.current_step) if process.current_step else None,
+        state=typed_state.to_dict(),
+        created_at=process.created_at,
+        updated_at=process.updated_at,
+        completed_at=process.completed_at,
+        error_code=process.error_code,
+        error_message=process.error_message,
+    )
+
+    audit_resp = [
+        ProcessAuditEntrySchema(
+            step_name=entry.step_name,
+            command_id=entry.command_id,
+            command_type=entry.command_type,
+            command_data=entry.command_data,
+            sent_at=entry.sent_at,
+            reply_outcome=entry.reply_outcome.value if entry.reply_outcome else None,
+            reply_data=entry.reply_data,
+            received_at=entry.received_at,
+        )
+        for entry in audit_trail
+    ]
+
+    return ProcessDetailResponse(process=process_resp, audit_trail=audit_resp)
