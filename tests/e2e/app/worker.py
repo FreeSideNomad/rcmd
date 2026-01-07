@@ -9,7 +9,7 @@ from commandbus import CommandBus, HandlerRegistry, RetryPolicy, Worker
 from commandbus.process import PostgresProcessRepository, ProcessReplyRouter
 
 from .config import Config, ConfigStore, RetryConfig
-from .handlers import NoOpHandlers, ReportingHandlers, TestCommandHandlers
+from .handlers import create_registry
 from .process.statement_report import StatementReportProcess
 
 logger = logging.getLogger(__name__)
@@ -31,27 +31,6 @@ async def get_config_store(pool: AsyncConnectionPool) -> ConfigStore:
     store = ConfigStore()
     await store.load_from_db(pool)
     return store
-
-
-def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
-    """Create handler registry using F007 composition root pattern.
-
-    This uses:
-    - @handler decorator on class methods
-    - register_instance() for automatic handler discovery
-    """
-    # Create handler instances with dependencies
-    test_handlers = TestCommandHandlers(pool)
-    no_op_handlers = NoOpHandlers(pool)
-    reporting_handlers = ReportingHandlers(pool)
-
-    # Register all decorated handlers
-    registry = HandlerRegistry()
-    registry.register_instance(test_handlers)
-    registry.register_instance(no_op_handlers)
-    registry.register_instance(reporting_handlers)
-
-    return registry
 
 
 def create_worker(
