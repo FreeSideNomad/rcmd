@@ -255,4 +255,5 @@ class StatementReportProcess(BaseProcessManager[StatementReportState, StatementR
             command_id,
             step_behavior,
             {"process_id": str(process.process_id), "step": step.value},
+            conn=conn,
         )

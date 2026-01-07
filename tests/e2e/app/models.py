@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from psycopg import AsyncConnection
 from psycopg.types.json import Json
 
 
@@ -101,9 +102,25 @@ class TestCommandRepository:
         command_id: UUID,
         behavior: dict[str, Any],
         payload: dict[str, Any] | None = None,
+        conn: AsyncConnection[Any] | None = None,
     ) -> TestCommand:
         """Create a new test command."""
-        async with self.pool.connection() as conn, conn.cursor() as cur:
+        if conn is not None:
+            return await self._create_with_connection(conn, command_id, behavior, payload or {})
+
+        async with self.pool.connection() as acquired_conn:
+            return await self._create_with_connection(
+                acquired_conn, command_id, behavior, payload or {}
+            )
+
+    async def _create_with_connection(
+        self,
+        conn: AsyncConnection[Any],
+        command_id: UUID,
+        behavior: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> TestCommand:
+        async with conn.cursor() as cur:
             await cur.execute(
                 """
                 INSERT INTO e2e.test_command (command_id, payload, behavior)
@@ -111,7 +128,7 @@ class TestCommandRepository:
                 RETURNING id, command_id, payload, behavior,
                           created_at, processed_at, attempts, result
                 """,
-                (command_id, Json(payload or {}), Json(behavior)),
+                (command_id, Json(payload), Json(behavior)),
             )
             row = await cur.fetchone()
             return TestCommand.from_row(row)
