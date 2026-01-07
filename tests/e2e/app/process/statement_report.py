@@ -5,14 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 from commandbus.models import Reply
 from commandbus.process import (
     BaseProcessManager,
     ProcessCommand,
+    ProcessMetadata,
     ProcessResponse,
 )
+
+from ..models import TestCommandRepository
 
 
 class OutputType(StrEnum):
@@ -42,6 +48,7 @@ class StatementReportState:
     query_result_path: str | None = None
     aggregated_data_path: str | None = None
     rendered_file_path: str | None = None
+    behavior: dict[str, dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert state to dictionary."""
@@ -53,6 +60,7 @@ class StatementReportState:
             "query_result_path": self.query_result_path,
             "aggregated_data_path": self.aggregated_data_path,
             "rendered_file_path": self.rendered_file_path,
+            "behavior": self.behavior,
         }
 
     @classmethod
@@ -66,6 +74,7 @@ class StatementReportState:
             query_result_path=data.get("query_result_path"),
             aggregated_data_path=data.get("aggregated_data_path"),
             rendered_file_path=data.get("rendered_file_path"),
+            behavior=data.get("behavior"),
         )
 
 
@@ -145,6 +154,15 @@ class StatementRenderResponse:
 class StatementReportProcess(BaseProcessManager[StatementReportState, StatementReportStep]):
     """Process manager for generating statement reports."""
 
+    def __init__(
+        self,
+        *args: Any,
+        behavior_repo: TestCommandRepository | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._behavior_repo = behavior_repo
+
     @property
     def process_type(self) -> str:
         return "StatementReport"
@@ -217,3 +235,24 @@ class StatementReportProcess(BaseProcessManager[StatementReportState, StatementR
                 return StatementReportStep.RENDER
             case StatementReportStep.RENDER:
                 return None
+
+    async def before_send_command(
+        self,
+        process: ProcessMetadata[StatementReportState, StatementReportStep],
+        step: StatementReportStep,
+        command_id: UUID,
+        command_payload: dict[str, Any],
+        conn: Any,
+    ) -> None:
+        """Persist step-specific behavior for reporting handlers."""
+        if self._behavior_repo is None:
+            return
+        behavior_map = process.state.behavior or {}
+        step_behavior = behavior_map.get(step.value)
+        if not step_behavior:
+            return
+        await self._behavior_repo.create(
+            command_id,
+            step_behavior,
+            {"process_id": str(process.process_id), "step": step.value},
+        )

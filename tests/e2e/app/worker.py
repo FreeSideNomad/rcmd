@@ -10,6 +10,7 @@ from commandbus.process import PostgresProcessRepository, ProcessReplyRouter
 
 from .config import Config, ConfigStore, RetryConfig
 from .handlers import create_registry
+from .models import TestCommandRepository
 from .process.statement_report import StatementReportProcess
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ async def run_worker() -> None:
     registry = create_registry(pool)
     bus = CommandBus(pool)
     process_repo = PostgresProcessRepository(pool)
+    behavior_repo = TestCommandRepository(pool)
 
     # Process Managers
     report_process = StatementReportProcess(
@@ -79,6 +81,7 @@ async def run_worker() -> None:
         process_repo=process_repo,
         reply_queue="reporting__process_replies",
         pool=pool,
+        behavior_repo=behavior_repo,
     )
     managers = {report_process.process_type: report_process}
 

@@ -14,6 +14,7 @@ from commandbus.process import PostgresProcessRepository
 
 from .config import Config
 from .handlers import create_registry
+from .models import TestCommandRepository
 from .process.statement_report import StatementReportProcess
 
 
@@ -46,11 +47,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Process Manager setup
     process_repo = PostgresProcessRepository(pool)
     app.state.process_repo = process_repo
+    behavior_repo = TestCommandRepository(pool)
     app.state.report_process = StatementReportProcess(
         command_bus=bus,
         process_repo=process_repo,
         reply_queue="reporting__process_replies",
         pool=pool,
+        behavior_repo=behavior_repo,
     )
 
     yield

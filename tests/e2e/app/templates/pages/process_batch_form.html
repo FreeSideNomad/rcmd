@@ -14,8 +14,8 @@
         <!-- Count -->
         <div>
             <label for="count" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">Number of Processes</label>
-            <input type="number" id="count" min="1" max="100" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Limit 100 for demo performance</p>
+            <input type="number" id="count" min="1" max="100000" value="10" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Limit 100,000</p>
         </div>
 
         <!-- Date Range -->
@@ -38,6 +38,63 @@
                 <option value="html">HTML Report</option>
                 <option value="csv">CSV Data</option>
             </select>
+        </div>
+
+        <!-- Behavior Toggle -->
+        <div class="border rounded-lg p-4 dark:border-gray-700">
+            <label class="flex items-center gap-3 text-sm font-medium text-gray-900 dark:text-white">
+                <input type="checkbox" id="behavior-enabled" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600">
+                Enable probabilistic behavior per step
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Configure chaos testing for StatementQuery, Aggregation, and Render steps.</p>
+
+            <div id="behavior-sections" class="hidden mt-4 space-y-5">
+                {% set steps = [
+                    ('query', 'Statement Query'),
+                    ('aggregation', 'Statement Aggregation'),
+                    ('render', 'Statement Render')
+                ] %}
+                {% for key, label in steps %}
+                <div class="border rounded-lg p-4 bg-gray-50 dark:bg-gray-700/30 dark:border-gray-600">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ label }}</h3>
+                        <span class="text-xs text-gray-500 dark:text-gray-400">Configure {{ label }} behavior</span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">Permanent Failure %</label>
+                            <input type="number" min="0" max="100" step="0.1" id="{{ key }}-fail-permanent" class="behavior-input bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                        </div>
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">Transient Failure %</label>
+                            <input type="number" min="0" max="100" step="0.1" id="{{ key }}-fail-transient" class="behavior-input bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                        </div>
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">Timeout %</label>
+                            <input type="number" min="0" max="100" step="0.1" id="{{ key }}-timeout" class="behavior-input bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="block mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">Min Duration (ms)</label>
+                                <input type="number" min="0" id="{{ key }}-min-duration" class="behavior-input bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                            </div>
+                            <div>
+                                <label class="block mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">Max Duration (ms)</label>
+                                <input type="number" min="0" id="{{ key }}-max-duration" class="behavior-input bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">Error Code</label>
+                            <input type="text" id="{{ key }}-error-code" class="behavior-input bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                        </div>
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">Error Message</label>
+                            <input type="text" id="{{ key }}-error-message" class="behavior-input bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
         </div>
 
         <!-- Submit Button -->
@@ -70,6 +127,39 @@
     document.getElementById('to-date').valueAsDate = today;
     document.getElementById('from-date').valueAsDate = lastMonth;
 
+    const behaviorToggle = document.getElementById('behavior-enabled');
+    const behaviorSections = document.getElementById('behavior-sections');
+    const behaviorSteps = [
+        { key: 'query' },
+        { key: 'aggregation' },
+        { key: 'render' },
+    ];
+
+    behaviorToggle.addEventListener('change', () => {
+        behaviorSections.classList.toggle('hidden', !behaviorToggle.checked);
+    });
+
+    function readStepBehavior(stepKey) {
+        const failPermanent = parseFloat(document.getElementById(`${stepKey}-fail-permanent`).value) || 0;
+        const failTransient = parseFloat(document.getElementById(`${stepKey}-fail-transient`).value) || 0;
+        const timeoutPct = parseFloat(document.getElementById(`${stepKey}-timeout`).value) || 0;
+        const minDuration = parseInt(document.getElementById(`${stepKey}-min-duration`).value) || 0;
+        const maxDuration = parseInt(document.getElementById(`${stepKey}-max-duration`).value) || 0;
+        const errorCode = document.getElementById(`${stepKey}-error-code`).value.trim();
+        const errorMessage = document.getElementById(`${stepKey}-error-message`).value.trim();
+
+        const behavior = {};
+        if (failPermanent > 0) behavior.fail_permanent_pct = failPermanent;
+        if (failTransient > 0) behavior.fail_transient_pct = failTransient;
+        if (timeoutPct > 0) behavior.timeout_pct = timeoutPct;
+        if (minDuration > 0) behavior.min_duration_ms = minDuration;
+        if (maxDuration > 0) behavior.max_duration_ms = maxDuration;
+        if (errorCode) behavior.error_code = errorCode;
+        if (errorMessage) behavior.error_message = errorMessage;
+
+        return Object.keys(behavior).length ? behavior : null;
+    }
+
     document.getElementById('process-batch-form').addEventListener('submit', async (e) => {
         e.preventDefault();
 
@@ -84,6 +174,19 @@
             to_date: document.getElementById('to-date').value,
             output_type: document.getElementById('output-type').value
         };
+
+        if (behaviorToggle.checked) {
+            const behaviorPayload = {};
+            behaviorSteps.forEach(({ key }) => {
+                const stepBehavior = readStepBehavior(key);
+                if (stepBehavior) {
+                    behaviorPayload[key] = stepBehavior;
+                }
+            });
+            if (Object.keys(behaviorPayload).length > 0) {
+                data.behavior = behaviorPayload;
+            }
+        }
 
         try {
             const result = await api.post('/processes/batch', data);
