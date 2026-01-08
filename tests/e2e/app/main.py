@@ -8,14 +8,12 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import AsyncConnectionPool
 
-from commandbus import CommandBus
 from commandbus.pgmq import PgmqClient
-from commandbus.process import PostgresProcessRepository
 
-from .config import Config
+from .config import Config, ConfigStore
 from .handlers import create_registry
 from .models import TestCommandRepository
-from .process.statement_report import StatementReportProcess
+from .runtime import RuntimeManager
 
 
 @asynccontextmanager
@@ -33,32 +31,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Create registry using composition root pattern (F007)
     registry = create_registry(pool)
 
-    # Store in app state for access via dependencies
+    # Store shared objects in app state for access via dependencies
     app.state.pool = pool
     app.state.registry = registry
-    bus = CommandBus(pool)
-    app.state.bus = bus
 
     # Ensure reporting queues exist
     pgmq = PgmqClient(pool)
     await pgmq.create_queue("reporting__commands")
     await pgmq.create_queue("reporting__process_replies")
 
-    # Process Manager setup
-    process_repo = PostgresProcessRepository(pool)
-    app.state.process_repo = process_repo
+    # Configuration & runtime manager setup
+    config_store = ConfigStore()
+    await config_store.load_from_db(pool)
     behavior_repo = TestCommandRepository(pool)
-    app.state.report_process = StatementReportProcess(
-        command_bus=bus,
-        process_repo=process_repo,
-        reply_queue="reporting__process_replies",
-        pool=pool,
-        behavior_repo=behavior_repo,
-    )
+    runtime_manager = RuntimeManager(pool=pool, behavior_repo=behavior_repo)
+    await runtime_manager.start(config_store.runtime)
+    app.state.runtime_manager = runtime_manager
 
     yield
 
-    # Shutdown: Close pool
+    # Shutdown resources
+    await runtime_manager.shutdown()
     await pool.close()
 
 
