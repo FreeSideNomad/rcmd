@@ -39,6 +39,7 @@ project-name/
 - **Separate sync and async implementations** into distinct modules (`queue.py` vs `async_queue.py`)
 - **Keep public API minimal** - export only what users need from `__init__.py`
 - **Group related functionality** - decorators, logging, and models in dedicated modules
+- **Provide synchronous façades** - expose blocking helpers (`package.sync`) that wrap async primitives via a shared runtime. Offer helpers like `configure(runtime=..., thread_pool_size=...)` and document env vars (e.g., `COMMAND_BUS_SYNC_THREADS`) so sync callers can tune performance without diverging from the async code path.
 
 ---
 
@@ -309,8 +310,8 @@ def queue(postgres):
     return PGMQueue(
         host=postgres.get_container_host_ip(),
         port=postgres.get_exposed_port(5432),
-        username="postgres",
-        password="postgres",
+        username="postgres",  # pragma: allowlist secret
+        password="postgres",  # pragma: allowlist secret
         database="postgres",
     )
 ```

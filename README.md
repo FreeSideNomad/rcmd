@@ -15,6 +15,7 @@ A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for re
 - [PGMQ Integration](#pgmq-integration)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Synchronous Usage](#synchronous-usage)
 - [Developer Guide](#developer-guide)
   - [Using Reply Queues](#6-using-reply-queues)
 - [Worker Best Practices](#worker-best-practices)
@@ -389,6 +390,67 @@ Or copy the SQL file from the installed package:
 ```bash
 python -c "from commandbus import get_schema_sql; print(get_schema_sql())" > schema.sql
 ```
+
+---
+
+## Synchronous Usage
+
+Reliable Commands is async-first, but many teams build synchronous frameworks (Flask, Django, CLI tools). The `commandbus.sync` package wraps the core async APIs with a managed event loop so you can call them from blocking code without writing your own `asyncio` plumbing.
+
+```python
+from uuid import uuid4
+
+from psycopg_pool import AsyncConnectionPool
+from commandbus import Command, HandlerRegistry, handler
+from commandbus.sync import (
+    SyncCommandBus,
+    SyncTroubleshootingQueue,
+    SyncWorker,
+    configure,
+)
+
+class PaymentHandlers:
+    def __init__(self, pool: AsyncConnectionPool) -> None:
+        self._pool = pool
+
+    @handler(domain="payments", command_type="DebitAccount")
+    async def handle(self, cmd: Command, ctx):
+        # Async handler logic is unchanged
+        return {"status": "ok"}
+
+pool = AsyncConnectionPool(
+    conninfo="postgresql://postgres:postgres@localhost:5432/commandbus",  # pragma: allowlist secret
+    min_size=2,
+    max_size=10,
+)
+await pool.open()
+
+# Optional: share a runtime + thread pool across wrappers
+configure(thread_pool_size=16)
+
+bus = SyncCommandBus(pool)
+result = bus.send(
+    domain="payments",
+    command_type="DebitAccount",
+    command_id=uuid4(),
+    data={"account_id": "123", "amount": 100},
+)
+
+registry = HandlerRegistry()
+registry.register_instance(PaymentHandlers(pool))
+
+worker = SyncWorker(pool, domain="payments", registry=registry)
+worker.run(concurrency=4)  # Blocks until worker.stop() is called
+
+tsq = SyncTroubleshootingQueue(pool)
+tsq_items = tsq.list_troubleshooting(domain="payments")
+```
+
+Key points:
+
+- `SyncCommandBus`, `SyncTroubleshootingQueue`, `SyncWorker`, and `SyncProcessReplyRouter` mirror the async APIs but block on completion.
+- Use `commandbus.sync.configure(runtime=...)` or the `COMMAND_BUS_SYNC_THREADS` env var to control the shared runtime and worker thread pool size.
+- Wrap long-running routes or CLI commands with these facades to keep handler/repository code identical between async and sync deployments.
 
 ---
 

@@ -68,11 +68,11 @@ Domains use **one queue per domain** (e.g., `payments.commands`, `reports.comman
 
 Two failure classes, via exceptions:
 
-- `PermanentCommandError`  
+- `PermanentCommandError`
   - **max_attempts = 1**
   - on failure → move to Troubleshooting Queue immediately
 
-- `TransientCommandError`  
+- `TransientCommandError`
   - default `max_attempts = 3` (configurable per command type)
   - backoff schedule default: `10s, 60s, 300s` (configurable)
   - on exhaustion → move to Troubleshooting Queue

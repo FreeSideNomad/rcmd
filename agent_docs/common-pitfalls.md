@@ -216,7 +216,7 @@ class CommandBus:
 
 ```python
 # BAD: Never do this
-DATABASE_URL = "postgresql://user:password@localhost/db"
+DATABASE_URL = "postgresql://user:password@localhost/db"  # pragma: allowlist secret
 ```
 
 ```python
