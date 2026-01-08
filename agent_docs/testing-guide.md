@@ -105,7 +105,7 @@ from psycopg_pool import AsyncConnectionPool
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/commandbus"
+    "postgresql://postgres:postgres@localhost:5432/commandbus"  # pragma: allowlist secret
 )
 
 @pytest.fixture(scope="session")
