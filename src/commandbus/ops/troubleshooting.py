@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from commandbus.batch import invoke_batch_callback
@@ -152,6 +153,100 @@ class TroubleshootingQueue:
         )
 
         return items
+
+    async def list_domains(self) -> list[str]:
+        """List domains currently holding commands in the TSQ."""
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                    SELECT DISTINCT domain
+                    FROM commandbus.command
+                    WHERE status = %s
+                    ORDER BY domain
+                """,
+                (CommandStatus.IN_TROUBLESHOOTING_QUEUE.value,),
+            )
+            rows = await cur.fetchall()
+            return [row[0] for row in rows]
+
+    async def get_command_domain(self, command_id: UUID) -> str:
+        """Lookup the domain for a command id."""
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                    SELECT domain
+                    FROM commandbus.command
+                    WHERE command_id = %s
+                """,
+                (command_id,),
+            )
+            row = await cur.fetchone()
+
+        if row is None:
+            raise CommandNotFoundError("unknown", str(command_id))
+
+        return str(row[0])
+
+    async def list_all_troubleshooting(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        domain: str | None = None,
+    ) -> tuple[list[TroubleshootingItem], int, list[UUID]]:
+        """List TSQ entries across domains (respecting pagination)."""
+        domains = [domain] if domain else await self.list_domains()
+        if not domains:
+            return [], 0, []
+
+        remaining = limit
+        skip = offset
+        aggregated: list[TroubleshootingItem] = []
+
+        for dom in domains:
+            dom_total = await self.count_troubleshooting(dom)
+            if dom_total == 0:
+                continue
+
+            if skip >= dom_total:
+                skip -= dom_total
+                continue
+
+            if remaining <= 0:
+                continue
+
+            chunk = min(remaining, dom_total - skip)
+            entries = await self.list_troubleshooting(dom, limit=chunk, offset=skip)
+            aggregated.extend(entries)
+            remaining -= len(entries)
+            skip = 0
+
+        command_ids = await self.list_command_ids(domain)
+        total = len(command_ids)
+        aggregated.sort(
+            key=lambda item: item.updated_at or item.created_at or datetime.min,
+            reverse=True,
+        )
+        return aggregated, total, command_ids
+
+    async def list_command_ids(self, domain: str | None = None) -> list[UUID]:
+        """Return command IDs for TSQ entries (optionally filtered by domain)."""
+        query = """
+            SELECT command_id
+            FROM commandbus.command
+            WHERE status = %s
+        """
+        params: list[Any] = [CommandStatus.IN_TROUBLESHOOTING_QUEUE.value]
+
+        if domain is not None:
+            query += " AND domain = %s"
+            params.append(domain)
+
+        query += " ORDER BY created_at DESC"
+
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+            return [row[0] for row in rows]
 
     async def count_troubleshooting(
         self,
