@@ -262,6 +262,15 @@ DELETE FROM pgmq.a_e2e__commands;
 | TC-SET-009 | Update Runtime Config | P2 | Functional | Valid values entered | Switch to Sync, set thread pool 8, Save | Success toast instructs restart |
 | TC-SET-010 | Clear Thread Pool | P3 | Functional | Runtime set to Sync | Remove thread pool value, Save | Request succeeds and backend accepts null/default |
 
+### 3.7 Module: Runtime Toggle (TS-RUNTIME)
+
+| Test Case ID | Test Case Name | Priority | Type | Pre-Condition | Description | Expected Result |
+|--------------|----------------|----------|------|---------------|-------------|-----------------|
+| TC-RUNTIME-001 | Persist Sync Settings | P1 | Functional | `/settings` page loaded | Select **Sync Runtime**, enter thread pool size (e.g., 8), click Save | API call succeeds, toast reads “Runtime settings saved (restart workers to apply)” |
+| TC-RUNTIME-002 | Restart Worker CLI | P1 | Operational | TC-RUNTIME-001 complete | Stop any running `python -m app.worker` process, restart it | Startup log prints `Runtime mode: sync (thread_pool_size=8)` and worker begins polling |
+| TC-RUNTIME-003 | Verify Sync Processing | P1 | Workflow | Worker running in sync mode | Use `/send` to create a “Success” command, monitor `/commands` | Command transitions to COMPLETED; TSQ remains empty; worker logs show thread hand-off |
+| TC-RUNTIME-004 | Switch Back to Async | P1 | Workflow | Sync validation complete | Set runtime back to **Async**, Save, restart worker, send another command | Toast instructs restart, worker logs `Runtime mode: async`, command processes successfully without thread-pool logs |
+
 ---
 
 ## 4. End-to-End Workflow Test Cases

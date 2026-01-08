@@ -23,6 +23,14 @@ A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for re
 
 ---
 
+## Release Highlights
+
+- **Dual runtime toggle.** The FastAPI E2E app, worker CLI, and API dependencies now honor the async vs sync runtime stored in `/settings`, with logs showing `Runtime mode: ...` and guidance to restart workers after saving.
+- **Synchronous facades everywhere.** `SyncCommandBus`, `SyncWorker`, `SyncProcessReplyRouter`, and the new runtime manager let you exercise the entire stack with blocking frameworks, backed by integration smoke tests for parity with async mode.
+- **Operator playbook.** The [E2E test plan](docs/e2e-test-plan.md#module-runtime-toggle-ts-runtime) documents how to flip modes, restart services, send verification commands, inspect TSQ, and toggle back—perfect for QA sign-off ahead of releases.
+
+---
+
 ## Why Reliable Commands?
 
 In distributed systems, ensuring that operations complete reliably is challenging. Consider these common problems:
