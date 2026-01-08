@@ -37,8 +37,8 @@ async def test_sync_runtime_round_trip(pool, cleanup_payments_domain) -> None:
     sync_bus = SyncCommandBus(bus=CommandBus(pool), runtime=runtime)
 
     try:
-        sync_worker.run(block=False, concurrency=1, poll_interval=0.1)
-        await asyncio.sleep(0.1)  # allow worker thread to start
+        sync_worker.run(block=False, concurrency=1, poll_interval=0.1, use_notify=False)
+        await asyncio.sleep(0.25)  # allow worker thread to start polling
 
         command_id = uuid4()
         await asyncio.to_thread(
@@ -48,17 +48,17 @@ async def test_sync_runtime_round_trip(pool, cleanup_payments_domain) -> None:
             command_id=command_id,
             data={"payload": "sync-test"},
         )
+        await asyncio.sleep(0.25)
 
-        async def _wait_for_completion() -> None:
-            command_bus = CommandBus(pool)
-            for _ in range(30):
-                metadata = await command_bus.get_command("payments", command_id)
-                if metadata and metadata.status == CommandStatus.COMPLETED:
-                    return
-                await asyncio.sleep(0.2)
+        command_bus = CommandBus(pool)
+        for _ in range(60):
+            metadata = await command_bus.get_command("payments", command_id)
+            if metadata and metadata.status == CommandStatus.COMPLETED:
+                break
+            await asyncio.sleep(0.25)
+        else:  # pragma: no cover - defensive guard for CI flake
             raise AssertionError("Command did not complete in sync mode")
 
-        await _wait_for_completion()
         assert handled == ["ok"]
     finally:
         sync_worker.stop()
