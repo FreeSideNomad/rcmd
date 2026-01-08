@@ -53,6 +53,7 @@ from .schemas import (
     ReplySummaryListResponse,
     ReplySummaryResponse,
     RetryConfigSchema,
+    RuntimeConfigSchema,
     StatsOverviewResponse,
     ThroughputResponse,
     TSQActionResponse,
@@ -549,11 +550,13 @@ async def get_config(pool: Pool) -> ConfigResponse:
             return ConfigResponse(
                 worker=WorkerConfigSchema(**(config.get("worker", {}))),
                 retry=RetryConfigSchema(**(config.get("retry", {}))),
+                runtime=RuntimeConfigSchema(**(config.get("runtime", {}))),
             )
     except Exception as e:
         return ConfigResponse(
             worker=WorkerConfigSchema(),
             retry=RetryConfigSchema(),
+            runtime=RuntimeConfigSchema(),
             error=str(e),
         )
 
@@ -580,6 +583,15 @@ async def update_config(request: ConfigUpdateRequest, pool: Pool) -> ConfigUpdat
                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
                     (Json(request.retry.model_dump()),),
+                )
+            if request.runtime:
+                await cur.execute(
+                    """
+                        INSERT INTO e2e.config (key, value, updated_at)
+                        VALUES ('runtime', %s, NOW())
+                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                    """,
+                    (Json(request.runtime.model_dump()),),
                 )
 
         return ConfigUpdateResponse(status="ok", config=request)

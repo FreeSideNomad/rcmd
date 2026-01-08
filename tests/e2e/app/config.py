@@ -79,11 +79,35 @@ class RetryConfig:
 
 
 @dataclass
+class RuntimeConfig:
+    """Runtime configuration for async vs sync mode."""
+
+    mode: str = "async"
+    thread_pool_size: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for storage."""
+        return {
+            "mode": self.mode,
+            "thread_pool_size": self.thread_pool_size,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RuntimeConfig":
+        """Create from dict."""
+        return cls(
+            mode=data.get("mode", "async"),
+            thread_pool_size=data.get("thread_pool_size"),
+        )
+
+
+@dataclass
 class ConfigStore:
     """Configuration store backed by database."""
 
     _worker_config: WorkerConfig = field(default_factory=WorkerConfig)
     _retry_config: RetryConfig = field(default_factory=RetryConfig)
+    _runtime_config: "RuntimeConfig" = field(default_factory=lambda: RuntimeConfig())
 
     async def load_from_db(self, pool: Any) -> None:
         """Load configuration from database."""
@@ -95,6 +119,8 @@ class ConfigStore:
                     self._worker_config = WorkerConfig.from_dict(value)
                 elif key == "retry":
                     self._retry_config = RetryConfig.from_dict(value)
+                elif key == "runtime":
+                    self._runtime_config = RuntimeConfig.from_dict(value)
 
     async def save_to_db(self, pool: Any) -> None:
         """Save configuration to database."""
@@ -114,6 +140,14 @@ class ConfigStore:
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
                     """,
                 (Json(self._retry_config.to_dict()),),
+            )
+            await cur.execute(
+                """
+                    INSERT INTO e2e.config (key, value, updated_at)
+                    VALUES ('runtime', %s, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                    """,
+                (Json(self._runtime_config.to_dict()),),
             )
 
     @property
@@ -135,3 +169,13 @@ class ConfigStore:
     def retry(self, config: RetryConfig) -> None:
         """Set retry configuration."""
         self._retry_config = config
+
+    @property
+    def runtime(self) -> "RuntimeConfig":
+        """Get runtime configuration."""
+        return self._runtime_config
+
+    @runtime.setter
+    def runtime(self, config: "RuntimeConfig") -> None:
+        """Set runtime configuration."""
+        self._runtime_config = config

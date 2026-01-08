@@ -1,6 +1,7 @@
 """Pydantic schema definitions for E2E API."""
 
 from datetime import date, datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -425,11 +426,26 @@ class RetryConfigSchema(BaseModel):
     backoff_schedule: list[int] = [10, 60, 300]
 
 
+class RuntimeMode(StrEnum):
+    """Runtime selection for E2E demo."""
+
+    ASYNC = "async"
+    SYNC = "sync"
+
+
+class RuntimeConfigSchema(BaseModel):
+    """Runtime configuration (async vs sync)."""
+
+    mode: RuntimeMode = RuntimeMode.ASYNC
+    thread_pool_size: int | None = Field(default=None, ge=1, le=64)
+
+
 class ConfigResponse(BaseModel):
     """Configuration response."""
 
     worker: WorkerConfigSchema
     retry: RetryConfigSchema
+    runtime: RuntimeConfigSchema
     error: str | None = None
 
 
@@ -438,6 +454,7 @@ class ConfigUpdateRequest(BaseModel):
 
     worker: WorkerConfigSchema | None = None
     retry: RetryConfigSchema | None = None
+    runtime: RuntimeConfigSchema | None = None
 
 
 class ConfigUpdateResponse(BaseModel):
