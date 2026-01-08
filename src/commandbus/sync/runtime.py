@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import atexit
 import threading
-from collections.abc import Awaitable, Iterable  # noqa: TC003
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Coroutine, Iterable
+    from concurrent.futures import Future
 
 T = TypeVar("T")
 
@@ -29,11 +32,22 @@ class SyncRuntime:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def run(self, coro: Awaitable[T]) -> T:
+    def run(self, awaitable: Awaitable[T]) -> T:
         """Execute a coroutine synchronously and return its result."""
         if self._closed.is_set():
             raise RuntimeError("SyncRuntime has been shut down")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+        coroutine: Coroutine[Any, Any, T]
+        if asyncio.iscoroutine(awaitable):
+            coroutine = awaitable
+        else:
+
+            async def _wrap() -> T:
+                return await awaitable
+
+            coroutine = _wrap()
+
+        future: Future[T] = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         return future.result()
 
     def run_many(self, coroutines: Iterable[Awaitable[Any]]) -> list[Any]:

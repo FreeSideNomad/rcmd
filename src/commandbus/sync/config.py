@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Final
+from typing import Final, TypedDict
 
 from commandbus.sync.runtime import SyncRuntime
 
-_STATE: dict[str, Any] = {"runtime": None, "thread_pool_size": None}
+
+class _SyncConfigState(TypedDict):
+    runtime: SyncRuntime | None
+    thread_pool_size: int | None
+
+
+_STATE: _SyncConfigState = {"runtime": None, "thread_pool_size": None}
 _ENV_VAR: Final[str] = "COMMAND_BUS_SYNC_THREADS"
 
 
@@ -32,11 +38,13 @@ def configure(
 
 def get_default_runtime(runtime: SyncRuntime | None = None) -> SyncRuntime:
     """Return the runtime to use for synchronous wrappers."""
+    state_runtime = _STATE["runtime"]
     if runtime is not None:
         return runtime
-    if _STATE["runtime"] is None:
-        _STATE["runtime"] = SyncRuntime()
-    return _STATE["runtime"]  # type: ignore[return-value]
+    if state_runtime is None:
+        state_runtime = SyncRuntime()
+        _STATE["runtime"] = state_runtime
+    return state_runtime
 
 
 def get_thread_pool_size(thread_pool_size: int | None = None) -> int:
@@ -48,7 +56,7 @@ def get_thread_pool_size(thread_pool_size: int | None = None) -> int:
 
     cached = _STATE["thread_pool_size"]
     if cached is not None:
-        return int(cached)
+        return cached
 
     env_value = os.getenv(_ENV_VAR)
     if env_value:
