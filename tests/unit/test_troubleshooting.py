@@ -8,8 +8,31 @@ from uuid import uuid4
 import pytest
 
 from commandbus.exceptions import CommandNotFoundError, InvalidOperationError
-from commandbus.models import CommandMetadata, CommandStatus
+from commandbus.models import CommandMetadata, CommandStatus, TroubleshootingItem
 from commandbus.ops.troubleshooting import TroubleshootingQueue
+
+
+def _make_mock_pool() -> MagicMock:
+    pool = MagicMock()
+    conn = MagicMock()
+    cursor = MagicMock()
+
+    cursor.execute = AsyncMock()
+    cursor.fetchall = AsyncMock(return_value=[])
+
+    @asynccontextmanager
+    async def mock_cursor():
+        yield cursor
+
+    conn.cursor = mock_cursor
+
+    @asynccontextmanager
+    async def mock_connection():
+        yield conn
+
+    pool.connection = mock_connection
+    pool._mock_cursor = cursor  # type: ignore[attr-defined]
+    return pool
 
 
 class TestTroubleshootingQueueListTroubleshooting:
@@ -18,26 +41,7 @@ class TestTroubleshootingQueueListTroubleshooting:
     @pytest.fixture
     def mock_pool(self) -> MagicMock:
         """Create a mock connection pool with cursor."""
-        pool = MagicMock()
-        conn = MagicMock()
-        cursor = MagicMock()
-
-        cursor.execute = AsyncMock()
-        cursor.fetchall = AsyncMock(return_value=[])
-
-        @asynccontextmanager
-        async def mock_cursor():
-            yield cursor
-
-        conn.cursor = mock_cursor
-
-        @asynccontextmanager
-        async def mock_connection():
-            yield conn
-
-        pool.connection = mock_connection
-        pool._mock_cursor = cursor
-        return pool
+        return _make_mock_pool()
 
     @pytest.fixture
     def tsq(self, mock_pool: MagicMock) -> TroubleshootingQueue:
@@ -166,6 +170,116 @@ class TestTroubleshootingQueueListTroubleshooting:
 
         assert len(items) == 1
         assert items[0].payload is None
+
+
+class TestTroubleshootingQueueHelpers:
+    """Tests for domain-aware helper methods."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        return _make_mock_pool()
+
+    @pytest.fixture
+    def tsq(self, mock_pool: MagicMock) -> TroubleshootingQueue:
+        return TroubleshootingQueue(mock_pool)
+
+    @pytest.mark.asyncio
+    async def test_list_domains(self, tsq: TroubleshootingQueue, mock_pool: MagicMock) -> None:
+        mock_pool._mock_cursor.fetchall = AsyncMock(return_value=[("e2e",), ("reporting",)])
+        domains = await tsq.list_domains()
+        assert domains == ["e2e", "reporting"]
+
+    @pytest.mark.asyncio
+    async def test_list_command_ids_filtered(
+        self, tsq: TroubleshootingQueue, mock_pool: MagicMock
+    ) -> None:
+        first, second = uuid4(), uuid4()
+        mock_pool._mock_cursor.fetchall = AsyncMock(return_value=[(first,), (second,)])
+        ids = await tsq.list_command_ids("reporting")
+        assert ids == [first, second]
+
+    @pytest.mark.asyncio
+    async def test_list_command_ids_all_domains(
+        self, tsq: TroubleshootingQueue, mock_pool: MagicMock
+    ) -> None:
+        first = uuid4()
+        mock_pool._mock_cursor.fetchall = AsyncMock(return_value=[(first,)])
+        ids = await tsq.list_command_ids()
+        assert ids == [first]
+
+    @pytest.mark.asyncio
+    async def test_list_all_troubleshooting_multi_domain(self, tsq: TroubleshootingQueue) -> None:
+        now = datetime.now(UTC)
+        item_a = TroubleshootingItem(
+            domain="e2e",
+            command_id=uuid4(),
+            command_type="TestCommand",
+            attempts=1,
+            max_attempts=3,
+            last_error_type="PERMANENT",
+            last_error_code="ERR",
+            last_error_msg="boom",
+            correlation_id=None,
+            reply_to=None,
+            payload=None,
+            created_at=now,
+            updated_at=now,
+        )
+        item_b = TroubleshootingItem(
+            domain="reporting",
+            command_id=uuid4(),
+            command_type="StatementRender",
+            attempts=2,
+            max_attempts=3,
+            last_error_type="PERMANENT",
+            last_error_code="FAIL",
+            last_error_msg="fail",
+            correlation_id=None,
+            reply_to=None,
+            payload=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        tsq.list_domains = AsyncMock(return_value=["e2e", "reporting"])  # type: ignore[attr-defined]
+        tsq.count_troubleshooting = AsyncMock(side_effect=[1, 1])  # type: ignore[attr-defined]
+        tsq.list_troubleshooting = AsyncMock(side_effect=[[item_a], [item_b]])  # type: ignore[attr-defined]
+        tsq.list_command_ids = AsyncMock(return_value=[item_a.command_id, item_b.command_id])  # type: ignore[attr-defined]
+
+        items, total, ids = await tsq.list_all_troubleshooting(limit=5, offset=0)
+        assert total == 2
+        assert ids == [item_a.command_id, item_b.command_id]
+        assert items == [item_a, item_b]
+
+    @pytest.mark.asyncio
+    async def test_list_all_with_domain_filter(self, tsq: TroubleshootingQueue) -> None:
+        now = datetime.now(UTC)
+        item = TroubleshootingItem(
+            domain="reporting",
+            command_id=uuid4(),
+            command_type="StatementQuery",
+            attempts=1,
+            max_attempts=3,
+            last_error_type="PERMANENT",
+            last_error_code="ERR",
+            last_error_msg="fail",
+            correlation_id=None,
+            reply_to=None,
+            payload=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+        tsq.count_troubleshooting = AsyncMock(return_value=1)  # type: ignore[attr-defined]
+        tsq.list_troubleshooting = AsyncMock(return_value=[item])  # type: ignore[attr-defined]
+        tsq.list_command_ids = AsyncMock(return_value=[item.command_id])  # type: ignore[attr-defined]
+        tsq.list_domains = AsyncMock(return_value=["reporting"])  # type: ignore[attr-defined]
+
+        items, total, ids = await tsq.list_all_troubleshooting(domain="reporting")
+        tsq.list_domains.assert_not_called()  # type: ignore[attr-defined]
+        assert total == 1
+        assert ids == [item.command_id]
+        assert items == [item]
 
     @pytest.mark.asyncio
     async def test_list_handles_null_reply_queue(
