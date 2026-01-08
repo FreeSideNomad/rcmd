@@ -258,6 +258,9 @@ DELETE FROM pgmq.a_e2e__commands;
 | TC-SET-005 | Update Retry Config | P2 | Functional | Valid values entered | Change max_attempts to 5, Save | Success message, config updated |
 | TC-SET-006 | Validation - Negative Values | P2 | Functional | Enter -1 for concurrency | Try to save | Validation error shown |
 | TC-SET-007 | Reset to Defaults | P3 | Functional | Custom values set | Click Reset | Values return to defaults |
+| TC-SET-008 | Runtime Config Display | P2 | Functional | Page loaded | View Runtime card | Async/Sync options and thread pool input reflect saved config |
+| TC-SET-009 | Update Runtime Config | P2 | Functional | Valid values entered | Switch to Sync, set thread pool 8, Save | Success toast instructs restart |
+| TC-SET-010 | Clear Thread Pool | P3 | Functional | Runtime set to Sync | Remove thread pool value, Save | Request succeeds and backend accepts null/default |
 
 ---
 

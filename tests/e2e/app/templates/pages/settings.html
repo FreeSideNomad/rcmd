@@ -66,6 +66,47 @@
     </div>
 </div>
 
+<!-- Runtime Configuration -->
+<div class="mt-6">
+    <div class="bg-white rounded-lg shadow p-6 dark:bg-gray-800">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Runtime Mode</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
+            Switch between asynchronous (default) and synchronous workers. Changes require restarting worker processes.
+        </p>
+        <form id="runtime-form" class="space-y-4">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <label class="inline-flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-white">
+                    <input type="radio" name="runtime-mode" value="async" class="w-4 h-4 border-gray-300 text-blue-600 focus:ring-blue-500">
+                    Async (non-blocking)
+                </label>
+                <label class="inline-flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-white">
+                    <input type="radio" name="runtime-mode" value="sync" class="w-4 h-4 border-gray-300 text-blue-600 focus:ring-blue-500">
+                    Sync (threaded workers)
+                </label>
+            </div>
+
+            <div>
+                <label for="thread-pool-size" class="block mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                    Sync Thread Pool Size
+                </label>
+                <input type="number" id="thread-pool-size" min="1" max="64" placeholder="Leave blank for default"
+                       class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Used only in sync mode. Leave empty to use automatic sizing.
+                </p>
+            </div>
+
+            <div class="rounded-lg bg-yellow-50 border border-yellow-200 px-4 py-3 text-sm text-yellow-800 dark:bg-yellow-900 dark:border-yellow-700 dark:text-yellow-200">
+                After saving runtime settings, restart all worker processes to apply the change.
+            </div>
+
+            <button type="submit" class="w-full px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800">
+                Save Runtime Settings
+            </button>
+        </form>
+    </div>
+</div>
+
 <!-- Success/Error Message -->
 <div id="settings-message" class="hidden mt-4 p-4 rounded-lg"></div>
 {% endblock %}
@@ -75,6 +116,9 @@
     import { ApiClient } from '/static/src/api.js';
 
     const api = new ApiClient();
+
+    const runtimeRadios = document.querySelectorAll('input[name="runtime-mode"]');
+    const threadPoolInput = document.getElementById('thread-pool-size');
 
     async function loadConfig() {
         const config = await api.get('/config');
@@ -88,6 +132,15 @@
             // Retry settings
             document.getElementById('max-attempts').value = config.retry.max_attempts;
             document.getElementById('backoff-schedule').value = config.retry.backoff_schedule.join(', ');
+
+            // Runtime settings
+            if (config.runtime) {
+                const mode = config.runtime.mode || 'async';
+                runtimeRadios.forEach((radio) => {
+                    radio.checked = radio.value === mode;
+                });
+                threadPoolInput.value = config.runtime.thread_pool_size ?? '';
+            }
         }
     }
 
@@ -127,6 +180,32 @@
         };
         const result = await api.put('/config', data);
         showMessage(result ? 'Retry settings saved!' : 'Failed to save', !result);
+    });
+
+    document.getElementById('runtime-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const selected = document.querySelector('input[name="runtime-mode"]:checked');
+        const mode = selected ? selected.value : 'async';
+        const poolValue = threadPoolInput.value.trim();
+        let threadPoolSize = null;
+        if (poolValue !== '') {
+            const parsed = parseInt(poolValue, 10);
+            if (Number.isNaN(parsed) || parsed < 1 || parsed > 64) {
+                showMessage('Thread pool size must be between 1 and 64', true);
+                return;
+            }
+            threadPoolSize = parsed;
+        }
+        const result = await api.put('/config', {
+            runtime: {
+                mode,
+                thread_pool_size: threadPoolSize,
+            },
+        });
+        showMessage(
+            result ? 'Runtime settings saved! Restart workers to apply changes.' : 'Failed to save runtime settings',
+            !result
+        );
     });
 
     loadConfig();
