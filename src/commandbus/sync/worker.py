@@ -33,6 +33,7 @@ class SyncWorker:
         self._executor = ThreadPoolExecutor(max_workers=get_thread_pool_size(thread_pool_size))
         self._future_lock = threading.Lock()
         self._run_future: Future[None] | None = None
+        self._is_running = False
 
     def run(
         self,
@@ -54,8 +55,11 @@ class SyncWorker:
             )
 
         with self._future_lock:
+            if self._is_running:
+                raise RuntimeError("Worker is already running")
             if self._run_future is not None and not self._run_future.done():
                 raise RuntimeError("Worker is already running")
+            self._is_running = True
             self._run_future = self._executor.submit(_target)
 
         if block:
@@ -66,6 +70,7 @@ class SyncWorker:
         self._runtime.run(self._worker.stop(timeout=timeout))
         with self._future_lock:
             future = self._run_future
+            self._is_running = False
         if future is not None:
             future.result(timeout)
 
@@ -75,4 +80,7 @@ class SyncWorker:
             future = self._run_future
         if future is not None and not future.done():
             self.stop()
+        else:
+            with self._future_lock:
+                self._is_running = False
         self._executor.shutdown(wait=True)

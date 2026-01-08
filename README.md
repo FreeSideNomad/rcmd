@@ -1189,6 +1189,8 @@ for i in {1..4}; do
 done
 ```
 
+The worker CLI automatically reads the runtime settings saved via `/settings` (async vs sync mode and optional thread pool size). After changing those settings, restart the worker process so it can reconnect using the new mode. On startup the logs print the current mode, for example `Runtime mode: sync (thread_pool_size=8)`, and the CLI will switch between async `Worker` loops and the blocking `SyncWorker`/`SyncProcessReplyRouter` wrappers accordingly.
+
 ### Probabilistic Behavior Model
 
 Commands use a **probabilistic behavior model** with configurable outcome percentages:
