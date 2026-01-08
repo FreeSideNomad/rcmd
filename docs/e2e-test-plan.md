@@ -39,7 +39,7 @@ This test plan covers manual End-to-End (E2E) UI testing for the Command Bus Dem
 | Resolution | Desktop: 1920x1080, Tablet: 768x1024, Mobile: 375x667 |
 | Database | PostgreSQL 15+ with PGMQ extension |
 | Backend | Flask 3.x running on localhost:5000 |
-| Workers | At least 1 worker process running |
+| Workers | Run `python -m app.worker` (restart after changing Runtime settings) |
 
 ### 1.4 Test Approach
 
