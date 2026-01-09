@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -267,6 +267,23 @@ async def _run_sync_services(
         )
         for worker in workers
     ]
+
+    def _attach_exit_logging(task: asyncio.Task[Any], label: str) -> None:
+        def _log_failure(done: asyncio.Task[Any]) -> None:
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception:
+                logger.exception("%s exited with error", label)
+
+        task.add_done_callback(_log_failure)
+
+    for worker, task in zip(workers, worker_tasks, strict=False):
+        domain = getattr(worker, "domain", None)
+        worker_label = f"Sync worker for {domain}" if domain else "Sync worker"
+        _attach_exit_logging(task, worker_label)
+
     router_task = asyncio.create_task(
         asyncio.to_thread(
             router.run,
@@ -274,6 +291,11 @@ async def _run_sync_services(
             poll_interval=worker_config.poll_interval,
         )
     )
+    reply_queue = getattr(router, "reply_queue", None)
+    router_label = (
+        f"Sync process router for {reply_queue}" if reply_queue else "Sync process router"
+    )
+    _attach_exit_logging(router_task, router_label)
     run_task = asyncio.gather(*worker_tasks, router_task)
 
     stop_waiter = asyncio.create_task(stop_event.wait())

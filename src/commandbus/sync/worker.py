@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,9 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
 
     from commandbus.sync.runtime import SyncRuntime
+
+
+logger = logging.getLogger(__name__)
 
 
 class SyncWorker:
@@ -46,13 +50,17 @@ class SyncWorker:
         """Start the worker loop in a background thread."""
 
         def _target() -> None:
-            self._runtime.run(
-                self._worker.run(
-                    concurrency=concurrency,
-                    poll_interval=poll_interval,
-                    use_notify=use_notify,
+            try:
+                self._runtime.run(
+                    self._worker.run(
+                        concurrency=concurrency,
+                        poll_interval=poll_interval,
+                        use_notify=use_notify,
+                    )
                 )
-            )
+            except Exception:
+                logger.exception(f"Sync wrapper for {self._worker.domain} crashed")
+                raise
 
         with self._future_lock:
             if self._is_running:
@@ -84,3 +92,8 @@ class SyncWorker:
             with self._future_lock:
                 self._is_running = False
         self._executor.shutdown(wait=True)
+
+    @property
+    def domain(self) -> str:
+        """Expose wrapped worker domain for diagnostics."""
+        return self._worker.domain
