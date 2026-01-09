@@ -24,15 +24,46 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+WORKER_DOMAINS: tuple[str, ...] = ("e2e", "reporting")
+POOL_HEADROOM = 5
+POOL_MIN_SIZE = 2
+CONFIG_POOL_MAX = 2
 
-async def create_pool() -> AsyncConnectionPool:
-    """Create database connection pool."""
+
+def _calculate_pool_limits(worker_config: WorkerConfig) -> tuple[int, int]:
+    """Determine pool sizing based on worker/router concurrency."""
+    concurrency = max(1, worker_config.concurrency)
+    worker_slots = concurrency * len(WORKER_DOMAINS)
+    router_slots = concurrency
+    max_size = max(POOL_MIN_SIZE, worker_slots + router_slots + POOL_HEADROOM)
+    return POOL_MIN_SIZE, max_size
+
+
+async def _load_config_store() -> ConfigStore:
+    """Load runtime configuration using a small bootstrap pool."""
+    bootstrap = AsyncConnectionPool(
+        conninfo=Config.DATABASE_URL,
+        min_size=1,
+        max_size=CONFIG_POOL_MAX,
+        open=False,
+    )
+    await bootstrap.open()
+    try:
+        return await get_config_store(bootstrap)
+    finally:
+        await bootstrap.close()
+
+
+async def create_pool(*, min_size: int, max_size: int) -> AsyncConnectionPool:
+    """Create database connection pool with explicit sizing."""
     pool = AsyncConnectionPool(
         conninfo=Config.DATABASE_URL,
-        min_size=2,
-        max_size=10,
+        min_size=min_size,
+        max_size=max_size,
+        open=False,
     )
     await pool.open()
+    logger.info("Initialized pool (min_size=%s, max_size=%s)", min_size, max_size)
     return pool
 
 
@@ -98,31 +129,34 @@ async def run_worker(  # noqa: PLR0915
             except NotImplementedError:
                 signal.signal(sig, lambda _sig, _frame, s=sig: _request_shutdown(s.name))
 
-    pool = await create_pool()
-    registry = create_registry(pool)
-    bus = CommandBus(pool)
-    process_repo = PostgresProcessRepository(pool)
-    behavior_repo = TestCommandRepository(pool)
-
-    report_process = StatementReportProcess(
-        command_bus=bus,
-        process_repo=process_repo,
-        reply_queue="reporting__process_replies",
-        pool=pool,
-        behavior_repo=behavior_repo,
-    )
-    managers = {report_process.process_type: report_process}
-
+    pool: AsyncConnectionPool | None = None
     sync_runtime: SyncRuntime | None = None
     try:
-        config_store = await get_config_store(pool)
+        config_store = await _load_config_store()
         runtime_mode = config_store.runtime.mode
         thread_pool_size = config_store.runtime.thread_pool_size
+        pool_min, pool_max = _calculate_pool_limits(config_store.worker)
+        pool = await create_pool(min_size=pool_min, max_size=pool_max)
+        registry = create_registry(pool)
+        bus = CommandBus(pool)
+        process_repo = PostgresProcessRepository(pool)
+        behavior_repo = TestCommandRepository(pool)
+
+        report_process = StatementReportProcess(
+            command_bus=bus,
+            process_repo=process_repo,
+            reply_queue="reporting__process_replies",
+            pool=pool,
+            behavior_repo=behavior_repo,
+        )
+        managers = {report_process.process_type: report_process}
+
         effective_threads = get_sync_thread_pool_size(thread_pool_size)
         logger.info(
-            "Runtime mode: %s (thread_pool_size=%s)",
+            "Runtime mode: %s (thread_pool_size=%s, pool_max=%s)",
             runtime_mode,
             effective_threads if runtime_mode == "sync" else "async-event-loop",
+            pool_max,
         )
 
         if runtime_mode == "sync":
@@ -204,7 +238,8 @@ async def run_worker(  # noqa: PLR0915
             if sync_runtime is not None:
                 sync_runtime.shutdown()
         finally:
-            await pool.close()
+            if pool is not None:
+                await pool.close()
 
 
 async def _run_async_services(

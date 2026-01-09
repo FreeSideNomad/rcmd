@@ -14,6 +14,8 @@ from tests.e2e.app.config import RetryConfig, RuntimeConfig, WorkerConfig
 class FakePool:
     def __init__(self) -> None:
         self.closed = False
+        self.min_size: int | None = None
+        self.max_size: int | None = None
 
     async def close(self) -> None:
         self.closed = True
@@ -52,7 +54,9 @@ async def test_async_mode_default(
 
     pool = FakePool()
 
-    async def fake_create_pool() -> FakePool:
+    async def fake_create_pool(*, min_size: int, max_size: int) -> FakePool:
+        pool.min_size = min_size
+        pool.max_size = max_size
         return pool
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
@@ -83,10 +87,10 @@ async def test_async_mode_default(
     retry_cfg = RetryConfig(max_attempts=5, backoff_schedule=[1, 2, 4])
     store = SimpleNamespace(worker=worker_cfg, runtime=runtime_cfg, retry=retry_cfg)
 
-    async def fake_get_config_store(_pool: Any) -> SimpleNamespace:
+    async def fake_load_config_store() -> SimpleNamespace:
         return store
 
-    monkeypatch.setattr(worker_module, "get_config_store", fake_get_config_store)
+    monkeypatch.setattr(worker_module, "_load_config_store", fake_load_config_store)
 
     shutdown_event = asyncio.Event()
     shutdown_event.set()
@@ -94,6 +98,13 @@ async def test_async_mode_default(
     await worker_module.run_worker(shutdown_event=shutdown_event)
 
     assert pool.closed
+    assert pool.min_size == worker_module.POOL_MIN_SIZE
+    expected_max = (
+        worker_cfg.concurrency * len(worker_module.WORKER_DOMAINS)
+        + worker_cfg.concurrency
+        + worker_module.POOL_HEADROOM
+    )
+    assert pool.max_size == expected_max
     assert len(workers) == 2
     for call in workers[0].run_calls + workers[1].run_calls:
         assert call["concurrency"] == worker_cfg.concurrency
@@ -112,7 +123,9 @@ async def test_sync_mode_lifecycle(
 
     pool = FakePool()
 
-    async def fake_create_pool() -> FakePool:
+    async def fake_create_pool(*, min_size: int, max_size: int) -> FakePool:
+        pool.min_size = min_size
+        pool.max_size = max_size
         return pool
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
@@ -140,10 +153,10 @@ async def test_sync_mode_lifecycle(
     retry_cfg = RetryConfig(max_attempts=3, backoff_schedule=[2])
     store = SimpleNamespace(worker=worker_cfg, runtime=runtime_cfg, retry=retry_cfg)
 
-    async def fake_get_config_store(_pool: Any) -> SimpleNamespace:
+    async def fake_load_config_store() -> SimpleNamespace:
         return store
 
-    monkeypatch.setattr(worker_module, "get_config_store", fake_get_config_store)
+    monkeypatch.setattr(worker_module, "_load_config_store", fake_load_config_store)
 
     created_runtime: list[FakeSyncRuntime] = []
 
@@ -234,7 +247,9 @@ async def test_sync_mode_lifecycle(
 async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> None:
     pool = FakePool()
 
-    async def fake_create_pool() -> FakePool:
+    async def fake_create_pool(*, min_size: int, max_size: int) -> FakePool:
+        pool.min_size = min_size
+        pool.max_size = max_size
         return pool
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
@@ -255,10 +270,10 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
     retry_cfg = RetryConfig()
     store = SimpleNamespace(worker=worker_cfg, runtime=runtime_cfg, retry=retry_cfg)
 
-    async def fake_get_config_store(_pool: Any) -> SimpleNamespace:
+    async def fake_load_config_store() -> SimpleNamespace:
         return store
 
-    monkeypatch.setattr(worker_module, "get_config_store", fake_get_config_store)
+    monkeypatch.setattr(worker_module, "_load_config_store", fake_load_config_store)
 
     class InspectableSyncWorker:
         instances: ClassVar[list[int | None]] = []
@@ -310,3 +325,23 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
         runtime_cfg.thread_pool_size,
         runtime_cfg.thread_pool_size,
     ]
+    assert pool.closed
+
+
+def test_calculate_pool_limits_scales_with_concurrency() -> None:
+    worker_cfg = WorkerConfig(concurrency=10)
+    min_size, max_size = worker_module._calculate_pool_limits(worker_cfg)
+    assert min_size == worker_module.POOL_MIN_SIZE
+    expected = (
+        worker_cfg.concurrency * len(worker_module.WORKER_DOMAINS)
+        + worker_cfg.concurrency
+        + worker_module.POOL_HEADROOM
+    )
+    assert max_size == expected
+
+
+def test_calculate_pool_limits_handles_zero_concurrency() -> None:
+    worker_cfg = WorkerConfig(concurrency=0)
+    _, max_size = worker_module._calculate_pool_limits(worker_cfg)
+    expected = 1 * len(worker_module.WORKER_DOMAINS) + 1 + worker_module.POOL_HEADROOM
+    assert max_size == expected
