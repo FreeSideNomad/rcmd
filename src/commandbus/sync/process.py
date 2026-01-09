@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
@@ -13,6 +14,9 @@ if TYPE_CHECKING:
     from concurrent.futures import Future
 
     from commandbus.sync.runtime import SyncRuntime
+
+
+logger = logging.getLogger(__name__)
 
 
 class SyncProcessReplyRouter:
@@ -48,13 +52,17 @@ class SyncProcessReplyRouter:
         """Start the reply router loop."""
 
         def _target() -> None:
-            self._runtime.run(
-                self._router.run(
-                    concurrency=concurrency,
-                    poll_interval=poll_interval,
-                    use_notify=use_notify,
+            try:
+                self._runtime.run(
+                    self._router.run(
+                        concurrency=concurrency,
+                        poll_interval=poll_interval,
+                        use_notify=use_notify,
+                    )
                 )
-            )
+            except Exception:
+                logger.exception("Sync wrapper for reply router crashed")
+                raise
 
         with self._future_lock:
             if self._run_future is not None and not self._run_future.done():
@@ -79,3 +87,13 @@ class SyncProcessReplyRouter:
         if future is not None and not future.done():
             self.stop()
         self._executor.shutdown(wait=True)
+
+    @property
+    def reply_queue(self) -> str:
+        """Expose wrapped router reply queue."""
+        return self._router.reply_queue
+
+    @property
+    def domain(self) -> str:
+        """Expose wrapped router domain."""
+        return self._router.domain

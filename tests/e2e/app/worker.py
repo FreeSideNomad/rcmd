@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -24,15 +26,66 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+WORKER_DOMAINS: tuple[str, ...] = ("e2e", "reporting")
+POOL_HEADROOM = 10
+POOL_MIN_SIZE = 2
+CONFIG_POOL_MAX = 2
+WORKER_CONNECTION_MULTIPLIER = 5
+ROUTER_CONNECTION_MULTIPLIER = 3
+LISTEN_CONNECTIONS = len(WORKER_DOMAINS) + 1
+RESERVED_POOL_GUARD = 5
+ENV_POOL_CAP = os.environ.get("E2E_MAX_POOL_SIZE")
 
-async def create_pool() -> AsyncConnectionPool:
-    """Create database connection pool."""
+
+def _calculate_pool_plan(worker_config: WorkerConfig, pool_cap: int) -> tuple[int, int, int]:
+    """Determine pool sizing and effective concurrency based on configuration."""
+    concurrency = max(1, worker_config.concurrency)
+    conn_per_tick = (
+        len(WORKER_DOMAINS) * WORKER_CONNECTION_MULTIPLIER + ROUTER_CONNECTION_MULTIPLIER
+    )
+    base_connections = LISTEN_CONNECTIONS
+    target_max = base_connections + concurrency * conn_per_tick + POOL_HEADROOM
+    capped_max = max(POOL_MIN_SIZE, min(target_max, pool_cap))
+    available_slots = max(1, capped_max - base_connections - POOL_HEADROOM)
+    supported_concurrency = max(1, min(concurrency, available_slots // conn_per_tick or 1))
+    return POOL_MIN_SIZE, capped_max, supported_concurrency
+
+
+async def _load_runtime_settings() -> tuple[ConfigStore, int]:
+    """Load runtime configuration and determine pool capacity."""
+    bootstrap = AsyncConnectionPool(
+        conninfo=Config.DATABASE_URL,
+        min_size=1,
+        max_size=CONFIG_POOL_MAX,
+        open=False,
+    )
+    await bootstrap.open()
+    try:
+        store = await get_config_store(bootstrap)
+        async with bootstrap.connection() as conn, conn.cursor() as cur:
+            await cur.execute("SHOW max_connections")
+            max_connections = int((await cur.fetchone())[0])
+            await cur.execute("SHOW superuser_reserved_connections")
+            reserved = int((await cur.fetchone())[0])
+        available = max_connections - reserved - RESERVED_POOL_GUARD
+        env_cap = int(ENV_POOL_CAP) if ENV_POOL_CAP is not None else None
+        server_cap = max(POOL_MIN_SIZE, available)
+        pool_cap = min(server_cap, env_cap) if env_cap is not None else server_cap
+        return store, pool_cap
+    finally:
+        await bootstrap.close()
+
+
+async def create_pool(*, min_size: int, max_size: int) -> AsyncConnectionPool:
+    """Create database connection pool with explicit sizing."""
     pool = AsyncConnectionPool(
         conninfo=Config.DATABASE_URL,
-        min_size=2,
-        max_size=10,
+        min_size=min_size,
+        max_size=max_size,
+        open=False,
     )
     await pool.open()
+    logger.info("Initialized pool (min_size=%s, max_size=%s)", min_size, max_size)
     return pool
 
 
@@ -71,7 +124,7 @@ def create_worker(
     )
 
 
-async def run_worker(  # noqa: PLR0915
+async def run_worker(  # noqa: PLR0912, PLR0915
     shutdown_event: asyncio.Event | None = None,
 ) -> None:
     """Run workers and reply router with configuration from database."""
@@ -98,31 +151,60 @@ async def run_worker(  # noqa: PLR0915
             except NotImplementedError:
                 signal.signal(sig, lambda _sig, _frame, s=sig: _request_shutdown(s.name))
 
-    pool = await create_pool()
-    registry = create_registry(pool)
-    bus = CommandBus(pool)
-    process_repo = PostgresProcessRepository(pool)
-    behavior_repo = TestCommandRepository(pool)
-
-    report_process = StatementReportProcess(
-        command_bus=bus,
-        process_repo=process_repo,
-        reply_queue="reporting__process_replies",
-        pool=pool,
-        behavior_repo=behavior_repo,
-    )
-    managers = {report_process.process_type: report_process}
-
+    pool: AsyncConnectionPool | None = None
     sync_runtime: SyncRuntime | None = None
     try:
-        config_store = await get_config_store(pool)
+        config_store, pool_cap = await _load_runtime_settings()
         runtime_mode = config_store.runtime.mode
         thread_pool_size = config_store.runtime.thread_pool_size
+        pool_min, pool_max, effective_concurrency = _calculate_pool_plan(
+            config_store.worker, pool_cap
+        )
+        if effective_concurrency != config_store.worker.concurrency:
+            logger.warning(
+                "Configured worker concurrency %s exceeds pool capacity, capping to %s",
+                config_store.worker.concurrency,
+                effective_concurrency,
+            )
+        worker_config = replace(config_store.worker, concurrency=effective_concurrency)
+        logger.info(
+            "Pool plan: cap=%s, min=%s, requested_concurrency=%s, effective_concurrency=%s",
+            pool_cap,
+            pool_min,
+            config_store.worker.concurrency,
+            worker_config.concurrency,
+        )
+        if runtime_mode == "sync":
+            original_sync_concurrency = worker_config.concurrency
+            worker_config = replace(worker_config, concurrency=min(original_sync_concurrency, 2))
+            if worker_config.concurrency != original_sync_concurrency:
+                logger.warning(
+                    "Sync runtime forcing concurrency to %s to avoid pool exhaustion",
+                    worker_config.concurrency,
+                )
+
+        pool = await create_pool(min_size=pool_min, max_size=pool_max)
+        registry = create_registry(pool)
+        bus = CommandBus(pool)
+        process_repo = PostgresProcessRepository(pool)
+        behavior_repo = TestCommandRepository(pool)
+
+        report_process = StatementReportProcess(
+            command_bus=bus,
+            process_repo=process_repo,
+            reply_queue="reporting__process_replies",
+            pool=pool,
+            behavior_repo=behavior_repo,
+        )
+        managers = {report_process.process_type: report_process}
+
         effective_threads = get_sync_thread_pool_size(thread_pool_size)
         logger.info(
-            "Runtime mode: %s (thread_pool_size=%s)",
+            "Runtime mode: %s (thread_pool_size=%s, pool_max=%s, concurrency=%s)",
             runtime_mode,
             effective_threads if runtime_mode == "sync" else "async-event-loop",
+            pool_max,
+            worker_config.concurrency,
         )
 
         if runtime_mode == "sync":
@@ -131,14 +213,14 @@ async def run_worker(  # noqa: PLR0915
                 pool,
                 domain="e2e",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             base_reporting_worker = create_worker(
                 pool,
                 domain="reporting",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             sync_e2e = SyncWorker(
@@ -166,7 +248,7 @@ async def run_worker(  # noqa: PLR0915
             await _run_sync_services(
                 workers=(sync_e2e, sync_reporting),
                 router=sync_router,
-                worker_config=config_store.worker,
+                worker_config=worker_config,
                 stop_event=stop_event,
             )
         else:
@@ -174,14 +256,14 @@ async def run_worker(  # noqa: PLR0915
                 pool,
                 domain="e2e",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             reporting_worker = create_worker(
                 pool,
                 domain="reporting",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             router = ProcessReplyRouter(
@@ -194,7 +276,7 @@ async def run_worker(  # noqa: PLR0915
             await _run_async_services(
                 workers=(e2e_worker, reporting_worker),
                 router=router,
-                worker_config=config_store.worker,
+                worker_config=worker_config,
                 stop_event=stop_event,
             )
     finally:
@@ -204,7 +286,8 @@ async def run_worker(  # noqa: PLR0915
             if sync_runtime is not None:
                 sync_runtime.shutdown()
         finally:
-            await pool.close()
+            if pool is not None:
+                await pool.close()
 
 
 async def _run_async_services(
@@ -267,6 +350,23 @@ async def _run_sync_services(
         )
         for worker in workers
     ]
+
+    def _attach_exit_logging(task: asyncio.Task[Any], label: str) -> None:
+        def _log_failure(done: asyncio.Task[Any]) -> None:
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception:
+                logger.exception("%s exited with error", label)
+
+        task.add_done_callback(_log_failure)
+
+    for worker, task in zip(workers, worker_tasks, strict=False):
+        domain = getattr(worker, "domain", None)
+        worker_label = f"Sync worker for {domain}" if domain else "Sync worker"
+        _attach_exit_logging(task, worker_label)
+
     router_task = asyncio.create_task(
         asyncio.to_thread(
             router.run,
@@ -274,6 +374,11 @@ async def _run_sync_services(
             poll_interval=worker_config.poll_interval,
         )
     )
+    reply_queue = getattr(router, "reply_queue", None)
+    router_label = (
+        f"Sync process router for {reply_queue}" if reply_queue else "Sync process router"
+    )
+    _attach_exit_logging(router_task, router_label)
     run_task = asyncio.gather(*worker_tasks, router_task)
 
     stop_waiter = asyncio.create_task(stop_event.wait())

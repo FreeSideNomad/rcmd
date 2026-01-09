@@ -527,6 +527,9 @@ class Worker:
                 await self._run_with_polling(semaphore, poll_interval)
         except asyncio.CancelledError:
             logger.info("Worker received cancellation signal")
+        except Exception:
+            logger.exception(f"Worker for {self._domain} crashed; propagate error to supervisor")
+            raise
         finally:
             await self._wait_for_in_flight()
             self._running = False

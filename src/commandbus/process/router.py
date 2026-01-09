@@ -52,6 +52,16 @@ class ProcessReplyRouter:
     def is_running(self) -> bool:
         return self._running
 
+    @property
+    def reply_queue(self) -> str:
+        """Return the reply queue name."""
+        return self._reply_queue
+
+    @property
+    def domain(self) -> str:
+        """Return the domain handled by this router."""
+        return self._domain
+
     async def run(
         self,
         concurrency: int = 10,
@@ -74,6 +84,9 @@ class ProcessReplyRouter:
                 await self._run_with_polling(semaphore, poll_interval)
         except asyncio.CancelledError:
             logger.info("Reply router received cancellation signal")
+        except Exception:
+            logger.exception("Reply router crashed; propagate error to supervisor")
+            raise
         finally:
             await self._wait_for_in_flight()
             self._running = False
