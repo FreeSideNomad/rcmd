@@ -124,7 +124,7 @@ def create_worker(
     )
 
 
-async def run_worker(  # noqa: PLR0915
+async def run_worker(  # noqa: PLR0912, PLR0915
     shutdown_event: asyncio.Event | None = None,
 ) -> None:
     """Run workers and reply router with configuration from database."""
@@ -167,6 +167,21 @@ async def run_worker(  # noqa: PLR0915
                 effective_concurrency,
             )
         worker_config = replace(config_store.worker, concurrency=effective_concurrency)
+        logger.info(
+            "Pool plan: cap=%s, min=%s, requested_concurrency=%s, effective_concurrency=%s",
+            pool_cap,
+            pool_min,
+            config_store.worker.concurrency,
+            worker_config.concurrency,
+        )
+        if runtime_mode == "sync":
+            original_sync_concurrency = worker_config.concurrency
+            worker_config = replace(worker_config, concurrency=min(original_sync_concurrency, 2))
+            if worker_config.concurrency != original_sync_concurrency:
+                logger.warning(
+                    "Sync runtime forcing concurrency to %s to avoid pool exhaustion",
+                    worker_config.concurrency,
+                )
 
         pool = await create_pool(min_size=pool_min, max_size=pool_max)
         registry = create_registry(pool)
