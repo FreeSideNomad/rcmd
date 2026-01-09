@@ -27,35 +27,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 WORKER_DOMAINS: tuple[str, ...] = ("e2e", "reporting")
-POOL_HEADROOM = 5
+POOL_HEADROOM = 10
 POOL_MIN_SIZE = 2
 CONFIG_POOL_MAX = 2
-WORKER_CONNECTION_MULTIPLIER = 3
-ROUTER_CONNECTION_MULTIPLIER = 2
-DEFAULT_POOL_CAP = int(os.environ.get("E2E_MAX_POOL_SIZE", "120"))
+WORKER_CONNECTION_MULTIPLIER = 5
+ROUTER_CONNECTION_MULTIPLIER = 3
+LISTEN_CONNECTIONS = len(WORKER_DOMAINS) + 1
+RESERVED_POOL_GUARD = 5
+ENV_POOL_CAP = os.environ.get("E2E_MAX_POOL_SIZE")
 
 
-def _calculate_pool_plan(worker_config: WorkerConfig) -> tuple[int, int, int]:
+def _calculate_pool_plan(worker_config: WorkerConfig, pool_cap: int) -> tuple[int, int, int]:
     """Determine pool sizing and effective concurrency based on configuration."""
     concurrency = max(1, worker_config.concurrency)
     conn_per_tick = (
         len(WORKER_DOMAINS) * WORKER_CONNECTION_MULTIPLIER + ROUTER_CONNECTION_MULTIPLIER
     )
-    desired_max = concurrency * conn_per_tick + POOL_HEADROOM
-    pool_cap = max(POOL_MIN_SIZE, DEFAULT_POOL_CAP)
-    max_size = max(POOL_MIN_SIZE, min(desired_max, pool_cap))
-
-    if desired_max <= pool_cap:
-        effective_concurrency = concurrency
-    else:
-        available = max(pool_cap - POOL_HEADROOM, 1)
-        effective_concurrency = max(1, available // conn_per_tick)
-
-    return POOL_MIN_SIZE, max_size, effective_concurrency
+    base_connections = LISTEN_CONNECTIONS
+    target_max = base_connections + concurrency * conn_per_tick + POOL_HEADROOM
+    capped_max = max(POOL_MIN_SIZE, min(target_max, pool_cap))
+    available_slots = max(1, capped_max - base_connections - POOL_HEADROOM)
+    supported_concurrency = max(1, min(concurrency, available_slots // conn_per_tick or 1))
+    return POOL_MIN_SIZE, capped_max, supported_concurrency
 
 
-async def _load_config_store() -> ConfigStore:
-    """Load runtime configuration using a small bootstrap pool."""
+async def _load_runtime_settings() -> tuple[ConfigStore, int]:
+    """Load runtime configuration and determine pool capacity."""
     bootstrap = AsyncConnectionPool(
         conninfo=Config.DATABASE_URL,
         min_size=1,
@@ -64,7 +61,17 @@ async def _load_config_store() -> ConfigStore:
     )
     await bootstrap.open()
     try:
-        return await get_config_store(bootstrap)
+        store = await get_config_store(bootstrap)
+        async with bootstrap.connection() as conn, conn.cursor() as cur:
+            await cur.execute("SHOW max_connections")
+            max_connections = int((await cur.fetchone())[0])
+            await cur.execute("SHOW superuser_reserved_connections")
+            reserved = int((await cur.fetchone())[0])
+        available = max_connections - reserved - RESERVED_POOL_GUARD
+        env_cap = int(ENV_POOL_CAP) if ENV_POOL_CAP is not None else None
+        server_cap = max(POOL_MIN_SIZE, available)
+        pool_cap = min(server_cap, env_cap) if env_cap is not None else server_cap
+        return store, pool_cap
     finally:
         await bootstrap.close()
 
@@ -147,10 +154,12 @@ async def run_worker(  # noqa: PLR0915
     pool: AsyncConnectionPool | None = None
     sync_runtime: SyncRuntime | None = None
     try:
-        config_store = await _load_config_store()
+        config_store, pool_cap = await _load_runtime_settings()
         runtime_mode = config_store.runtime.mode
         thread_pool_size = config_store.runtime.thread_pool_size
-        pool_min, pool_max, effective_concurrency = _calculate_pool_plan(config_store.worker)
+        pool_min, pool_max, effective_concurrency = _calculate_pool_plan(
+            config_store.worker, pool_cap
+        )
         if effective_concurrency != config_store.worker.concurrency:
             logger.warning(
                 "Configured worker concurrency %s exceeds pool capacity, capping to %s",

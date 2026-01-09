@@ -87,10 +87,12 @@ async def test_async_mode_default(
     retry_cfg = RetryConfig(max_attempts=5, backoff_schedule=[1, 2, 4])
     store = SimpleNamespace(worker=worker_cfg, runtime=runtime_cfg, retry=retry_cfg)
 
-    async def fake_load_config_store() -> SimpleNamespace:
-        return store
+    pool_cap = 200
 
-    monkeypatch.setattr(worker_module, "_load_config_store", fake_load_config_store)
+    async def fake_load_runtime_settings() -> tuple[SimpleNamespace, int]:
+        return store, pool_cap
+
+    monkeypatch.setattr(worker_module, "_load_runtime_settings", fake_load_runtime_settings)
 
     shutdown_event = asyncio.Event()
     shutdown_event.set()
@@ -99,7 +101,7 @@ async def test_async_mode_default(
 
     assert pool.closed
     expected_min, expected_max, expected_concurrency = worker_module._calculate_pool_plan(
-        worker_cfg
+        worker_cfg, pool_cap
     )
     assert pool.min_size == expected_min
     assert pool.max_size == expected_max
@@ -155,10 +157,12 @@ async def test_sync_mode_lifecycle(
     retry_cfg = RetryConfig(max_attempts=3, backoff_schedule=[2])
     store = SimpleNamespace(worker=worker_cfg, runtime=runtime_cfg, retry=retry_cfg)
 
-    async def fake_load_config_store() -> SimpleNamespace:
-        return store
+    pool_cap = 150
 
-    monkeypatch.setattr(worker_module, "_load_config_store", fake_load_config_store)
+    async def fake_load_runtime_settings() -> tuple[SimpleNamespace, int]:
+        return store, pool_cap
+
+    monkeypatch.setattr(worker_module, "_load_runtime_settings", fake_load_runtime_settings)
 
     created_runtime: list[FakeSyncRuntime] = []
 
@@ -272,10 +276,12 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
     retry_cfg = RetryConfig()
     store = SimpleNamespace(worker=worker_cfg, runtime=runtime_cfg, retry=retry_cfg)
 
-    async def fake_load_config_store() -> SimpleNamespace:
-        return store
+    pool_cap = 80
 
-    monkeypatch.setattr(worker_module, "_load_config_store", fake_load_config_store)
+    async def fake_load_runtime_settings() -> tuple[SimpleNamespace, int]:
+        return store, pool_cap
+
+    monkeypatch.setattr(worker_module, "_load_runtime_settings", fake_load_runtime_settings)
 
     class InspectableSyncWorker:
         instances: ClassVar[list[int | None]] = []
@@ -332,7 +338,8 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_calculate_pool_plan_scales_with_concurrency() -> None:
     worker_cfg = WorkerConfig(concurrency=10)
-    min_size, max_size, effective = worker_module._calculate_pool_plan(worker_cfg)
+    pool_cap = 500
+    min_size, max_size, effective = worker_module._calculate_pool_plan(worker_cfg, pool_cap)
     assert min_size == worker_module.POOL_MIN_SIZE
     assert max_size > worker_module.POOL_HEADROOM
     assert effective == worker_cfg.concurrency
@@ -340,14 +347,14 @@ def test_calculate_pool_plan_scales_with_concurrency() -> None:
 
 def test_calculate_pool_plan_handles_zero_concurrency() -> None:
     worker_cfg = WorkerConfig(concurrency=0)
-    _, _, effective = worker_module._calculate_pool_plan(worker_cfg)
+    _, _, effective = worker_module._calculate_pool_plan(worker_cfg, 100)
     assert effective == 1
 
 
-def test_calculate_pool_plan_caps_when_pool_small(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(worker_module, "DEFAULT_POOL_CAP", worker_module.POOL_HEADROOM + 10)
+def test_calculate_pool_plan_caps_when_pool_small() -> None:
     worker_cfg = WorkerConfig(concurrency=50)
-    _, max_size, effective = worker_module._calculate_pool_plan(worker_cfg)
-    assert max_size == worker_module.DEFAULT_POOL_CAP
+    pool_cap = worker_module.POOL_HEADROOM + worker_module.LISTEN_CONNECTIONS + 20
+    _, max_size, effective = worker_module._calculate_pool_plan(worker_cfg, pool_cap)
+    assert max_size == pool_cap
     assert effective < worker_cfg.concurrency
     assert effective >= 1
