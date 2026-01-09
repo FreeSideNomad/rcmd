@@ -98,16 +98,18 @@ async def test_async_mode_default(
     await worker_module.run_worker(shutdown_event=shutdown_event)
 
     assert pool.closed
-    assert pool.min_size == worker_module.POOL_MIN_SIZE
-    expected_max = (
-        worker_cfg.concurrency * len(worker_module.WORKER_DOMAINS)
-        + worker_cfg.concurrency
-        + worker_module.POOL_HEADROOM
+    expected_min, expected_max, expected_concurrency = worker_module._calculate_pool_plan(
+        worker_cfg
     )
+    assert pool.min_size == expected_min
     assert pool.max_size == expected_max
+    assert workers
+    for worker in workers:
+        assert worker.run_calls
+        assert worker.run_calls[0]["concurrency"] == expected_concurrency
     assert len(workers) == 2
     for call in workers[0].run_calls + workers[1].run_calls:
-        assert call["concurrency"] == worker_cfg.concurrency
+        assert call["concurrency"] == expected_concurrency
         assert call["poll_interval"] == worker_cfg.poll_interval
     assert fake_router.run_calls
     assert fake_router.stop_calls == 1
@@ -328,20 +330,24 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
     assert pool.closed
 
 
-def test_calculate_pool_limits_scales_with_concurrency() -> None:
+def test_calculate_pool_plan_scales_with_concurrency() -> None:
     worker_cfg = WorkerConfig(concurrency=10)
-    min_size, max_size = worker_module._calculate_pool_limits(worker_cfg)
+    min_size, max_size, effective = worker_module._calculate_pool_plan(worker_cfg)
     assert min_size == worker_module.POOL_MIN_SIZE
-    expected = (
-        worker_cfg.concurrency * len(worker_module.WORKER_DOMAINS)
-        + worker_cfg.concurrency
-        + worker_module.POOL_HEADROOM
-    )
-    assert max_size == expected
+    assert max_size > worker_module.POOL_HEADROOM
+    assert effective == worker_cfg.concurrency
 
 
-def test_calculate_pool_limits_handles_zero_concurrency() -> None:
+def test_calculate_pool_plan_handles_zero_concurrency() -> None:
     worker_cfg = WorkerConfig(concurrency=0)
-    _, max_size = worker_module._calculate_pool_limits(worker_cfg)
-    expected = 1 * len(worker_module.WORKER_DOMAINS) + 1 + worker_module.POOL_HEADROOM
-    assert max_size == expected
+    _, _, effective = worker_module._calculate_pool_plan(worker_cfg)
+    assert effective == 1
+
+
+def test_calculate_pool_plan_caps_when_pool_small(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_module, "DEFAULT_POOL_CAP", worker_module.POOL_HEADROOM + 10)
+    worker_cfg = WorkerConfig(concurrency=50)
+    _, max_size, effective = worker_module._calculate_pool_plan(worker_cfg)
+    assert max_size == worker_module.DEFAULT_POOL_CAP
+    assert effective < worker_cfg.concurrency
+    assert effective >= 1

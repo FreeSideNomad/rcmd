@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from psycopg_pool import AsyncConnectionPool
@@ -28,15 +30,28 @@ WORKER_DOMAINS: tuple[str, ...] = ("e2e", "reporting")
 POOL_HEADROOM = 5
 POOL_MIN_SIZE = 2
 CONFIG_POOL_MAX = 2
+WORKER_CONNECTION_MULTIPLIER = 3
+ROUTER_CONNECTION_MULTIPLIER = 2
+DEFAULT_POOL_CAP = int(os.environ.get("E2E_MAX_POOL_SIZE", "120"))
 
 
-def _calculate_pool_limits(worker_config: WorkerConfig) -> tuple[int, int]:
-    """Determine pool sizing based on worker/router concurrency."""
+def _calculate_pool_plan(worker_config: WorkerConfig) -> tuple[int, int, int]:
+    """Determine pool sizing and effective concurrency based on configuration."""
     concurrency = max(1, worker_config.concurrency)
-    worker_slots = concurrency * len(WORKER_DOMAINS)
-    router_slots = concurrency
-    max_size = max(POOL_MIN_SIZE, worker_slots + router_slots + POOL_HEADROOM)
-    return POOL_MIN_SIZE, max_size
+    conn_per_tick = (
+        len(WORKER_DOMAINS) * WORKER_CONNECTION_MULTIPLIER + ROUTER_CONNECTION_MULTIPLIER
+    )
+    desired_max = concurrency * conn_per_tick + POOL_HEADROOM
+    pool_cap = max(POOL_MIN_SIZE, DEFAULT_POOL_CAP)
+    max_size = max(POOL_MIN_SIZE, min(desired_max, pool_cap))
+
+    if desired_max <= pool_cap:
+        effective_concurrency = concurrency
+    else:
+        available = max(pool_cap - POOL_HEADROOM, 1)
+        effective_concurrency = max(1, available // conn_per_tick)
+
+    return POOL_MIN_SIZE, max_size, effective_concurrency
 
 
 async def _load_config_store() -> ConfigStore:
@@ -135,7 +150,15 @@ async def run_worker(  # noqa: PLR0915
         config_store = await _load_config_store()
         runtime_mode = config_store.runtime.mode
         thread_pool_size = config_store.runtime.thread_pool_size
-        pool_min, pool_max = _calculate_pool_limits(config_store.worker)
+        pool_min, pool_max, effective_concurrency = _calculate_pool_plan(config_store.worker)
+        if effective_concurrency != config_store.worker.concurrency:
+            logger.warning(
+                "Configured worker concurrency %s exceeds pool capacity, capping to %s",
+                config_store.worker.concurrency,
+                effective_concurrency,
+            )
+        worker_config = replace(config_store.worker, concurrency=effective_concurrency)
+
         pool = await create_pool(min_size=pool_min, max_size=pool_max)
         registry = create_registry(pool)
         bus = CommandBus(pool)
@@ -153,10 +176,11 @@ async def run_worker(  # noqa: PLR0915
 
         effective_threads = get_sync_thread_pool_size(thread_pool_size)
         logger.info(
-            "Runtime mode: %s (thread_pool_size=%s, pool_max=%s)",
+            "Runtime mode: %s (thread_pool_size=%s, pool_max=%s, concurrency=%s)",
             runtime_mode,
             effective_threads if runtime_mode == "sync" else "async-event-loop",
             pool_max,
+            worker_config.concurrency,
         )
 
         if runtime_mode == "sync":
@@ -165,14 +189,14 @@ async def run_worker(  # noqa: PLR0915
                 pool,
                 domain="e2e",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             base_reporting_worker = create_worker(
                 pool,
                 domain="reporting",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             sync_e2e = SyncWorker(
@@ -200,7 +224,7 @@ async def run_worker(  # noqa: PLR0915
             await _run_sync_services(
                 workers=(sync_e2e, sync_reporting),
                 router=sync_router,
-                worker_config=config_store.worker,
+                worker_config=worker_config,
                 stop_event=stop_event,
             )
         else:
@@ -208,14 +232,14 @@ async def run_worker(  # noqa: PLR0915
                 pool,
                 domain="e2e",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             reporting_worker = create_worker(
                 pool,
                 domain="reporting",
                 retry_config=config_store.retry,
-                visibility_timeout=config_store.worker.visibility_timeout,
+                visibility_timeout=worker_config.visibility_timeout,
                 registry=registry,
             )
             router = ProcessReplyRouter(
@@ -228,7 +252,7 @@ async def run_worker(  # noqa: PLR0915
             await _run_async_services(
                 workers=(e2e_worker, reporting_worker),
                 router=router,
-                worker_config=config_store.worker,
+                worker_config=worker_config,
                 stop_event=stop_event,
             )
     finally:
