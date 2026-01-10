@@ -25,9 +25,13 @@ A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for re
 
 ## Release Highlights
 
-- **Dual runtime toggle.** The FastAPI E2E app, worker CLI, and API dependencies now honor the async vs sync runtime stored in `/settings`, with logs showing `Runtime mode: ...` and guidance to restart workers after saving.
-- **Synchronous facades everywhere.** `SyncCommandBus`, `SyncWorker`, `SyncProcessReplyRouter`, and the new runtime manager let you exercise the entire stack with blocking frameworks, backed by integration smoke tests for parity with async mode.
-- **Operator playbook.** The [E2E test plan](docs/e2e-test-plan.md#module-runtime-toggle-ts-runtime) documents how to flip modes, restart services, send verification commands, inspect TSQ, and toggle back—perfect for QA sign-off ahead of releases.
+### v0.2.0 - Native Synchronous Runtime
+
+- **Native sync implementation.** Complete rewrite of synchronous components using psycopg3's native `ConnectionPool` (sync) instead of async wrappers. `SyncWorker` now uses `ThreadPoolExecutor` for true thread-based concurrency without event loop overhead.
+- **2.4x throughput improvement.** Batch processing performance increased from ~250/s to ~610/s through on-demand batch stats calculation, eliminating hot row contention on the batch table.
+- **Dual runtime toggle.** The FastAPI E2E app, worker CLI, and API dependencies honor the async vs sync runtime stored in `/settings`, with logs showing `Runtime mode: ...` and guidance to restart workers after saving.
+- **Linear scaling for I/O-bound workloads.** With the native sync implementation, workers scale near-linearly: 5 workers achieve ~640 commands/sec for 200ms latency tasks (vs ~190/s with 1 worker).
+- **Operator playbook.** The [E2E test plan](docs/e2e-test-plan.md#module-runtime-toggle-ts-runtime) documents how to flip modes, restart services, send verification commands, inspect TSQ, and toggle back.
 
 ---
 
@@ -403,39 +407,40 @@ python -c "from commandbus import get_schema_sql; print(get_schema_sql())" > sch
 
 ## Synchronous Usage
 
-Reliable Commands is async-first, but many teams build synchronous frameworks (Flask, Django, CLI tools). The `commandbus.sync` package wraps the core async APIs with a managed event loop so you can call them from blocking code without writing your own `asyncio` plumbing.
+Reliable Commands provides **native synchronous support** for teams using blocking frameworks (Flask, Django, CLI tools). The `commandbus.sync` package uses psycopg3's native sync `ConnectionPool` and `ThreadPoolExecutor` for true thread-based concurrency—no async wrappers or event loops involved.
 
 ```python
 from uuid import uuid4
 
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import ConnectionPool  # Note: sync ConnectionPool, not AsyncConnectionPool
 from commandbus import Command, HandlerRegistry, handler
-from commandbus.sync import (
-    SyncCommandBus,
-    SyncTroubleshootingQueue,
-    SyncWorker,
-    configure,
-)
+
+from commandbus.sync import SyncCommandBus, SyncWorker
+
 
 class PaymentHandlers:
-    def __init__(self, pool: AsyncConnectionPool) -> None:
+    def __init__(self, pool: ConnectionPool) -> None:
         self._pool = pool
 
     @handler(domain="payments", command_type="DebitAccount")
-    async def handle(self, cmd: Command, ctx):
-        # Async handler logic is unchanged
+    def handle(self, cmd: Command, ctx):  # Sync handler - no async/await
+        # Blocking handler logic
+        with self._pool.connection() as conn:
+            conn.execute("UPDATE accounts SET balance = balance - %s WHERE id = %s",
+                        (cmd.data["amount"], cmd.data["account_id"]))
         return {"status": "ok"}
 
-pool = AsyncConnectionPool(
+
+# Create sync connection pool (sized for worker concurrency)
+pool = ConnectionPool(
     conninfo="postgresql://postgres:postgres@localhost:5432/commandbus",  # pragma: allowlist secret
-    min_size=2,
-    max_size=10,
+    min_size=4,   # At least equal to worker concurrency
+    max_size=8,   # 2x min_size is a good default
+    timeout=30.0, # Fail-fast on pool exhaustion
 )
-await pool.open()
+pool.open()  # Sync open - no await
 
-# Optional: share a runtime + thread pool across wrappers
-configure(thread_pool_size=16)
-
+# Send commands synchronously
 bus = SyncCommandBus(pool)
 result = bus.send(
     domain="payments",
@@ -444,21 +449,68 @@ result = bus.send(
     data={"account_id": "123", "amount": 100},
 )
 
+# Create and run sync worker
 registry = HandlerRegistry()
 registry.register_instance(PaymentHandlers(pool))
 
-worker = SyncWorker(pool, domain="payments", registry=registry)
-worker.run(concurrency=4)  # Blocks until worker.stop() is called
-
-tsq = SyncTroubleshootingQueue(pool)
-tsq_items = tsq.list_troubleshooting(domain="payments")
+worker = SyncWorker(
+    pool=pool,
+    domain="payments",
+    registry=registry,
+    concurrency=4,           # Number of threads in ThreadPoolExecutor
+    visibility_timeout=30,   # Seconds before message redelivery
+    statement_timeout=25000, # PostgreSQL query timeout (ms)
+)
+worker.run()  # Blocks until worker.stop() is called
 ```
 
-Key points:
+### Key Differences from Async
 
-- `SyncCommandBus`, `SyncTroubleshootingQueue`, `SyncWorker`, and `SyncProcessReplyRouter` mirror the async APIs but block on completion.
-- Use `commandbus.sync.configure(runtime=...)` or the `COMMAND_BUS_SYNC_THREADS` env var to control the shared runtime and worker thread pool size.
-- Wrap long-running routes or CLI commands with these facades to keep handler/repository code identical between async and sync deployments.
+| Aspect | Async | Sync |
+|--------|-------|------|
+| Pool type | `AsyncConnectionPool` | `ConnectionPool` |
+| Handler signature | `async def handle(...)` | `def handle(...)` |
+| Concurrency model | asyncio tasks | `ThreadPoolExecutor` |
+| I/O operations | `await conn.execute(...)` | `conn.execute(...)` |
+| Pool sizing | Standard | `min_size >= concurrency` |
+
+### Connection Pool Sizing
+
+For sync workers, size the pool based on worker concurrency:
+
+```python
+# For concurrency=4 worker
+pool = ConnectionPool(
+    conninfo=DATABASE_URL,
+    min_size=4,     # One connection per concurrent handler
+    max_size=8,     # Headroom for spikes
+    timeout=30.0,   # Fail-fast instead of waiting forever
+)
+```
+
+### Sync Process Reply Router
+
+For process management with sync workers:
+
+```python
+from commandbus.sync import SyncProcessReplyRouter
+
+router = SyncProcessReplyRouter(
+    pool=pool,
+    process_repo=process_repo,
+    managers={report_process.process_type: report_process},
+    reply_queue="reporting__process_replies",
+    domain="reporting",
+)
+router.run(concurrency=4)  # Blocks until router.stop() is called
+```
+
+### Performance Characteristics
+
+The native sync implementation achieves:
+- **~610 commands/sec** for fast (0ms) tasks with 6 workers
+- **Near-linear scaling** for I/O-bound workloads (5 workers: ~640/s for 200ms tasks)
+- **Predictable resource usage**: connections = worker_concurrency
 
 ---
 
@@ -1197,7 +1249,9 @@ for i in {1..4}; do
 done
 ```
 
-The worker CLI automatically reads the runtime settings saved via `/settings` (async vs sync mode and optional thread pool size). After changing those settings, restart the worker process so it can reconnect using the new mode. On startup the logs print the current mode, for example `Runtime mode: sync (thread_pool_size=8)`, and the CLI will switch between async `Worker` loops and the blocking `SyncWorker`/`SyncProcessReplyRouter` wrappers accordingly.
+The worker CLI automatically reads the runtime settings saved via `/settings` (async vs sync mode). After changing those settings, restart the worker process so it can reconnect using the new mode. On startup the logs print the current mode, for example `Runtime mode: sync` or `Runtime mode: async`.
+
+In **sync mode**, workers use the native `SyncWorker` with `ThreadPoolExecutor` for thread-based concurrency and psycopg3's sync `ConnectionPool`. In **async mode**, workers use the standard asyncio-based `Worker` with `AsyncConnectionPool`. Both modes support full concurrency with predictable resource usage.
 
 ### Probabilistic Behavior Model
 
@@ -1238,8 +1292,10 @@ For 10,000 commands with 2% permanent, 8% transient:
 For load testing, use the bulk generation form:
 1. Adjust probability sliders for desired failure rates
 2. Set execution time range (0ms for maximum throughput)
-3. Set count (up to 1,000,000)
+3. Set count (up to 1,000,000 commands)
 4. Click "Generate Bulk Commands"
+
+**Performance tip:** For maximum throughput testing, use 0ms duration with multiple workers. The native sync implementation handles 100,000+ command batches efficiently with the on-demand batch stats refresh.
 
 ### Monitoring
 

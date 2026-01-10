@@ -17,7 +17,8 @@ from commandbus.sync import SyncProcessReplyRouter, SyncWorker
 from commandbus.sync.repositories import SyncProcessRepository
 
 from .config import Config, ConfigStore, RetryConfig, WorkerConfig
-from .handlers import create_registry, create_sync_registry
+from .handlers import create_registry
+from .handlers.sync_handlers import create_sync_handler_registry
 from .models import TestCommandRepository
 from .process.statement_report import StatementReportProcess
 
@@ -191,7 +192,9 @@ async def run_worker(  # noqa: PLR0915
             sync_pool_min, sync_pool_max, effective_concurrency = _calculate_sync_pool_plan(
                 config_store.worker, pool_cap
             )
-            # For sync mode, also create a smaller async pool for handlers that use it
+            # Async pool only for process manager (StatementReportProcess).
+            # Handlers use native sync with sync pool.
+            # Process router has lower throughput - size async pool minimally.
             pool_min, pool_max = POOL_MIN_SIZE, max(POOL_MIN_SIZE, effective_concurrency)
         else:
             pool_min, pool_max, effective_concurrency = _calculate_pool_plan(
@@ -255,9 +258,9 @@ async def run_worker(  # noqa: PLR0915
                 worker_config.concurrency,
             )
 
-            # Create sync registry - wraps async handlers for sync dispatch
-            # Handlers still use async pool internally via asyncio.run()
-            sync_registry = create_sync_registry(pool)
+            # Create native sync handlers that use sync pool directly
+            # No async wrappers - handlers use sync repositories
+            sync_registry = create_sync_handler_registry(sync_pool)
 
             # Create sync process repository for native router
             sync_process_repo = SyncProcessRepository(sync_pool)

@@ -115,8 +115,8 @@ class TestSyncProcessReplyRouterRun:
             domain="orders",
         )
 
-        # Patch _run_loop to avoid blocking
-        with patch.object(router, "_run_loop"):
+        # Patch both run methods to avoid blocking
+        with patch.object(router, "_run_with_notify"), patch.object(router, "_run_with_polling"):
             router.run(concurrency=8, poll_interval=0.1)
 
         assert router._concurrency == 8

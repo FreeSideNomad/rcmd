@@ -135,7 +135,9 @@ async def test_sync_mode_lifecycle(  # noqa: PLR0915
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
     monkeypatch.setattr(worker_module, "create_registry", lambda _pool: "registry")
-    monkeypatch.setattr(worker_module, "create_sync_registry", lambda _pool: "sync_registry")
+    monkeypatch.setattr(
+        worker_module, "create_sync_handler_registry", lambda _pool: "sync_registry"
+    )
     monkeypatch.setattr(worker_module, "CommandBus", lambda _pool: "bus")
     monkeypatch.setattr(worker_module, "PostgresProcessRepository", lambda _pool: "repo")
     monkeypatch.setattr(worker_module, "SyncProcessRepository", lambda _pool: "sync_repo")
@@ -279,7 +281,9 @@ async def test_sync_mode_uses_native_components(
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
     monkeypatch.setattr(worker_module, "create_registry", lambda _pool: "registry")
-    monkeypatch.setattr(worker_module, "create_sync_registry", lambda _pool: "sync_registry")
+    monkeypatch.setattr(
+        worker_module, "create_sync_handler_registry", lambda _pool: "sync_registry"
+    )
     monkeypatch.setattr(worker_module, "CommandBus", lambda _pool: "bus")
     monkeypatch.setattr(worker_module, "PostgresProcessRepository", lambda _pool: "repo")
     monkeypatch.setattr(worker_module, "SyncProcessRepository", lambda _pool: "sync_repo")
@@ -393,7 +397,9 @@ async def test_sync_pool_created_with_correct_parameters(
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
     monkeypatch.setattr(worker_module, "create_registry", lambda _pool: "registry")
-    monkeypatch.setattr(worker_module, "create_sync_registry", lambda _pool: "sync_registry")
+    monkeypatch.setattr(
+        worker_module, "create_sync_handler_registry", lambda _pool: "sync_registry"
+    )
     monkeypatch.setattr(worker_module, "CommandBus", lambda _pool: "bus")
     monkeypatch.setattr(worker_module, "PostgresProcessRepository", lambda _pool: "repo")
     monkeypatch.setattr(worker_module, "SyncProcessRepository", lambda _pool: "sync_repo")

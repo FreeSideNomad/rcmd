@@ -331,3 +331,60 @@ class SyncBatchRepository:
             cur.execute(BatchSQL.SP_TSQ_RETRY, params)
 
         logger.debug("Batch %s.%s TSQ retry processed", params[0], params[1])
+
+    # =========================================================================
+    # Stats Refresh Operations
+    # =========================================================================
+
+    def refresh_stats(
+        self,
+        domain: str,
+        batch_id: UUID,
+        conn: Connection[Any] | None = None,
+    ) -> BatchMetadata | None:
+        """Refresh batch stats by calculating from command table.
+
+        This calls sp_refresh_batch_stats which counts commands by status
+        and updates the batch table with the calculated values.
+
+        Args:
+            domain: The domain
+            batch_id: The batch ID
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            Updated BatchMetadata if found, None otherwise
+        """
+        if conn is not None:
+            return self._refresh_stats_with_conn(conn, domain, batch_id)
+        else:
+            with self._pool.connection() as c:
+                return self._refresh_stats_with_conn(c, domain, batch_id)
+
+    def _refresh_stats_with_conn(
+        self,
+        conn: Connection[Any],
+        domain: str,
+        batch_id: UUID,
+    ) -> BatchMetadata | None:
+        """Refresh stats using stored procedure and return updated batch."""
+        with conn.cursor() as cur:
+            # Call the stored procedure to refresh stats
+            cur.execute(BatchSQL.SP_REFRESH_STATS, (domain, batch_id))
+            result = cur.fetchone()
+
+            if result is None:
+                return None
+
+            logger.debug(
+                "Batch %s.%s stats refreshed: completed=%s, canceled=%s, tsq=%s, is_complete=%s",
+                domain,
+                batch_id,
+                result[0],
+                result[1],
+                result[2],
+                result[3],
+            )
+
+        # Return the updated batch metadata
+        return self._get_with_conn(conn, BatchSQL.GET, (domain, batch_id))
