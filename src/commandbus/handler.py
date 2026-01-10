@@ -1,5 +1,6 @@
 """Handler registry for command dispatch."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -406,6 +407,84 @@ class HandlerRegistry:
             logger.info(
                 f"Discovered handler {instance.__class__.__name__}.{name} "
                 f"for {meta.domain}.{meta.command_type}"
+            )
+
+        return registered
+
+    def register_instance_as_sync(self, instance: object) -> list[tuple[str, str]]:
+        """Scan instance for @handler decorated methods and register them as sync handlers.
+
+        This method discovers all methods on the instance that are decorated
+        with the @handler decorator, wraps them with a sync adapter (using
+        asyncio.run()), and registers them as sync handlers.
+
+        This is useful for running async handlers in a sync worker context,
+        such as in E2E tests that need to test both async and sync modes.
+
+        Private methods (names starting with '_') are skipped.
+
+        Args:
+            instance: An object instance with @handler decorated methods
+
+        Returns:
+            List of (domain, command_type) tuples that were registered
+
+        Raises:
+            HandlerAlreadyRegisteredError: If any handler is already registered.
+                Note: If this error is raised, some handlers from the instance
+                may have already been registered.
+
+        Example:
+            class PaymentHandlers:
+                def __init__(self, service):
+                    self._service = service
+
+                @handler(domain="payments", command_type="Debit")
+                async def handle_debit(self, cmd, ctx):
+                    return await self._service.debit(cmd.data["amount"])
+
+            registry = HandlerRegistry()
+            # Register as sync handlers for use with SyncWorker
+            registry.register_instance_as_sync(PaymentHandlers(my_service))
+        """
+        registered: list[tuple[str, str]] = []
+
+        for name in dir(instance):
+            # Skip private and dunder methods
+            if name.startswith("_"):
+                continue
+
+            method = getattr(instance, name)
+            if not callable(method):
+                continue
+
+            meta = getattr(method, _HANDLER_ATTR, None)
+            if meta is None:
+                continue
+
+            if not isinstance(meta, HandlerMeta):
+                continue
+
+            # Create sync wrapper for async handler
+            async_handler = method
+
+            def make_sync_wrapper(
+                handler: HandlerFn,
+            ) -> SyncHandlerFn:
+                def sync_wrapper(command: Command, context: HandlerContext) -> Any:
+                    # Cast to coroutine for asyncio.run() - all our handlers are coroutines
+                    coro = handler(command, context)
+                    return asyncio.run(coro)  # type: ignore[arg-type]
+
+                return sync_wrapper
+
+            sync_handler = make_sync_wrapper(async_handler)
+
+            self.register_sync(meta.domain, meta.command_type, sync_handler)
+            registered.append((meta.domain, meta.command_type))
+            logger.info(
+                f"Discovered async handler {instance.__class__.__name__}.{name}, "
+                f"registered as sync for {meta.domain}.{meta.command_type}"
             )
 
         return registered
