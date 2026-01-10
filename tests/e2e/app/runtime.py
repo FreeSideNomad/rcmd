@@ -39,6 +39,9 @@ class _RuntimeAdapter:
             return attr
 
         async def _wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Remove 'conn' parameter - sync methods get their own connections
+            # from the sync pool and can't use async connections
+            kwargs.pop("conn", None)
             return await asyncio.to_thread(sync_attr, *args, **kwargs)
 
         return _wrapper
