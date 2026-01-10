@@ -245,12 +245,19 @@ async def test_sync_mode_lifecycle(  # noqa: PLR0915
     async_pool_max = max(worker_module.POOL_MIN_SIZE, expected_concurrency)
     assert pool.max_size == async_pool_max
 
-    # Check sync pool was created with correct sizing and closed
-    assert len(created_sync_pools) == 1
-    sync_pool_params = created_sync_pools[0].kwargs
-    assert sync_pool_params["min_size"] == expected_min
-    assert sync_pool_params["max_size"] == expected_max
+    # Check sync pools were created with correct sizing and closed
+    # Pool 0: worker pool, Pool 1: router pool
+    assert len(created_sync_pools) == 2
+    worker_pool_params = created_sync_pools[0].kwargs
+    assert worker_pool_params["min_size"] == expected_min
+    assert worker_pool_params["max_size"] == expected_max
     assert created_sync_pools[0].closed
+
+    # Router pool has fixed min_size=5, max_size=concurrency+5
+    router_pool_params = created_sync_pools[1].kwargs
+    assert router_pool_params["min_size"] == 5
+    assert router_pool_params["max_size"] == expected_concurrency + 5
+    assert created_sync_pools[1].closed
 
     # Check native sync workers were created
     assert len(FakeNativeSyncWorker.instances) == 2
@@ -471,10 +478,18 @@ async def test_sync_pool_created_with_correct_parameters(
 
     await worker_module.run_worker(shutdown_event=shutdown_event)
 
-    # Verify sync pool was created with expected parameters
-    assert len(created_sync_pools) == 1
+    # Verify sync pools were created with expected parameters
+    # Pool 0: worker pool, Pool 1: router pool
+    assert len(created_sync_pools) == 2
+
+    # Worker pool uses sync pool plan sizing
     assert created_sync_pools[0]["min_size"] == expected_min
     assert created_sync_pools[0]["max_size"] == expected_max
+
+    # Router pool has fixed min_size=5, max_size=concurrency+5
+    _, _, effective_concurrency = worker_module._calculate_sync_pool_plan(worker_cfg, pool_cap)
+    assert created_sync_pools[1]["min_size"] == 5
+    assert created_sync_pools[1]["max_size"] == effective_concurrency + 5
     assert pool.closed
 
 
