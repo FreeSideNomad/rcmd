@@ -120,9 +120,10 @@ async def test_async_mode_default(
 
 
 @pytest.mark.asyncio
-async def test_sync_mode_lifecycle(  # noqa: PLR0915
+async def test_sync_mode_lifecycle(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Test native sync mode worker lifecycle."""
     caplog.set_level(logging.INFO)
 
     pool = FakePool()
@@ -134,23 +135,16 @@ async def test_sync_mode_lifecycle(  # noqa: PLR0915
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
     monkeypatch.setattr(worker_module, "create_registry", lambda _pool: "registry")
+    monkeypatch.setattr(worker_module, "create_sync_registry", lambda _pool: "sync_registry")
     monkeypatch.setattr(worker_module, "CommandBus", lambda _pool: "bus")
     monkeypatch.setattr(worker_module, "PostgresProcessRepository", lambda _pool: "repo")
+    monkeypatch.setattr(worker_module, "SyncProcessRepository", lambda _pool: "sync_repo")
     monkeypatch.setattr(worker_module, "TestCommandRepository", lambda _pool: "behavior_repo")
     monkeypatch.setattr(
         worker_module,
         "StatementReportProcess",
         lambda **kwargs: SimpleNamespace(process_type="StatementReport", kwargs=kwargs),
     )
-
-    base_workers: list[FakeWorker] = []
-
-    def _create_worker(*_args: Any, **_kwargs: Any) -> FakeWorker:
-        worker = FakeWorker()
-        base_workers.append(worker)
-        return worker
-
-    monkeypatch.setattr(worker_module, "create_worker", _create_worker)
 
     worker_cfg = WorkerConfig(concurrency=2, visibility_timeout=30, poll_interval=1.0)
     runtime_cfg = RuntimeConfig(mode="sync", thread_pool_size=6)
@@ -168,72 +162,69 @@ async def test_sync_mode_lifecycle(  # noqa: PLR0915
         worker_cfg, pool_cap
     )
 
-    created_runtime: list[FakeSyncRuntime] = []
+    # Track sync pool creation
+    created_sync_pools: list[SimpleNamespace] = []
 
-    class FakeSyncRuntime:
-        def __init__(self) -> None:
-            self.shutdown_called = False
-            created_runtime.append(self)
+    class FakeSyncPool:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.closed = False
+            created_sync_pools.append(self)  # type: ignore[arg-type]
 
-        def shutdown(self) -> None:
-            self.shutdown_called = True
+        def close(self) -> None:
+            self.closed = True
 
-    class FakeSyncWorkerWrapper:
-        instances: ClassVar[list[FakeSyncWorkerWrapper]] = []
+    monkeypatch.setattr(worker_module, "ConnectionPool", FakeSyncPool)
+
+    class FakeNativeSyncWorker:
+        instances: ClassVar[list[FakeNativeSyncWorker]] = []
 
         def __init__(
             self,
+            pool: Any,
+            domain: str,
+            registry: Any,
             *,
-            worker: FakeWorker,
-            runtime: FakeSyncRuntime,
-            thread_pool_size: int | None = None,
+            visibility_timeout: int = 30,
+            retry_policy: Any = None,
         ) -> None:
-            self.worker = worker
-            self.runtime = runtime
-            self.thread_pool_size = thread_pool_size
+            self.pool = pool
+            self.domain = domain
+            self.registry = registry
+            self.visibility_timeout = visibility_timeout
+            self.retry_policy = retry_policy
             self.run_calls: int = 0
             self.run_kwargs: list[dict[str, Any]] = []
             self.stop_calls: int = 0
-            self.shutdown_calls: int = 0
-            FakeSyncWorkerWrapper.instances.append(self)
+            FakeNativeSyncWorker.instances.append(self)
 
-        def run(self, **_kwargs: Any) -> None:
+        def run(self, **kwargs: Any) -> None:
             self.run_calls += 1
-            self.run_kwargs.append(_kwargs)
+            self.run_kwargs.append(kwargs)
 
-        def stop(self) -> None:
+        def stop(self, timeout: float | None = None) -> None:
             self.stop_calls += 1
 
-        def shutdown(self) -> None:
-            self.shutdown_calls += 1
+    created_sync_router: list[FakeNativeSyncRouter] = []
 
-    created_sync_router: list[FakeSyncRouter] = []
-
-    class FakeSyncRouter:
-        def __init__(self, **_kwargs: Any) -> None:
+    class FakeNativeSyncRouter:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self._reply_queue = kwargs.get("reply_queue")
             self.run_calls = 0
             self.stop_calls = 0
-            self.shutdown_calls = 0
+            created_sync_router.append(self)
 
         def run(self, **_kwargs: Any) -> None:
             self.run_calls += 1
 
-        def stop(self) -> None:
+        def stop(self, timeout: float | None = None) -> None:
             self.stop_calls += 1
 
-        def shutdown(self) -> None:
-            self.shutdown_calls += 1
-
-    monkeypatch.setattr(worker_module, "SyncRuntime", FakeSyncRuntime)
-    monkeypatch.setattr(worker_module, "SyncWorker", FakeSyncWorkerWrapper)
-
-    def _create_sync_router(**kwargs: Any) -> FakeSyncRouter:
-        router = FakeSyncRouter(**kwargs)
-        created_sync_router.append(router)
-        return router
-
-    monkeypatch.setattr(worker_module, "SyncProcessReplyRouter", _create_sync_router)
-    monkeypatch.setattr(worker_module, "ProcessReplyRouter", lambda **kwargs: FakeSyncRouter())
+    FakeNativeSyncWorker.instances = []  # Reset class-level state
+    monkeypatch.setattr(worker_module, "SyncWorker", FakeNativeSyncWorker)
+    monkeypatch.setattr(worker_module, "SyncProcessReplyRouter", FakeNativeSyncRouter)
+    monkeypatch.setattr(worker_module, "ProcessReplyRouter", lambda **kwargs: FakeRouter())
 
     async def fake_to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
         return func(*args, **kwargs)
@@ -246,25 +237,31 @@ async def test_sync_mode_lifecycle(  # noqa: PLR0915
     await worker_module.run_worker(shutdown_event=shutdown_event)
 
     assert pool.closed
-    assert created_runtime and created_runtime[0].shutdown_called
     assert pool.min_size == expected_min
     assert pool.max_size == expected_max
-    assert len(FakeSyncWorkerWrapper.instances) == 2
-    assert all(instance.run_calls == 1 for instance in FakeSyncWorkerWrapper.instances)
-    for instance in FakeSyncWorkerWrapper.instances:
+
+    # Check sync pool was created and closed
+    assert len(created_sync_pools) == 1
+    assert created_sync_pools[0].closed
+
+    # Check native sync workers were created
+    assert len(FakeNativeSyncWorker.instances) == 2
+    assert all(instance.run_calls == 1 for instance in FakeNativeSyncWorker.instances)
+    for instance in FakeNativeSyncWorker.instances:
         assert instance.run_kwargs
-        assert instance.run_kwargs[0]["concurrency"] == min(expected_concurrency, 2)
-    assert all(instance.stop_calls == 1 for instance in FakeSyncWorkerWrapper.instances)
-    assert all(instance.shutdown_calls == 1 for instance in FakeSyncWorkerWrapper.instances)
+        assert instance.run_kwargs[0]["concurrency"] == expected_concurrency
+    assert all(instance.stop_calls == 1 for instance in FakeNativeSyncWorker.instances)
+
+    # Check native sync router
     assert created_sync_router and created_sync_router[0].stop_calls == 1
-    assert created_sync_router[0].shutdown_calls == 1
     assert any("Runtime mode: sync" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_sync_mode_concurrency_cap_warning(
+async def test_sync_mode_uses_native_components(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Test that sync mode uses native SyncWorker with proper parameters."""
     caplog.set_level(logging.INFO)
 
     pool = FakePool()
@@ -276,8 +273,10 @@ async def test_sync_mode_concurrency_cap_warning(
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
     monkeypatch.setattr(worker_module, "create_registry", lambda _pool: "registry")
+    monkeypatch.setattr(worker_module, "create_sync_registry", lambda _pool: "sync_registry")
     monkeypatch.setattr(worker_module, "CommandBus", lambda _pool: "bus")
     monkeypatch.setattr(worker_module, "PostgresProcessRepository", lambda _pool: "repo")
+    monkeypatch.setattr(worker_module, "SyncProcessRepository", lambda _pool: "sync_repo")
     monkeypatch.setattr(worker_module, "TestCommandRepository", lambda _pool: "behavior_repo")
     monkeypatch.setattr(
         worker_module,
@@ -290,59 +289,95 @@ async def test_sync_mode_concurrency_cap_warning(
     retry_cfg = RetryConfig()
     store = SimpleNamespace(worker=worker_cfg, runtime=runtime_cfg, retry=retry_cfg)
 
-    pool_cap = 100
+    pool_cap = 500  # Large enough to support concurrency=10
 
     async def fake_load_runtime_settings() -> tuple[SimpleNamespace, int]:
         return store, pool_cap
 
     monkeypatch.setattr(worker_module, "_load_runtime_settings", fake_load_runtime_settings)
 
+    _expected_min, _expected_max, expected_concurrency = worker_module._calculate_pool_plan(
+        worker_cfg, pool_cap
+    )
+
+    # Track sync pool creation
+    class FakeSyncPool:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(worker_module, "ConnectionPool", FakeSyncPool)
+
     class InspectableSyncWorker:
-        instances: ClassVar[list[dict[str, Any]]] = []
+        instances: ClassVar[list[InspectableSyncWorker]] = []
 
         def __init__(
-            self, *, worker: FakeWorker, runtime: Any, thread_pool_size: int | None = None
+            self,
+            pool: Any,
+            domain: str,
+            registry: Any,
+            *,
+            visibility_timeout: int = 30,
+            retry_policy: Any = None,
         ) -> None:
-            self.worker = worker
-            self.runtime = runtime
-            self.thread_pool_size = thread_pool_size
+            self.pool = pool
+            self.domain = domain
+            self.registry = registry
+            self.visibility_timeout = visibility_timeout
+            self.retry_policy = retry_policy
+            self.run_kwargs: list[dict[str, Any]] = []
+            InspectableSyncWorker.instances.append(self)
 
         def run(self, **kwargs: Any) -> None:
-            InspectableSyncWorker.instances.append(kwargs)
+            self.run_kwargs.append(kwargs)
 
-        def stop(self) -> None:
-            return None
-
-        def shutdown(self) -> None:
+        def stop(self, timeout: float | None = None) -> None:
             return None
 
     class StubSyncRouter:
+        _reply_queue: str | None = None
+
+        def __init__(self, **kwargs: Any) -> None:
+            self._reply_queue = kwargs.get("reply_queue")
+
         def run(self, **_kwargs: Any) -> None:
             return None
 
-        def stop(self) -> None:
+        def stop(self, timeout: float | None = None) -> None:
             return None
 
-        def shutdown(self) -> None:
-            return None
-
+    InspectableSyncWorker.instances = []
     monkeypatch.setattr(worker_module, "SyncWorker", InspectableSyncWorker)
-    monkeypatch.setattr(worker_module, "SyncProcessReplyRouter", lambda **_: StubSyncRouter())
+    monkeypatch.setattr(worker_module, "SyncProcessReplyRouter", StubSyncRouter)
     monkeypatch.setattr(worker_module, "ProcessReplyRouter", lambda **_: StubSyncRouter())
+
+    async def fake_to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(worker_module.asyncio, "to_thread", fake_to_thread)
 
     shutdown_event = asyncio.Event()
     shutdown_event.set()
 
     await worker_module.run_worker(shutdown_event=shutdown_event)
 
+    # Native sync workers should use full concurrency (no cap)
     assert InspectableSyncWorker.instances
-    for kwargs in InspectableSyncWorker.instances:
-        assert kwargs["concurrency"] == 2
-    assert any("forcing concurrency to 2" in record.message for record in caplog.records)
+    for worker in InspectableSyncWorker.instances:
+        assert worker.run_kwargs
+        assert worker.run_kwargs[0]["concurrency"] == expected_concurrency
+        assert worker.domain in ("e2e", "reporting")
+        assert worker.registry == "sync_registry"
 
 
 @pytest.mark.asyncio
-async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_sync_pool_created_with_correct_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that sync mode creates ConnectionPool with correct min/max size."""
     pool = FakePool()
 
     async def fake_create_pool(*, min_size: int, max_size: int) -> FakePool:
@@ -352,16 +387,16 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(worker_module, "create_pool", fake_create_pool)
     monkeypatch.setattr(worker_module, "create_registry", lambda _pool: "registry")
+    monkeypatch.setattr(worker_module, "create_sync_registry", lambda _pool: "sync_registry")
     monkeypatch.setattr(worker_module, "CommandBus", lambda _pool: "bus")
     monkeypatch.setattr(worker_module, "PostgresProcessRepository", lambda _pool: "repo")
+    monkeypatch.setattr(worker_module, "SyncProcessRepository", lambda _pool: "sync_repo")
     monkeypatch.setattr(worker_module, "TestCommandRepository", lambda _pool: "behavior_repo")
     monkeypatch.setattr(
         worker_module,
         "StatementReportProcess",
         lambda **kwargs: SimpleNamespace(process_type="StatementReport", kwargs=kwargs),
     )
-
-    monkeypatch.setattr(worker_module, "create_worker", lambda *args, **kwargs: FakeWorker())
 
     worker_cfg = WorkerConfig(concurrency=1, visibility_timeout=30, poll_interval=1.0)
     runtime_cfg = RuntimeConfig(mode="sync", thread_pool_size=12)
@@ -375,43 +410,45 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(worker_module, "_load_runtime_settings", fake_load_runtime_settings)
 
-    class InspectableSyncWorker:
-        instances: ClassVar[list[int | None]] = []
+    expected_min, expected_max, _ = worker_module._calculate_pool_plan(worker_cfg, pool_cap)
 
-        def __init__(
-            self, *, worker: FakeWorker, runtime: Any, thread_pool_size: int | None = None
-        ) -> None:
-            InspectableSyncWorker.instances.append(thread_pool_size)
+    # Track sync pool creation parameters
+    created_sync_pools: list[dict[str, Any]] = []
 
-        def run(self, **_kwargs: Any) -> None:
-            return None
+    class InspectableSyncPool:
+        def __init__(self, **kwargs: Any) -> None:
+            created_sync_pools.append(kwargs)
+            self.closed = False
 
-        def stop(self) -> None:
-            return None
+        def close(self) -> None:
+            self.closed = True
 
-        def shutdown(self) -> None:
-            return None
+    monkeypatch.setattr(worker_module, "ConnectionPool", InspectableSyncPool)
 
-    class InspectableRouter:
-        def __init__(self, **_kwargs: Any) -> None:
-            return None
+    class StubSyncWorker:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
 
         def run(self, **_kwargs: Any) -> None:
             return None
 
-        def stop(self) -> None:
+        def stop(self, timeout: float | None = None) -> None:
             return None
 
-        def shutdown(self) -> None:
+    class StubSyncRouter:
+        _reply_queue: str | None = None
+
+        def __init__(self, **kwargs: Any) -> None:
+            self._reply_queue = kwargs.get("reply_queue")
+
+        def run(self, **_kwargs: Any) -> None:
             return None
 
-    monkeypatch.setattr(
-        worker_module, "SyncRuntime", lambda: SimpleNamespace(shutdown=lambda: None)
-    )
-    monkeypatch.setattr(worker_module, "SyncWorker", InspectableSyncWorker)
-    monkeypatch.setattr(
-        worker_module, "SyncProcessReplyRouter", lambda **kwargs: InspectableRouter(**kwargs)
-    )
+        def stop(self, timeout: float | None = None) -> None:
+            return None
+
+    monkeypatch.setattr(worker_module, "SyncWorker", StubSyncWorker)
+    monkeypatch.setattr(worker_module, "SyncProcessReplyRouter", StubSyncRouter)
     monkeypatch.setattr(
         worker_module.asyncio, "to_thread", lambda func, *args, **kwargs: asyncio.sleep(0)
     )
@@ -421,10 +458,10 @@ async def test_sync_thread_pool_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
     await worker_module.run_worker(shutdown_event=shutdown_event)
 
-    assert InspectableSyncWorker.instances == [
-        runtime_cfg.thread_pool_size,
-        runtime_cfg.thread_pool_size,
-    ]
+    # Verify sync pool was created with expected parameters
+    assert len(created_sync_pools) == 1
+    assert created_sync_pools[0]["min_size"] == expected_min
+    assert created_sync_pools[0]["max_size"] == expected_max
     assert pool.closed
 
 

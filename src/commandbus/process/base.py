@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
@@ -261,6 +262,31 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
         else:
             async with self.pool.connection() as new_conn, new_conn.transaction():
                 await _handle_impl(new_conn)
+
+    def handle_reply_sync(
+        self,
+        reply: Reply,
+        process: ProcessMetadata[Any, Any],
+        conn: Any = None,  # noqa: ARG002
+    ) -> None:
+        """Handle incoming reply synchronously.
+
+        This is a sync wrapper around handle_reply that uses asyncio.run()
+        to execute the async logic. This allows the same process manager
+        to work with both async and sync reply routers.
+
+        Note: This method creates a new event loop for each call. For high
+        throughput scenarios, consider using the async handle_reply directly
+        with a persistent event loop.
+
+        Args:
+            reply: The reply received from command execution.
+            process: The process metadata (state might be dict).
+            conn: Connection parameter (ignored in sync version, uses pool).
+        """
+        # Run the async handle_reply in a new event loop
+        # Note: conn is not passed as the sync version manages its own connection
+        asyncio.run(self.handle_reply(reply, process, conn=None))
 
     async def before_send_command(
         self,
