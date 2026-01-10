@@ -25,6 +25,14 @@ A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for re
 
 ## Release Highlights
 
+### v0.2.1 - Process Batch Tracking & TSQ Detection
+
+- **Process batch tracking.** New `batch_type='PROCESS'` discriminator enables tracking completion of process batches (not just command batches). Processes can be linked to batches via `batch_id` for aggregate status monitoring.
+- **TSQ-blocked detection.** Process batch stats now detect processes blocked by commands in the troubleshooting queue via command table join. API returns `blocked_count` separately from `in_progress_count`.
+- **Dedicated router pool.** `SyncProcessReplyRouter` uses a separate connection pool from workers to prevent connection starvation under high concurrency.
+- **Native sync process manager.** `BaseProcessManager.handle_reply_sync()` uses native sync operations when sync components are configured, eliminating `asyncio.run()` wrapper overhead.
+- **Migration V003.** Updates `sp_refresh_batch_stats` stored procedure with TSQ detection logic for process batches.
+
 ### v0.2.0 - Native Synchronous Runtime
 
 - **Native sync implementation.** Complete rewrite of synchronous components using psycopg3's native `ConnectionPool` (sync) instead of async wrappers. `SyncWorker` now uses `ThreadPoolExecutor` for true thread-based concurrency without event loop overhead.
