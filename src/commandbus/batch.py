@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -21,15 +22,25 @@ if TYPE_CHECKING:
 
     from commandbus.models import BatchMetadata
     from commandbus.repositories.batch import PostgresBatchRepository
+    from commandbus.sync.repositories.batch import SyncBatchRepository
 
 logger = logging.getLogger(__name__)
 
 # Type alias for batch completion callbacks
 BatchCompletionCallback = Callable[["BatchMetadata"], Awaitable[Any]]
 
+# Type alias for sync batch completion callbacks
+SyncBatchCompletionCallback = Callable[["BatchMetadata"], Any]
+
 # Global in-memory registry for batch callbacks
 # Key: (domain, batch_id) tuple, Value: callback function
 _batch_callbacks: dict[tuple[str, UUID], BatchCompletionCallback] = {}
+
+# Sync callback registry (separate to avoid type conflicts)
+_sync_batch_callbacks: dict[tuple[str, UUID], SyncBatchCompletionCallback] = {}
+
+# Lock for thread-safe sync callback registry access
+_sync_registry_lock = threading.Lock()
 
 # Lock for thread-safe access to the registry
 _registry_lock = asyncio.Lock()
@@ -181,4 +192,101 @@ def clear_all_callbacks() -> None:
     This is primarily useful for testing.
     """
     _batch_callbacks.clear()
+    _sync_batch_callbacks.clear()
     logger.debug("Cleared all batch callbacks")
+
+
+# =============================================================================
+# Synchronous callback support
+# =============================================================================
+
+
+def register_batch_callback_sync(
+    domain: str,
+    batch_id: UUID,
+    callback: SyncBatchCompletionCallback,
+) -> None:
+    """Register a sync callback for batch completion.
+
+    Args:
+        domain: The domain of the batch
+        batch_id: The batch ID
+        callback: Sync function to call when batch completes.
+                  Receives BatchMetadata as argument.
+    """
+    with _sync_registry_lock:
+        _sync_batch_callbacks[(domain, batch_id)] = callback
+    logger.debug(f"Registered sync callback for batch {domain}.{batch_id}")
+
+
+def get_sync_batch_callback(
+    domain: str,
+    batch_id: UUID,
+) -> SyncBatchCompletionCallback | None:
+    """Get the registered sync callback for a batch.
+
+    Note: This does not use the lock for read performance.
+    Dictionary reads are atomic in Python.
+
+    Args:
+        domain: The domain of the batch
+        batch_id: The batch ID
+
+    Returns:
+        The callback if registered, None otherwise
+    """
+    return _sync_batch_callbacks.get((domain, batch_id))
+
+
+def remove_sync_batch_callback(domain: str, batch_id: UUID) -> None:
+    """Remove a sync batch callback from the registry.
+
+    Args:
+        domain: The domain of the batch
+        batch_id: The batch ID
+    """
+    with _sync_registry_lock:
+        _sync_batch_callbacks.pop((domain, batch_id), None)
+    logger.debug(f"Removed sync callback for batch {domain}.{batch_id}")
+
+
+def invoke_sync_batch_callback(
+    domain: str,
+    batch_id: UUID,
+    batch_repo: SyncBatchRepository,
+) -> None:
+    """Invoke the sync callback for a completed batch.
+
+    This function should be called when is_batch_complete=True is returned
+    from sp_finish_command or TSQ operations in sync mode.
+
+    The callback is invoked outside of any database transaction.
+    Callback exceptions are caught and logged but not propagated.
+
+    Args:
+        domain: The domain of the batch
+        batch_id: The batch ID
+        batch_repo: Sync batch repository to fetch batch metadata
+    """
+    callback = get_sync_batch_callback(domain, batch_id)
+    if callback is None:
+        return
+
+    # Fetch the batch to get its final status for the callback
+    batch = batch_repo.get(domain, batch_id)
+    if batch is None:
+        logger.warning(f"Batch {domain}.{batch_id} not found for sync callback")
+        remove_sync_batch_callback(domain, batch_id)
+        return
+
+    try:
+        logger.info(
+            f"Invoking sync callback for batch {domain}.{batch_id} (status={batch.status.value})"
+        )
+        callback(batch)
+        logger.debug(f"Sync callback for batch {domain}.{batch_id} completed successfully")
+    except Exception as e:
+        logger.exception(f"Sync batch callback error for {domain}.{batch_id}: {e}")
+    finally:
+        # Always remove the callback after invocation (success or failure)
+        remove_sync_batch_callback(domain, batch_id)
