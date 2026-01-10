@@ -144,6 +144,34 @@ class SyncReportingHandlers:
         self._pool = pool
         self._repo = SyncTestCommandRepository(pool)
 
+    def _get_behavior(self, command_id: Any) -> dict[str, Any]:
+        """Get behavior configuration for a command."""
+        test_cmd = self._repo.get_by_command_id(command_id)
+        return test_cmd.behavior if test_cmd else {}
+
+    def _handle_probabilistic(self, cmd: Command, behavior: dict[str, Any]) -> None:
+        """Apply probabilistic behavior (failures, delay) based on configuration."""
+        # Roll for permanent failure
+        fail_permanent_pct = behavior.get("fail_permanent_pct", 0.0)
+        if random.random() * 100 < fail_permanent_pct:
+            error_code = behavior.get("error_code", "REPORTING_ERROR")
+            error_message = behavior.get("error_message", "Probabilistic failure")
+            raise PermanentCommandError(code=error_code, message=error_message)
+
+        # Roll for transient failure
+        fail_transient_pct = behavior.get("fail_transient_pct", 0.0)
+        if random.random() * 100 < fail_transient_pct:
+            error_code = behavior.get("error_code", "REPORTING_TRANSIENT")
+            error_message = behavior.get("error_message", "Probabilistic transient")
+            raise TransientCommandError(code=error_code, message=error_message)
+
+        # Duration
+        min_ms = behavior.get("min_duration_ms", 0)
+        max_ms = behavior.get("max_duration_ms", 0)
+        if min_ms > 0 or max_ms > 0:
+            duration_ms = _sample_duration(min_ms, max_ms)
+            time.sleep(duration_ms / 1000.0)
+
     def handle_generate_report(self, cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
         """Handle GenerateReport command for process management testing."""
         # Read behavior configuration if exists
@@ -186,6 +214,31 @@ class SyncReportingHandlers:
             "statement_ids": statement_ids,
         }
 
+    def handle_statement_query(self, cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
+        """Handle StatementQuery command for process manager."""
+        import uuid
+
+        behavior = self._get_behavior(cmd.command_id)
+        self._handle_probabilistic(cmd, behavior)
+        return {"result_path": f"s3://bucket/query/{uuid.uuid4()}.json"}
+
+    def handle_statement_aggregation(self, cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
+        """Handle StatementDataAggregation command for process manager."""
+        import uuid
+
+        behavior = self._get_behavior(cmd.command_id)
+        self._handle_probabilistic(cmd, behavior)
+        return {"result_path": f"s3://bucket/aggregated/{uuid.uuid4()}.json"}
+
+    def handle_statement_render(self, cmd: Command, ctx: HandlerContext) -> dict[str, Any]:
+        """Handle StatementRender command for process manager."""
+        import uuid
+
+        behavior = self._get_behavior(cmd.command_id)
+        self._handle_probabilistic(cmd, behavior)
+        output_type = cmd.data.get("output_type", "pdf")
+        return {"result_path": f"s3://bucket/rendered/{uuid.uuid4()}.{output_type}"}
+
 
 def create_sync_handler_registry(pool: ConnectionPool[Any]) -> HandlerRegistry:
     """Create handler registry with native sync handlers.
@@ -210,10 +263,18 @@ def create_sync_handler_registry(pool: ConnectionPool[Any]) -> HandlerRegistry:
     registry.register_sync("e2e", "NoOp", no_op_handlers.handle_no_op)
     registry.register_sync("e2e", "TestCommand", test_handlers.handle_test_command)
     registry.register_sync("reporting", "GenerateReport", reporting_handlers.handle_generate_report)
+    registry.register_sync("reporting", "StatementQuery", reporting_handlers.handle_statement_query)
+    registry.register_sync(
+        "reporting", "StatementDataAggregation", reporting_handlers.handle_statement_aggregation
+    )
+    registry.register_sync(
+        "reporting", "StatementRender", reporting_handlers.handle_statement_render
+    )
 
     logger.info(
         "Created sync handler registry with native handlers: "
-        "e2e.NoOp, e2e.TestCommand, reporting.GenerateReport"
+        "e2e.NoOp, e2e.TestCommand, reporting.GenerateReport, "
+        "reporting.StatementQuery, reporting.StatementDataAggregation, reporting.StatementRender"
     )
 
     return registry
