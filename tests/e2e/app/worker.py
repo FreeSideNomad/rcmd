@@ -35,10 +35,13 @@ ROUTER_CONNECTION_MULTIPLIER = 3
 LISTEN_CONNECTIONS = len(WORKER_DOMAINS) + 1
 RESERVED_POOL_GUARD = 5
 ENV_POOL_CAP = os.environ.get("E2E_MAX_POOL_SIZE")
+# Sync mode: each thread needs a dedicated connection (no cooperative release)
+SYNC_CONN_PER_WORKER = 1  # 1 connection per concurrent thread
+SYNC_POOL_OVERHEAD = 2  # Extra connections for admin operations
 
 
 def _calculate_pool_plan(worker_config: WorkerConfig, pool_cap: int) -> tuple[int, int, int]:
-    """Determine pool sizing and effective concurrency based on configuration."""
+    """Determine pool sizing and effective concurrency for async mode."""
     concurrency = max(1, worker_config.concurrency)
     conn_per_tick = (
         len(WORKER_DOMAINS) * WORKER_CONNECTION_MULTIPLIER + ROUTER_CONNECTION_MULTIPLIER
@@ -49,6 +52,33 @@ def _calculate_pool_plan(worker_config: WorkerConfig, pool_cap: int) -> tuple[in
     available_slots = max(1, capped_max - base_connections - POOL_HEADROOM)
     supported_concurrency = max(1, min(concurrency, available_slots // conn_per_tick or 1))
     return POOL_MIN_SIZE, capped_max, supported_concurrency
+
+
+def _calculate_sync_pool_plan(worker_config: WorkerConfig, pool_cap: int) -> tuple[int, int, int]:
+    """Determine pool sizing and effective concurrency for sync mode.
+
+    Sync workers require dedicated connections per thread (no cooperative release
+    during processing). Each worker domain + router needs `concurrency` connections.
+    """
+    concurrency = max(1, worker_config.concurrency)
+    # Each worker domain + router needs 1 connection per concurrent thread.
+    # Total services = number of worker domains + 1 router.
+    total_services = len(WORKER_DOMAINS) + 1
+    required_connections = total_services * concurrency * SYNC_CONN_PER_WORKER
+    target_max = required_connections + SYNC_POOL_OVERHEAD
+
+    if target_max > pool_cap:
+        # Cap concurrency to fit within available pool capacity
+        available_for_work = max(1, pool_cap - SYNC_POOL_OVERHEAD)
+        supported_concurrency = max(1, available_for_work // total_services)
+        capped_max = supported_concurrency * total_services + SYNC_POOL_OVERHEAD
+    else:
+        supported_concurrency = concurrency
+        capped_max = target_max
+
+    # Ensure min_size is reasonable (at least supported_concurrency for faster startup)
+    pool_min = max(POOL_MIN_SIZE, min(supported_concurrency, capped_max))
+    return pool_min, capped_max, supported_concurrency
 
 
 async def _load_runtime_settings() -> tuple[ConfigStore, int]:
@@ -155,9 +185,20 @@ async def run_worker(  # noqa: PLR0915
     try:
         config_store, pool_cap = await _load_runtime_settings()
         runtime_mode = config_store.runtime.mode
-        pool_min, pool_max, effective_concurrency = _calculate_pool_plan(
-            config_store.worker, pool_cap
-        )
+
+        # Use different pool planning for sync vs async modes
+        if runtime_mode == "sync":
+            sync_pool_min, sync_pool_max, effective_concurrency = _calculate_sync_pool_plan(
+                config_store.worker, pool_cap
+            )
+            # For sync mode, also create a smaller async pool for handlers that use it
+            pool_min, pool_max = POOL_MIN_SIZE, max(POOL_MIN_SIZE, effective_concurrency)
+        else:
+            pool_min, pool_max, effective_concurrency = _calculate_pool_plan(
+                config_store.worker, pool_cap
+            )
+            sync_pool_min, sync_pool_max = 0, 0  # Not used in async mode
+
         if effective_concurrency != config_store.worker.concurrency:
             logger.warning(
                 "Configured worker concurrency %s exceeds pool capacity, capping to %s",
@@ -166,9 +207,12 @@ async def run_worker(  # noqa: PLR0915
             )
         worker_config = replace(config_store.worker, concurrency=effective_concurrency)
         logger.info(
-            "Pool plan: cap=%s, min=%s, requested_concurrency=%s, effective_concurrency=%s",
+            "Pool plan [%s]: cap=%s, pool_min=%s, pool_max=%s, "
+            "requested_concurrency=%s, effective_concurrency=%s",
+            runtime_mode,
             pool_cap,
-            pool_min,
+            sync_pool_min if runtime_mode == "sync" else pool_min,
+            sync_pool_max if runtime_mode == "sync" else pool_max,
             config_store.worker.concurrency,
             worker_config.concurrency,
         )
@@ -191,22 +235,24 @@ async def run_worker(  # noqa: PLR0915
         logger.info(
             "Runtime mode: %s (pool_max=%s, concurrency=%s)",
             runtime_mode,
-            pool_max,
+            sync_pool_max if runtime_mode == "sync" else pool_max,
             worker_config.concurrency,
         )
 
         if runtime_mode == "sync":
             # Create sync connection pool for native sync components
+            # Pool sized to handle all concurrent threads: workers + router
             sync_pool = ConnectionPool(
                 conninfo=Config.DATABASE_URL,
-                min_size=pool_min,
-                max_size=pool_max,
+                min_size=sync_pool_min,
+                max_size=sync_pool_max,
                 open=True,
             )
             logger.info(
-                "Created sync pool (min_size=%s, max_size=%s)",
-                pool_min,
-                pool_max,
+                "Created sync pool (min_size=%s, max_size=%s) for concurrency=%s",
+                sync_pool_min,
+                sync_pool_max,
+                worker_config.concurrency,
             )
 
             # Create sync registry - wraps async handlers for sync dispatch
