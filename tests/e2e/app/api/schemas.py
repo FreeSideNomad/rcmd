@@ -321,7 +321,7 @@ class CreateBatchRequest(BaseModel):
     """Request to create a batch of test commands."""
 
     name: str = Field(default="Test Batch", description="Batch name")
-    command_count: int = Field(default=10, ge=1, le=10000)
+    command_count: int = Field(default=10, ge=1, le=1000000)
     behavior: CommandBehavior = Field(default_factory=CommandBehavior)
     max_attempts: int = Field(default=3, ge=1, le=10)
     reply_to: str | None = Field(
@@ -545,7 +545,7 @@ class ProcessStepBehavior(BaseModel):
 class ProcessBatchCreateRequest(BaseModel):
     """Request to create a batch of statement report processes."""
 
-    count: int = Field(default=1, ge=1, le=100_000)
+    count: int = Field(default=1, ge=1, le=1_000_000)
     from_date: date = Field(default_factory=date.today)
     to_date: date = Field(default_factory=date.today)
     output_type: str = Field(default="pdf")

@@ -28,7 +28,7 @@ def test_process_batch_request_with_behavior():
 def test_process_batch_request_rejects_large_counts():
     with pytest.raises(ValidationError):
         ProcessBatchCreateRequest(
-            count=100_001,
+            count=1_000_001,  # Limit is 1,000,000
             from_date=date.today(),
             to_date=date.today(),
             output_type="pdf",

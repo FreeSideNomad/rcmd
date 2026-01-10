@@ -13,6 +13,7 @@ from psycopg.types.json import Json
 
 from commandbus import BatchCommand
 from commandbus.models import SendRequest
+from commandbus.repositories.batch import PostgresBatchRepository
 
 from ..dependencies import TSQ, Bus, Pool, ProcessRepo, ReportProcess
 from ..models import TestCommandRepository
@@ -998,9 +999,12 @@ async def list_batches(
 
 
 @api_router.get("/batches/{batch_id}", response_model=BatchDetailResponse)
-async def get_batch(batch_id: UUID, bus: Bus) -> BatchDetailResponse:
-    """Get batch details."""
-    batch = await bus.get_batch(E2E_DOMAIN, batch_id)
+async def get_batch(batch_id: UUID, pool: Pool) -> BatchDetailResponse:
+    """Get batch details with refreshed stats from command table."""
+    batch_repo = PostgresBatchRepository(pool)
+
+    # Refresh stats from command table (eliminates hot row contention)
+    batch = await batch_repo.refresh_stats(E2E_DOMAIN, batch_id)
 
     if batch is None:
         raise HTTPException(status_code=404, detail="Batch not found")

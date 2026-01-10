@@ -178,8 +178,8 @@ class TestSyncWorkerRun:
         mock_registry = MagicMock()
         worker = SyncWorker(mock_pool, domain="payments", registry=mock_registry)
 
-        # Patch _run_loop to avoid blocking
-        with patch.object(worker, "_run_loop"):
+        # Patch both run methods to avoid blocking
+        with patch.object(worker, "_run_with_notify"), patch.object(worker, "_run_with_polling"):
             worker.run(concurrency=8, poll_interval=0.1)
 
         assert worker._concurrency == 8
@@ -193,10 +193,10 @@ class TestSyncWorkerRun:
         worker._stop_event.set()
 
         # Run in a way that stops quickly
-        with patch.object(worker, "_run_loop"):
+        with patch.object(worker, "_run_with_notify"), patch.object(worker, "_run_with_polling"):
             worker.run()
 
-        # _run_loop was called after clearing stop event
+        # run loop was called after clearing stop event
         assert worker._executor is None  # shutdown after run
 
 

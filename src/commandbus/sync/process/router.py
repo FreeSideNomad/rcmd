@@ -16,6 +16,7 @@ from uuid import UUID
 from psycopg import errors as psycopg_errors
 from psycopg_pool import PoolTimeout
 
+from commandbus._core.pgmq_sql import PGMQ_NOTIFY_CHANNEL
 from commandbus.models import Reply, ReplyOutcome
 from commandbus.sync.health import HealthStatus
 from commandbus.sync.pgmq import SyncPgmqClient
@@ -159,6 +160,7 @@ class SyncProcessReplyRouter:
         self,
         concurrency: int = 4,
         poll_interval: float = 1.0,
+        use_notify: bool = True,
     ) -> None:
         """Run the router continuously, processing replies.
 
@@ -167,7 +169,8 @@ class SyncProcessReplyRouter:
 
         Args:
             concurrency: Maximum number of replies to process concurrently
-            poll_interval: Seconds between queue polls when idle
+            poll_interval: Seconds between queue polls when idle (or notify timeout)
+            use_notify: If True, use LISTEN/NOTIFY for immediate wakeup on new messages
         """
         self._concurrency = concurrency
         self._stop_event.clear()
@@ -176,13 +179,17 @@ class SyncProcessReplyRouter:
             thread_name_prefix=f"router-{self._domain}",
         )
 
+        mode = "notify" if use_notify else "polling"
         logger.info(
             f"Starting sync process reply router for {self._domain} "
-            f"(queue={self._reply_queue}, concurrency={concurrency})"
+            f"(queue={self._reply_queue}, concurrency={concurrency}, mode={mode})"
         )
 
         try:
-            self._run_loop(poll_interval)
+            if use_notify:
+                self._run_with_notify(poll_interval)
+            else:
+                self._run_with_polling(poll_interval)
         except Exception:
             logger.exception(f"Sync reply router for {self._domain} crashed")
             raise
@@ -193,11 +200,66 @@ class SyncProcessReplyRouter:
                 self._executor = None
             logger.info(f"Sync reply router for {self._domain} stopped")
 
-    def _run_loop(self, poll_interval: float) -> None:
-        """Main router loop - poll and dispatch replies."""
+    def _run_with_notify(self, poll_interval: float) -> None:
+        """Run loop using LISTEN/NOTIFY for immediate wakeup."""
+        # Get a dedicated connection for LISTEN - must stay open for notifications
+        with self._pool.connection() as listen_conn:
+            # Set autocommit - required for LISTEN/NOTIFY to work in real-time
+            listen_conn.autocommit = True
+
+            # Subscribe to notifications for this queue
+            channel = f"{PGMQ_NOTIFY_CHANNEL}_{self._reply_queue}"
+            listen_conn.execute(f"LISTEN {channel}")
+            logger.debug(f"Listening on channel {channel}")
+
+            while not self._stop_event.is_set():
+                # TIGHT LOOP: Process all available work before waiting
+                self._drain_queue()
+
+                if self._stop_event.is_set():
+                    return
+
+                # IDLE: Queue is empty, wait for notification or poll timeout
+                try:
+                    gen = listen_conn.notifies(timeout=poll_interval)
+                    for _ in gen:
+                        break  # Got notification, return to tight loop
+                except TimeoutError:
+                    pass  # Poll fallback, return to tight loop
+
+    def _drain_queue(self) -> None:
+        """Process replies continuously until queue is empty."""
         while not self._stop_event.is_set():
             try:
-                self._poll_and_dispatch()
+                dispatched = self._poll_and_dispatch()
+
+                # Check for completed tasks and clean up
+                self._cleanup_completed()
+
+                # Check for stuck threads
+                self._check_stuck_threads()
+
+                # If no messages were available, queue is drained
+                if dispatched == 0:
+                    return
+
+                # If at capacity, wait for a slot before continuing
+                with self._in_flight_lock:
+                    available = self._concurrency - len(self._in_flight)
+
+                if available <= 0:
+                    self._wait_for_slot(timeout=1.0)
+
+            except Exception:
+                logger.exception("Error in router drain loop")
+                self._health.record_failure()
+                return  # Exit drain loop on error
+
+    def _run_with_polling(self, poll_interval: float) -> None:
+        """Run loop using simple polling (fallback mode)."""
+        while not self._stop_event.is_set():
+            try:
+                dispatched = self._poll_and_dispatch()
 
                 # Check for completed tasks and clean up
                 self._cleanup_completed()
@@ -211,9 +273,10 @@ class SyncProcessReplyRouter:
 
                 if available <= 0:
                     self._wait_for_slot(timeout=poll_interval)
-                elif self._stop_event.wait(timeout=poll_interval):
-                    # Short sleep to avoid busy-waiting, or stop requested
+                elif dispatched == 0 and self._stop_event.wait(timeout=poll_interval):
+                    # Queue was empty, wait before polling again (or stop requested)
                     break
+                # else: got messages and have slots, immediately poll again
 
             except Exception:
                 logger.exception("Error in router poll loop")
@@ -222,13 +285,17 @@ class SyncProcessReplyRouter:
                 if self._stop_event.wait(timeout=1.0):
                     break
 
-    def _poll_and_dispatch(self) -> None:
-        """Poll for replies and dispatch to thread pool."""
+    def _poll_and_dispatch(self) -> int:
+        """Poll for replies and dispatch to thread pool.
+
+        Returns:
+            Number of replies dispatched
+        """
         with self._in_flight_lock:
             available = self._concurrency - len(self._in_flight)
 
         if available <= 0:
-            return
+            return 0
 
         # Read messages from reply queue, handling pool exhaustion
         try:
@@ -243,12 +310,14 @@ class SyncProcessReplyRouter:
         except PoolTimeout:
             logger.warning(f"Pool exhaustion while polling for {self._domain} replies")
             self._health.record_pool_exhaustion()
-            return
+            return 0
 
         for msg in messages:
             future = self._executor.submit(self._process_reply, msg)  # type: ignore[union-attr]
             with self._in_flight_lock:
                 self._in_flight[msg.msg_id] = (future, time.monotonic())
+
+        return len(messages)
 
     def _process_reply(self, msg: Any) -> None:
         """Process a single reply message in a worker thread.

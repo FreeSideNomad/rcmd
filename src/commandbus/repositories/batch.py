@@ -380,3 +380,55 @@ class PostgresBatchRepository:
                 (domain, batch_id),
             )
             logger.debug(f"Batch {domain}.{batch_id} TSQ retry processed")
+
+    async def refresh_stats(
+        self,
+        domain: str,
+        batch_id: UUID,
+        conn: AsyncConnection[Any] | None = None,
+    ) -> BatchMetadata | None:
+        """Refresh batch stats by calculating from command table.
+
+        This calls sp_refresh_batch_stats which counts commands by status
+        and updates the batch table with the calculated values.
+
+        Args:
+            domain: The domain
+            batch_id: The batch ID
+            conn: Optional connection (for transaction support)
+
+        Returns:
+            Updated BatchMetadata if found, None otherwise
+        """
+        if conn is not None:
+            return await self._refresh_stats(conn, domain, batch_id)
+
+        async with self._pool.connection() as acquired_conn:
+            return await self._refresh_stats(acquired_conn, domain, batch_id)
+
+    async def _refresh_stats(
+        self,
+        conn: AsyncConnection[Any],
+        domain: str,
+        batch_id: UUID,
+    ) -> BatchMetadata | None:
+        """Refresh stats using stored procedure and return updated batch."""
+        async with conn.cursor() as cur:
+            # Call the stored procedure to refresh stats
+            await cur.execute(
+                "SELECT * FROM commandbus.sp_refresh_batch_stats(%s, %s)",
+                (domain, batch_id),
+            )
+            result = await cur.fetchone()
+
+            if result is None:
+                return None
+
+            logger.debug(
+                f"Batch {domain}.{batch_id} stats refreshed: "
+                f"completed={result[0]}, canceled={result[1]}, tsq={result[2]}, "
+                f"is_complete={result[3]}"
+            )
+
+        # Return the updated batch metadata
+        return await self._get(conn, domain, batch_id)

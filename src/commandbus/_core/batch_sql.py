@@ -68,6 +68,9 @@ class BatchSQL:
     SP_TSQ_CANCEL = "SELECT commandbus.sp_tsq_cancel(%s, %s)"
     SP_TSQ_RETRY = "SELECT commandbus.sp_tsq_retry(%s, %s)"
 
+    # Stats refresh - calculates batch stats from command table on demand
+    SP_REFRESH_STATS = "SELECT * FROM commandbus.sp_refresh_batch_stats(%s, %s)"
+
 
 class BatchParams:
     """Static methods for building SQL parameter tuples."""

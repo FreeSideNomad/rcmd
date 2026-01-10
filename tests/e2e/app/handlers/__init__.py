@@ -8,6 +8,7 @@ from commandbus import HandlerRegistry
 
 from .base import NoOpHandlers, TestCommandHandlers
 from .reporting import ReportingHandlers
+from .sync_handlers import create_sync_handler_registry
 
 
 def create_registry(pool: AsyncConnectionPool) -> HandlerRegistry:
@@ -66,5 +67,6 @@ __all__ = [
     "ReportingHandlers",
     "TestCommandHandlers",
     "create_registry",
-    "create_sync_registry",
+    "create_sync_handler_registry",
+    "create_sync_registry",  # Deprecated: use create_sync_handler_registry
 ]
