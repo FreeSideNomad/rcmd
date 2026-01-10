@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 # Type alias for handler functions
 HandlerFn: TypeAlias = Callable[[Command, HandlerContext], Awaitable[Any]]
 
+# Type alias for synchronous handler functions
+SyncHandlerFn: TypeAlias = Callable[[Command, HandlerContext], Any]
+
 # Attribute name for storing handler metadata on decorated methods
 _HANDLER_ATTR = "_commandbus_handler_meta"
 
@@ -96,6 +99,7 @@ class HandlerRegistry:
     def __init__(self) -> None:
         """Initialize an empty handler registry."""
         self._handlers: dict[tuple[str, str], HandlerFn] = {}
+        self._sync_handlers: dict[tuple[str, str], SyncHandlerFn] = {}
 
     def register(
         self,
@@ -200,6 +204,122 @@ class HandlerRegistry:
         )
         return await handler(command, context)
 
+    def register_sync(
+        self,
+        domain: str,
+        command_type: str,
+        handler: SyncHandlerFn,
+    ) -> None:
+        """Register a sync handler for a command type.
+
+        Args:
+            domain: The domain (e.g., "payments")
+            command_type: The command type (e.g., "DebitAccount")
+            handler: Sync function to handle the command
+
+        Raises:
+            HandlerAlreadyRegisteredError: If a handler is already registered
+                for this domain and command_type combination
+        """
+        key = (domain, command_type)
+        if key in self._sync_handlers:
+            raise HandlerAlreadyRegisteredError(domain, command_type)
+
+        self._sync_handlers[key] = handler
+        logger.debug(f"Registered sync handler for {domain}.{command_type}")
+
+    def sync_handler(
+        self,
+        domain: str,
+        command_type: str,
+    ) -> Callable[[SyncHandlerFn], SyncHandlerFn]:
+        """Decorator to register a sync handler function.
+
+        Args:
+            domain: The domain (e.g., "payments")
+            command_type: The command type (e.g., "DebitAccount")
+
+        Returns:
+            Decorator that registers the function and returns it unchanged
+
+        Example:
+            @registry.sync_handler("payments", "DebitAccount")
+            def handle_debit(command: Command, context: HandlerContext):
+                ...
+        """
+
+        def decorator(fn: SyncHandlerFn) -> SyncHandlerFn:
+            self.register_sync(domain, command_type, fn)
+            return fn
+
+        return decorator
+
+    def get_sync(self, domain: str, command_type: str) -> SyncHandlerFn | None:
+        """Get the sync handler for a command type, or None if not found.
+
+        Args:
+            domain: The domain
+            command_type: The command type
+
+        Returns:
+            The registered sync handler, or None if not found
+        """
+        return self._sync_handlers.get((domain, command_type))
+
+    def get_sync_or_raise(self, domain: str, command_type: str) -> SyncHandlerFn:
+        """Get the sync handler for a command type, raising if not found.
+
+        Args:
+            domain: The domain
+            command_type: The command type
+
+        Returns:
+            The registered sync handler
+
+        Raises:
+            HandlerNotFoundError: If no sync handler is registered
+        """
+        handler = self.get_sync(domain, command_type)
+        if handler is None:
+            raise HandlerNotFoundError(domain, command_type)
+        return handler
+
+    def dispatch_sync(
+        self,
+        command: Command,
+        context: HandlerContext,
+    ) -> Any:
+        """Dispatch a command to its registered sync handler.
+
+        Args:
+            command: The command to dispatch
+            context: Handler context with metadata and utilities
+
+        Returns:
+            The result from the handler
+
+        Raises:
+            HandlerNotFoundError: If no sync handler is registered for the command type
+        """
+        handler = self.get_sync_or_raise(command.domain, command.command_type)
+        logger.debug(
+            f"Dispatching (sync) {command.domain}.{command.command_type} "
+            f"(command_id={command.command_id})"
+        )
+        return handler(command, context)
+
+    def has_sync_handler(self, domain: str, command_type: str) -> bool:
+        """Check if a sync handler is registered for the given command type.
+
+        Args:
+            domain: The domain
+            command_type: The command type
+
+        Returns:
+            True if a sync handler is registered, False otherwise
+        """
+        return (domain, command_type) in self._sync_handlers
+
     def has_handler(self, domain: str, command_type: str) -> bool:
         """Check if a handler is registered for the given command type.
 
@@ -220,9 +340,18 @@ class HandlerRegistry:
         """
         return list(self._handlers.keys())
 
+    def registered_sync_handlers(self) -> list[tuple[str, str]]:
+        """Get a list of all registered sync (domain, command_type) pairs.
+
+        Returns:
+            List of (domain, command_type) tuples
+        """
+        return list(self._sync_handlers.keys())
+
     def clear(self) -> None:
-        """Remove all registered handlers. Useful for testing."""
+        """Remove all registered handlers (async and sync). Useful for testing."""
         self._handlers.clear()
+        self._sync_handlers.clear()
 
     def register_instance(self, instance: object) -> list[tuple[str, str]]:
         """Scan instance for @handler decorated methods and register them.
