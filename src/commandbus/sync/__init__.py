@@ -5,6 +5,14 @@ from commandbus.sync.config import configure, get_default_runtime, get_thread_po
 from commandbus.sync.health import HealthState, HealthStatus
 from commandbus.sync.process import SyncProcessReplyRouter
 from commandbus.sync.runtime import SyncRuntime
+from commandbus.sync.timeouts import (
+    TimeoutConfig,
+    create_pool_with_timeout,
+    is_pool_timeout,
+    is_query_cancelled,
+    is_timeout_error,
+    validate_timeouts,
+)
 from commandbus.sync.tsq import SyncTroubleshootingQueue
 from commandbus.sync.watchdog import WorkerWatchdog
 from commandbus.sync.worker import SyncWorker
@@ -17,8 +25,14 @@ __all__ = [
     "SyncRuntime",
     "SyncTroubleshootingQueue",
     "SyncWorker",
+    "TimeoutConfig",
     "WorkerWatchdog",
     "configure",
+    "create_pool_with_timeout",
     "get_default_runtime",
     "get_thread_pool_size",
+    "is_pool_timeout",
+    "is_query_cancelled",
+    "is_timeout_error",
+    "validate_timeouts",
 ]

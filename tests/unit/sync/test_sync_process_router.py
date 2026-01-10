@@ -367,7 +367,8 @@ class TestSyncProcessReplyRouterHealthTracking:
             managers={},
             reply_queue="orders__replies",
             domain="orders",
-            visibility_timeout=1,
+            visibility_timeout=30,
+            statement_timeout=1000,  # 1s statement timeout
         )
 
         # Add an old in-flight task

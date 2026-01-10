@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from psycopg import errors as psycopg_errors
+from psycopg_pool import PoolTimeout
+
 from commandbus.batch import invoke_sync_batch_callback
 from commandbus.exceptions import PermanentCommandError, TransientCommandError
 from commandbus.models import (
@@ -29,6 +32,7 @@ from commandbus.sync.pgmq import SyncPgmqClient
 from commandbus.sync.repositories.audit import SyncAuditLogger
 from commandbus.sync.repositories.batch import SyncBatchRepository
 from commandbus.sync.repositories.command import SyncCommandRepository
+from commandbus.sync.timeouts import validate_timeouts
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -98,7 +102,13 @@ class SyncWorker:
             visibility_timeout: Default visibility timeout in seconds
             retry_policy: Policy for retry behavior and backoff
             statement_timeout: PostgreSQL statement timeout in milliseconds
+
+        Raises:
+            ValueError: If statement_timeout >= visibility_timeout
         """
+        # Validate timeout hierarchy
+        validate_timeouts(statement_timeout, visibility_timeout)
+
         self._pool = pool
         self._domain = domain
         self._registry = registry
@@ -228,8 +238,13 @@ class SyncWorker:
         if available <= 0:
             return
 
-        # Read messages from queue
-        received_commands = self._receive(batch_size=available)
+        # Read messages from queue, handling pool exhaustion
+        try:
+            received_commands = self._receive(batch_size=available)
+        except PoolTimeout:
+            logger.warning(f"Pool exhaustion while polling for {self._domain}")
+            self._health.record_pool_exhaustion()
+            return
 
         for received in received_commands:
             future = self._executor.submit(self._process_command, received)  # type: ignore[union-attr]
@@ -372,6 +387,31 @@ class SyncWorker:
         except PermanentCommandError as e:
             # Permanent error - move to troubleshooting queue
             self._fail_permanent(received, e)
+            self._health.record_failure(e)
+        except psycopg_errors.QueryCanceled as e:
+            # Statement timeout exceeded - treat as transient
+            logger.warning(
+                f"Statement timeout for command {received.command.command_id} "
+                f"(attempt {received.context.attempt})"
+            )
+            transient_error = TransientCommandError(
+                code="STATEMENT_TIMEOUT",
+                message="PostgreSQL statement timeout exceeded",
+            )
+            self._fail(received, transient_error, is_transient=True)
+            self._health.record_failure(e)
+        except PoolTimeout as e:
+            # Pool exhaustion during processing - treat as transient
+            logger.warning(
+                f"Pool timeout for command {received.command.command_id} "
+                f"(attempt {received.context.attempt})"
+            )
+            self._health.record_pool_exhaustion()
+            transient_error = TransientCommandError(
+                code="POOL_TIMEOUT",
+                message="Connection pool exhausted",
+            )
+            self._fail(received, transient_error, is_transient=True)
             self._health.record_failure(e)
         except Exception as e:
             # Unknown exception treated as transient
