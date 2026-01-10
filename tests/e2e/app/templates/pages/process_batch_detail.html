@@ -1,0 +1,321 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Process Batch Details - Command Bus E2E{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <nav class="flex mb-2" aria-label="Breadcrumb">
+        <ol class="inline-flex items-center space-x-1 text-sm text-gray-500 dark:text-gray-400">
+            <li><a href="/process-batches" class="hover:text-blue-600 dark:hover:text-blue-400">Process Batches</a></li>
+            <li><span class="mx-2">/</span></li>
+            <li class="text-gray-700 dark:text-gray-300" id="breadcrumb-name">Loading...</li>
+        </ol>
+    </nav>
+    <h1 class="text-2xl font-bold text-gray-900 dark:text-white" id="batch-name">Loading...</h1>
+</div>
+
+<!-- Batch Overview -->
+<div class="bg-white rounded-lg shadow p-6 mb-6 dark:bg-gray-800">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Status</dt>
+            <dd class="mt-1" id="batch-status">
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">-</span>
+            </dd>
+        </div>
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Created</dt>
+            <dd class="mt-1 text-sm text-gray-900 dark:text-white" id="batch-created">-</dd>
+        </div>
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Started</dt>
+            <dd class="mt-1 text-sm text-gray-900 dark:text-white" id="batch-started">-</dd>
+        </div>
+        <div>
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Completed</dt>
+            <dd class="mt-1 text-sm text-gray-900 dark:text-white" id="batch-completed">-</dd>
+        </div>
+    </div>
+</div>
+
+<!-- Progress Section -->
+<div class="bg-white rounded-lg shadow p-6 mb-6 dark:bg-gray-800">
+    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Progress</h2>
+
+    <!-- Progress Bar -->
+    <div class="mb-4">
+        <div class="flex justify-between mb-1">
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Overall Progress</span>
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300" id="progress-percent">0%</span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-4 dark:bg-gray-700">
+            <div id="progress-bar" class="bg-blue-600 h-4 rounded-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <!-- Counters -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Total</dt>
+            <dd class="text-2xl font-bold text-gray-900 dark:text-white" id="count-total">0</dd>
+        </div>
+        <div class="bg-green-50 dark:bg-green-900/20 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-green-600 dark:text-green-400">Completed</dt>
+            <dd class="text-2xl font-bold text-green-700 dark:text-green-300" id="count-completed">0</dd>
+        </div>
+        <div class="bg-red-50 dark:bg-red-900/20 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-red-600 dark:text-red-400">Failed</dt>
+            <dd class="text-2xl font-bold text-red-700 dark:text-red-300" id="count-failed">0</dd>
+        </div>
+        <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-blue-600 dark:text-blue-400">In Progress</dt>
+            <dd class="text-2xl font-bold text-blue-700 dark:text-blue-300" id="count-in-progress">0</dd>
+        </div>
+    </div>
+</div>
+
+<!-- Processes Table -->
+<div class="bg-white rounded-lg shadow dark:bg-gray-800">
+    <div class="p-4 border-b dark:border-gray-700 flex justify-between items-center">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Processes</h2>
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <label for="process-filter-status" class="text-sm text-gray-500 dark:text-gray-400">Status:</label>
+                <select id="process-filter-status" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 p-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                    <option value="">All</option>
+                    <option value="PENDING">Pending</option>
+                    <option value="IN_PROGRESS">In Progress</option>
+                    <option value="WAITING">Waiting for Reply</option>
+                    <option value="WAITING_FOR_TSQ">Waiting for TSQ</option>
+                    <option value="COMPENSATING">Compensating</option>
+                    <option value="COMPLETED">Completed</option>
+                    <option value="COMPENSATED">Compensated</option>
+                    <option value="FAILED">Failed</option>
+                    <option value="CANCELED">Canceled</option>
+                </select>
+            </div>
+            <div class="text-sm text-gray-500 dark:text-gray-400">
+                Showing <span id="showing-range">0-0</span> of <span id="total-count">0</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+            <thead class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                    <th scope="col" class="px-6 py-3">Process ID</th>
+                    <th scope="col" class="px-6 py-3">Type</th>
+                    <th scope="col" class="px-6 py-3">Status</th>
+                    <th scope="col" class="px-6 py-3">Current Step</th>
+                    <th scope="col" class="px-6 py-3">Created</th>
+                    <th scope="col" class="px-6 py-3">Error</th>
+                </tr>
+            </thead>
+            <tbody id="processes-table-body">
+                <tr>
+                    <td colspan="6" class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">
+                        Loading processes...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="p-4 border-t dark:border-gray-700 flex justify-between items-center">
+        <button id="prev-page" disabled class="px-4 py-2 text-sm font-medium text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600">
+            Previous
+        </button>
+        <span id="page-info" class="text-sm text-gray-500 dark:text-gray-400">Page 1 of 1</span>
+        <button id="next-page" disabled class="px-4 py-2 text-sm font-medium text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600">
+            Next
+        </button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+    import { ApiClient } from '/static/src/api.js';
+
+    const api = new ApiClient();
+    const batchId = '{{ batch_id }}';
+    let currentPage = 0;
+    let pageSize = 50;
+    let totalProcesses = 0;
+
+    // Status badge colors
+    const statusColors = {
+        'PENDING': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
+        'IN_PROGRESS': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+        'WAITING': 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
+        'WAITING_FOR_TSQ': 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
+        'COMPENSATING': 'bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-300',
+        'COMPLETED': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+        'COMPENSATED': 'bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300',
+        'FAILED': 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+        'CANCELED': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+    };
+
+    // Batch status colors
+    const batchStatusColors = {
+        'PENDING': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
+        'IN_PROGRESS': 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+        'COMPLETED': 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+        'COMPLETED_WITH_FAILURES': 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
+    };
+
+    // Format date
+    function formatDate(isoString) {
+        if (!isoString) return '-';
+        const date = new Date(isoString);
+        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
+
+    // Load batch details
+    async function loadBatchDetails() {
+        const result = await api.get(`/process-batches/${batchId}`);
+        if (!result) return;
+
+        // Update header
+        const name = result.name || batchId.substring(0, 8) + '...';
+        document.getElementById('batch-name').textContent = name;
+        document.getElementById('breadcrumb-name').textContent = name;
+
+        // Update status
+        const statusHtml = `<span class="px-2.5 py-0.5 rounded-full text-xs font-medium ${batchStatusColors[result.status] || batchStatusColors['PENDING']}">${result.status}</span>`;
+        document.getElementById('batch-status').innerHTML = statusHtml;
+
+        // Update dates
+        document.getElementById('batch-created').textContent = formatDate(result.created_at);
+        document.getElementById('batch-started').textContent = formatDate(result.started_at);
+        document.getElementById('batch-completed').textContent = formatDate(result.completed_at);
+
+        // Update progress
+        document.getElementById('progress-percent').textContent = result.progress_percent.toFixed(1) + '%';
+        document.getElementById('progress-bar').style.width = result.progress_percent + '%';
+
+        // Update counters
+        document.getElementById('count-total').textContent = result.total_count;
+        document.getElementById('count-completed').textContent = result.completed_count;
+        document.getElementById('count-failed').textContent = result.failed_count;
+        document.getElementById('count-in-progress').textContent = result.in_progress_count;
+    }
+
+    // Load batch processes
+    async function loadProcesses() {
+        const status = document.getElementById('process-filter-status').value;
+        const params = new URLSearchParams({
+            limit: pageSize,
+            offset: currentPage * pageSize,
+        });
+        if (status) params.set('status', status);
+
+        const result = await api.get(`/process-batches/${batchId}/processes?${params}`);
+        if (!result) return;
+
+        totalProcesses = result.total;
+        renderProcesses(result.processes);
+        updatePagination();
+    }
+
+    // Render processes table
+    function renderProcesses(processes) {
+        const tbody = document.getElementById('processes-table-body');
+
+        if (processes.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="px-6 py-8 text-center text-gray-500 dark:text-gray-400">
+                        No processes found.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = processes.map(proc => `
+            <tr class="bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer" data-process-id="${proc.process_id}">
+                <td class="px-6 py-4 font-mono text-xs">
+                    <a href="/processes/${proc.process_id}" class="text-blue-600 hover:underline dark:text-blue-400">
+                        ${proc.process_id.substring(0, 8)}...
+                    </a>
+                </td>
+                <td class="px-6 py-4">
+                    ${proc.process_type}
+                </td>
+                <td class="px-6 py-4">
+                    <span class="px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColors[proc.status] || statusColors['PENDING']}">
+                        ${proc.status}
+                    </span>
+                </td>
+                <td class="px-6 py-4">
+                    ${proc.current_step || '-'}
+                </td>
+                <td class="px-6 py-4">
+                    ${formatDate(proc.created_at)}
+                </td>
+                <td class="px-6 py-4">
+                    ${proc.error_code ? `<span class="text-red-600 dark:text-red-400 font-mono text-xs">${proc.error_code}</span>` : '-'}
+                </td>
+            </tr>
+        `).join('');
+
+        // Add click handlers
+        tbody.querySelectorAll('tr[data-process-id]').forEach(row => {
+            row.addEventListener('click', (e) => {
+                if (e.target.tagName !== 'A') {
+                    window.location.href = `/processes/${row.dataset.processId}`;
+                }
+            });
+        });
+    }
+
+    // Update pagination
+    function updatePagination() {
+        const totalPages = Math.ceil(totalProcesses / pageSize);
+        const start = currentPage * pageSize + 1;
+        const end = Math.min((currentPage + 1) * pageSize, totalProcesses);
+
+        document.getElementById('showing-range').textContent = totalProcesses > 0 ? `${start}-${end}` : '0-0';
+        document.getElementById('total-count').textContent = totalProcesses;
+        document.getElementById('page-info').textContent = `Page ${currentPage + 1} of ${totalPages || 1}`;
+
+        document.getElementById('prev-page').disabled = currentPage === 0;
+        document.getElementById('next-page').disabled = currentPage >= totalPages - 1;
+    }
+
+    // Event listeners
+    document.getElementById('process-filter-status').addEventListener('change', () => {
+        currentPage = 0;
+        loadProcesses();
+    });
+
+    document.getElementById('prev-page').addEventListener('click', () => {
+        if (currentPage > 0) {
+            currentPage--;
+            loadProcesses();
+        }
+    });
+
+    document.getElementById('next-page').addEventListener('click', () => {
+        const totalPages = Math.ceil(totalProcesses / pageSize);
+        if (currentPage < totalPages - 1) {
+            currentPage++;
+            loadProcesses();
+        }
+    });
+
+    // Initial load
+    loadBatchDetails();
+    loadProcesses();
+
+    // Auto-refresh every 3 seconds
+    setInterval(() => {
+        loadBatchDetails();
+        loadProcesses();
+    }, 3000);
+</script>
+{% endblock %}

@@ -43,6 +43,11 @@ from .schemas import (
     LoadTestResponse,
     ProcessAuditEntrySchema,
     ProcessBatchCreateRequest,
+    ProcessBatchCreateResponse,
+    ProcessBatchDetailResponse,
+    ProcessBatchListResponse,
+    ProcessBatchProcessesResponse,
+    ProcessBatchSummary,
     ProcessDetailResponse,
     ProcessingRate,
     ProcessListResponse,
@@ -1385,19 +1390,40 @@ def _behavior_to_state(
     return mapping or None
 
 
-@api_router.post("/processes/batch", response_model=ProcessListResponse, status_code=201)
+@api_router.post("/processes/batch", response_model=ProcessBatchCreateResponse, status_code=201)
 async def create_process_batch(
     request: ProcessBatchCreateRequest,
     report_process: ReportProcess,
     process_repo: ProcessRepo,
-) -> ProcessListResponse:
-    """Create a batch of statement report processes."""
+    pool: Pool,
+) -> ProcessBatchCreateResponse:
+    """Create a batch of statement report processes.
+
+    Creates a process batch with batch_type='PROCESS' for aggregate completion tracking.
+    Each process is linked to the batch via batch_id.
+    """
     import random
     import string
+
+    from commandbus.models import BatchMetadata, BatchStatus
 
     # Helper to generate random account IDs
     def generate_accounts(count: int = 3) -> list[str]:
         return [f"ACC-{''.join(random.choices(string.digits, k=5))}" for _ in range(count)]
+
+    # Create batch for process tracking
+    batch_id = uuid4()
+    batch_repo = PostgresBatchRepository(pool)
+
+    batch = BatchMetadata(
+        domain=report_process.domain,
+        batch_id=batch_id,
+        batch_type="PROCESS",
+        name=f"Process batch {datetime.now().isoformat()}",
+        status=BatchStatus.PENDING,
+        total_count=request.count,
+    )
+    await batch_repo.save(batch)
 
     created_processes: list[ProcessResponseSchema] = []
     behavior_state = _behavior_to_state(request.behavior)
@@ -1418,7 +1444,10 @@ async def create_process_batch(
                 initial_data["behavior"] = behavior_state
             payloads.append(initial_data)
 
-        process_ids = await asyncio.gather(*(report_process.start(data) for data in payloads))
+        # Start processes with batch_id
+        process_ids = await asyncio.gather(
+            *(report_process.start(data, batch_id=batch_id) for data in payloads)
+        )
 
         for process_id in process_ids:
             process = await process_repo.get_by_id(report_process.domain, process_id)
@@ -1441,11 +1470,13 @@ async def create_process_batch(
                 )
             )
 
-    return ProcessListResponse(
+    return ProcessBatchCreateResponse(
+        batch_id=batch_id,
+        batch_status=batch.status.value,
+        total_count=request.count,
+        completed_count=0,
         processes=created_processes,
-        total=len(created_processes),
-        limit=request.count,
-        offset=0,
+        message=f"Process batch created with {len(created_processes)} processes",
     )
 
 
@@ -1561,3 +1592,195 @@ async def get_process_detail(
     ]
 
     return ProcessDetailResponse(process=process_resp, audit_trail=audit_resp)
+
+
+# =============================================================================
+# Process Batch Endpoints
+# =============================================================================
+
+PROCESS_DOMAIN = "reporting"
+
+
+@api_router.get("/process-batches", response_model=ProcessBatchListResponse)
+async def list_process_batches(
+    pool: Pool,
+    status: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> ProcessBatchListResponse:
+    """List process batches (batch_type='PROCESS')."""
+    limit = min(limit, 100)
+
+    try:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            query = """
+                SELECT batch_id, name, status, total_count, completed_count,
+                       canceled_count, in_troubleshooting_count, created_at
+                FROM commandbus.batch
+                WHERE domain = %s AND batch_type = 'PROCESS'
+            """
+            params: list[Any] = [PROCESS_DOMAIN]
+
+            if status:
+                query += " AND status = %s"
+                params.append(status)
+
+            query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+
+            # Get total count
+            count_query = """
+                SELECT COUNT(*) FROM commandbus.batch
+                WHERE domain = %s AND batch_type = 'PROCESS'
+            """
+            count_params: list[Any] = [PROCESS_DOMAIN]
+            if status:
+                count_query += " AND status = %s"
+                count_params.append(status)
+            await cur.execute(count_query, count_params)
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
+
+        batches = []
+        for row in rows:
+            total_count = row[3] or 0
+            completed = row[4] or 0
+            failed = row[5] or 0  # canceled_count maps to failed for process batches
+            in_progress = row[6] or 0  # in_troubleshooting_count maps to in_progress
+            progress = (completed / total_count * 100) if total_count > 0 else 0
+            batches.append(
+                ProcessBatchSummary(
+                    batch_id=row[0],
+                    name=row[1],
+                    status=row[2],
+                    total_count=total_count,
+                    completed_count=completed,
+                    failed_count=failed,
+                    in_progress_count=in_progress,
+                    progress_percent=round(progress, 1),
+                    created_at=row[7],
+                )
+            )
+
+        return ProcessBatchListResponse(
+            batches=batches,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        return ProcessBatchListResponse(
+            batches=[], total=0, limit=limit, offset=offset, error=str(e)
+        )
+
+
+@api_router.get("/process-batches/{batch_id}", response_model=ProcessBatchDetailResponse)
+async def get_process_batch(batch_id: UUID, pool: Pool) -> ProcessBatchDetailResponse:
+    """Get process batch details with refreshed stats from process table."""
+    batch_repo = PostgresBatchRepository(pool)
+
+    # Refresh stats from process table (handles batch_type='PROCESS')
+    batch = await batch_repo.refresh_stats(PROCESS_DOMAIN, batch_id)
+
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Process batch not found")
+
+    total_count = batch.total_count or 0
+    completed = batch.completed_count or 0
+    failed = batch.canceled_count or 0  # canceled_count maps to failed for process batches
+    in_progress = batch.in_troubleshooting_count or 0  # maps to in_progress
+    progress = (completed / total_count * 100) if total_count > 0 else 0
+
+    return ProcessBatchDetailResponse(
+        batch_id=batch.batch_id,
+        name=batch.name,
+        status=batch.status.value,
+        total_count=total_count,
+        completed_count=completed,
+        failed_count=failed,
+        in_progress_count=in_progress,
+        progress_percent=round(progress, 1),
+        created_at=batch.created_at,
+        started_at=batch.started_at,
+        completed_at=batch.completed_at,
+        custom_data=batch.custom_data,
+    )
+
+
+@api_router.get(
+    "/process-batches/{batch_id}/processes", response_model=ProcessBatchProcessesResponse
+)
+async def get_process_batch_processes(
+    batch_id: UUID,
+    pool: Pool,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> ProcessBatchProcessesResponse:
+    """Get processes belonging to a process batch."""
+    limit = min(limit, 100)
+
+    try:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            query = """
+                SELECT domain, process_id, process_type, status, current_step,
+                       state, error_code, error_message,
+                       created_at, updated_at, completed_at
+                FROM commandbus.process
+                WHERE batch_id = %s
+            """
+            params: list[Any] = [batch_id]
+
+            if status:
+                query += " AND status = %s"
+                params.append(status)
+
+            query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+
+            # Get total count
+            count_query = """
+                SELECT COUNT(*) FROM commandbus.process
+                WHERE batch_id = %s
+            """
+            count_params: list[Any] = [batch_id]
+            if status:
+                count_query += " AND status = %s"
+                count_params.append(status)
+            await cur.execute(count_query, count_params)
+            total_row = await cur.fetchone()
+            total = total_row[0] if total_row else 0
+
+        processes = [
+            ProcessResponseSchema(
+                domain=row[0],
+                process_id=row[1],
+                process_type=row[2],
+                status=row[3],
+                current_step=row[4],
+                state=row[5],
+                error_code=row[6],
+                error_message=row[7],
+                created_at=row[8],
+                updated_at=row[9],
+                completed_at=row[10],
+            )
+            for row in rows
+        ]
+
+        return ProcessBatchProcessesResponse(
+            processes=processes,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        return ProcessBatchProcessesResponse(
+            processes=[], total=0, limit=limit, offset=offset, error=str(e)
+        )

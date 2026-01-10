@@ -55,15 +55,16 @@ class PostgresBatchRepository:
         await conn.execute(
             """
             INSERT INTO commandbus.batch (
-                domain, batch_id, name, custom_data, status,
+                domain, batch_id, batch_type, name, custom_data, status,
                 total_count, completed_count,
                 canceled_count, in_troubleshooting_count,
                 created_at, started_at, completed_at
-            ) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 metadata.domain,
                 metadata.batch_id,
+                metadata.batch_type,
                 metadata.name,
                 custom_data_json,
                 metadata.status.value,
@@ -110,7 +111,7 @@ class PostgresBatchRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT domain, batch_id, name, custom_data, status,
+                SELECT domain, batch_id, batch_type, name, custom_data, status,
                        total_count, completed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
@@ -218,7 +219,7 @@ class PostgresBatchRepository:
         async with conn.cursor() as cur:
             await cur.execute(
                 f"""
-                SELECT domain, batch_id, name, custom_data, status,
+                SELECT domain, batch_id, batch_type, name, custom_data, status,
                        total_count, completed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
@@ -234,24 +235,31 @@ class PostgresBatchRepository:
         return [self._row_to_metadata(row) for row in rows]
 
     def _row_to_metadata(self, row: tuple[Any, ...]) -> BatchMetadata:
-        """Convert a database row to BatchMetadata."""
-        custom_data = row[3]
+        """Convert a database row to BatchMetadata.
+
+        Expected column order (13 fields):
+            domain, batch_id, batch_type, name, custom_data, status,
+            total_count, completed_count, canceled_count, in_troubleshooting_count,
+            created_at, started_at, completed_at
+        """
+        custom_data = row[4]
         if isinstance(custom_data, str):
             custom_data = json.loads(custom_data)
 
         return BatchMetadata(
             domain=row[0],
             batch_id=row[1],
-            name=row[2],
+            batch_type=row[2],
+            name=row[3],
             custom_data=custom_data,
-            status=BatchStatus(row[4]),
-            total_count=row[5],
-            completed_count=row[6],
-            canceled_count=row[7],
-            in_troubleshooting_count=row[8],
-            created_at=row[9],
-            started_at=row[10],
-            completed_at=row[11],
+            status=BatchStatus(row[5]),
+            total_count=row[6],
+            completed_count=row[7],
+            canceled_count=row[8],
+            in_troubleshooting_count=row[9],
+            created_at=row[10],
+            started_at=row[11],
+            completed_at=row[12],
         )
 
     # =========================================================================

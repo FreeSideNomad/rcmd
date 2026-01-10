@@ -581,6 +581,69 @@ class ProcessListResponse(BaseModel):
     error: str | None = None
 
 
+class ProcessBatchCreateResponse(BaseModel):
+    """Response after creating a process batch."""
+
+    batch_id: UUID
+    batch_status: str
+    total_count: int
+    completed_count: int = 0
+    processes: list[ProcessResponseSchema]
+    message: str
+
+
+class ProcessBatchSummary(BaseModel):
+    """Process batch summary for list view."""
+
+    batch_id: UUID
+    name: str | None
+    status: str
+    total_count: int
+    completed_count: int
+    failed_count: int
+    in_progress_count: int
+    progress_percent: float
+    created_at: datetime | None
+
+
+class ProcessBatchListResponse(BaseModel):
+    """Paginated list of process batches."""
+
+    batches: list[ProcessBatchSummary]
+    total: int
+    limit: int
+    offset: int
+    error: str | None = None
+
+
+class ProcessBatchDetailResponse(BaseModel):
+    """Process batch detail with full info."""
+
+    batch_id: UUID
+    name: str | None
+    status: str
+    total_count: int
+    completed_count: int
+    failed_count: int
+    in_progress_count: int
+    progress_percent: float
+    created_at: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    custom_data: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class ProcessBatchProcessesResponse(BaseModel):
+    """Paginated list of processes in a batch."""
+
+    processes: list[ProcessResponseSchema]
+    total: int
+    limit: int
+    offset: int
+    error: str | None = None
+
+
 class ProcessAuditEntrySchema(BaseModel):
     """Audit entry for a process step."""
 

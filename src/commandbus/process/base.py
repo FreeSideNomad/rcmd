@@ -82,12 +82,14 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
         self,
         initial_data: dict[str, Any],
         conn: AsyncConnection[Any] | None = None,
+        batch_id: UUID | None = None,
     ) -> UUID:
         """Start a new process instance.
 
         Args:
             initial_data: Initial state data for the process.
             conn: Optional connection to run in existing transaction.
+            batch_id: Optional batch ID to link this process to a process batch.
 
         Returns:
             The process_id (UUID) of the new process.
@@ -106,6 +108,7 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
             state=state,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
+            batch_id=batch_id,
         )
 
         async def _start_impl(c: AsyncConnection[Any]) -> None:
