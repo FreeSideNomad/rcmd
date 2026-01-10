@@ -1691,7 +1691,8 @@ async def get_process_batch(batch_id: UUID, pool: Pool) -> ProcessBatchDetailRes
     total_count = batch.total_count or 0
     completed = batch.completed_count or 0
     failed = batch.canceled_count or 0  # canceled_count maps to failed for process batches
-    in_progress = batch.in_troubleshooting_count or 0  # maps to in_progress
+    blocked = batch.in_troubleshooting_count or 0  # processes blocked by TSQ commands
+    in_progress = max(0, total_count - completed - failed - blocked)  # truly in progress
     progress = (completed / total_count * 100) if total_count > 0 else 0
 
     return ProcessBatchDetailResponse(
@@ -1702,6 +1703,7 @@ async def get_process_batch(batch_id: UUID, pool: Pool) -> ProcessBatchDetailRes
         completed_count=completed,
         failed_count=failed,
         in_progress_count=in_progress,
+        blocked_count=blocked,
         progress_percent=round(progress, 1),
         created_at=batch.created_at,
         started_at=batch.started_at,
