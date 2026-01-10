@@ -20,11 +20,13 @@ from commandbus.process.models import (
 )
 
 if TYPE_CHECKING:
-    from psycopg import AsyncConnection
-    from psycopg_pool import AsyncConnectionPool
+    from psycopg import AsyncConnection, Connection
+    from psycopg_pool import AsyncConnectionPool, ConnectionPool
 
     from commandbus.bus import CommandBus
     from commandbus.process.repository import ProcessRepository
+    from commandbus.sync.bus import SyncCommandBus
+    from commandbus.sync.repositories.process import SyncProcessRepository
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +44,19 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
         process_repo: ProcessRepository,
         reply_queue: str,
         pool: AsyncConnectionPool,
+        *,
+        sync_pool: ConnectionPool[Any] | None = None,
+        sync_command_bus: SyncCommandBus | None = None,
+        sync_process_repo: SyncProcessRepository | None = None,
     ):
         self.command_bus = command_bus
         self.process_repo = process_repo
         self.reply_queue = reply_queue
         self.pool = pool
+        # Optional sync components for native sync mode
+        self._sync_pool = sync_pool
+        self._sync_command_bus = sync_command_bus
+        self._sync_process_repo = sync_process_repo
 
     @property
     @abstractmethod
@@ -270,26 +280,247 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
         self,
         reply: Reply,
         process: ProcessMetadata[Any, Any],
-        conn: Any = None,  # noqa: ARG002
+        conn: Connection[Any] | None = None,
     ) -> None:
-        """Handle incoming reply synchronously.
+        """Handle incoming reply synchronously using native sync components.
 
-        This is a sync wrapper around handle_reply that uses asyncio.run()
-        to execute the async logic. This allows the same process manager
-        to work with both async and sync reply routers.
-
-        Note: This method creates a new event loop for each call. For high
-        throughput scenarios, consider using the async handle_reply directly
-        with a persistent event loop.
+        When sync components (sync_pool, sync_command_bus, sync_process_repo)
+        are configured, this method uses native sync operations without any
+        async wrapper overhead. Otherwise, falls back to asyncio.run().
 
         Args:
             reply: The reply received from command execution.
             process: The process metadata (state might be dict).
-            conn: Connection parameter (ignored in sync version, uses pool).
+            conn: Optional sync connection for transaction support.
         """
-        # Run the async handle_reply in a new event loop
-        # Note: conn is not passed as the sync version manages its own connection
-        asyncio.run(self.handle_reply(reply, process, conn=None))
+        # Use native sync if all sync components are available
+        if (
+            self._sync_pool is not None
+            and self._sync_command_bus is not None
+            and self._sync_process_repo is not None
+        ):
+            self._handle_reply_sync_native(reply, process, conn)
+        else:
+            # Fallback to async wrapper (not recommended for high throughput)
+            asyncio.run(self.handle_reply(reply, process, conn=None))
+
+    def _handle_reply_sync_native(
+        self,
+        reply: Reply,
+        process: ProcessMetadata[Any, Any],
+        conn: Connection[Any] | None = None,
+    ) -> None:
+        """Native sync implementation of handle_reply."""
+        # Ensure state is typed
+        if isinstance(process.state, dict):
+            process.state = self.state_class.from_dict(process.state)
+
+        # Cast process to typed version for internal use
+        typed_process: ProcessMetadata[TState, TStep] = process
+
+        def _handle_impl(c: Connection[Any]) -> None:
+            # Record reply in audit log
+            self._record_reply_sync(typed_process, reply, c)
+
+            # Handle cancellation from TSQ - trigger compensation
+            if reply.outcome == ReplyOutcome.CANCELED:
+                logger.info(
+                    f"Process {typed_process.process_id} command canceled in TSQ, "
+                    f"running compensations"
+                )
+                self._run_compensations_sync(typed_process, c)
+                return
+
+            # Update state in place
+            current_step = typed_process.current_step
+            if current_step is None:
+                logger.error(
+                    f"Received reply for process {typed_process.process_id} with no current step"
+                )
+                return
+
+            self.update_state(typed_process.state, current_step, reply)
+
+            # Handle failure (goes to TSQ, wait for operator)
+            if reply.outcome == ReplyOutcome.FAILED:
+                self._handle_failure_sync(typed_process, reply, c)
+                return
+
+            # Determine next step
+            next_step = self.get_next_step(
+                current_step,
+                reply,
+                typed_process.state,
+            )
+
+            if next_step is None:
+                self._complete_process_sync(typed_process, c)
+            else:
+                self._execute_step_sync(typed_process, next_step, c)
+
+        if conn:
+            _handle_impl(conn)
+        else:
+            assert self._sync_pool is not None  # For type checker
+            with self._sync_pool.connection() as new_conn, new_conn.transaction():
+                _handle_impl(new_conn)
+
+    def build_command_sync(
+        self,
+        step: TStep,
+        state: TState,
+    ) -> ProcessCommand[Any]:
+        """Build command synchronously.
+
+        Default implementation wraps the async build_command. Override in
+        subclasses for truly native sync behavior if build_command does I/O.
+        """
+        return asyncio.run(self.build_command(step, state))
+
+    def _execute_step_sync(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        step: TStep,
+        conn: Connection[Any],
+    ) -> UUID:
+        """Execute a single step by sending command (sync version)."""
+        command = self.build_command_sync(step, process.state)
+        command_id = uuid4()
+
+        # Safely convert data to dict
+        command_payload = (
+            command.data.to_dict() if hasattr(command.data, "to_dict") else command.data
+        )
+
+        self.before_send_command_sync(process, step, command_id, command_payload, conn)
+
+        assert self._sync_command_bus is not None  # For type checker
+        self._sync_command_bus.send(
+            domain=self.domain,
+            command_type=command.command_type,
+            command_id=command_id,
+            data=command_payload,
+            correlation_id=process.process_id,
+            reply_to=self.reply_queue,
+            conn=conn,
+        )
+
+        process.current_step = step
+        process.status = ProcessStatus.WAITING_FOR_REPLY
+        process.updated_at = datetime.now(UTC)
+
+        # Record in audit log
+        self._record_command_sync(
+            process, step, command_id, command.command_type, command_payload, conn
+        )
+
+        assert self._sync_process_repo is not None  # For type checker
+        self._sync_process_repo.update(process, conn=conn)
+
+        return command_id
+
+    def before_send_command_sync(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        step: TStep,
+        command_id: UUID,
+        command_payload: dict[str, Any],
+        conn: Connection[Any],
+    ) -> None:
+        """Hook for subclasses to mutate state or side effects before sending command (sync)."""
+
+    def _complete_process_sync(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        conn: Connection[Any],
+    ) -> None:
+        """Mark process as completed (sync version)."""
+        process.status = ProcessStatus.COMPLETED
+        process.completed_at = datetime.now(UTC)
+        process.updated_at = datetime.now(UTC)
+        assert self._sync_process_repo is not None
+        self._sync_process_repo.update(process, conn=conn)
+
+    def _handle_failure_sync(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        reply: Reply,
+        conn: Connection[Any],
+    ) -> None:
+        """Handle step failure - command is in TSQ (sync version)."""
+        process.status = ProcessStatus.WAITING_FOR_TSQ
+        process.error_code = reply.error_code
+        process.error_message = reply.error_message
+        process.updated_at = datetime.now(UTC)
+        assert self._sync_process_repo is not None
+        self._sync_process_repo.update(process, conn=conn)
+
+    def _record_command_sync(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        step: TStep,
+        command_id: UUID,
+        command_type: str,
+        command_data: dict[str, Any],
+        conn: Connection[Any],
+    ) -> None:
+        """Record command execution in audit log (sync version)."""
+        entry = ProcessAuditEntry(
+            step_name=str(step),
+            command_id=command_id,
+            command_type=command_type,
+            command_data=command_data,
+            sent_at=datetime.now(UTC),
+        )
+        assert self._sync_process_repo is not None
+        self._sync_process_repo.log_step(process.domain, process.process_id, entry, conn=conn)
+
+    def _record_reply_sync(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        reply: Reply,
+        conn: Connection[Any],
+    ) -> None:
+        """Update audit log with reply information (sync version)."""
+        entry = ProcessAuditEntry(
+            step_name=str(process.current_step) if process.current_step else "",
+            command_id=reply.command_id,
+            command_type="",
+            command_data=None,
+            sent_at=datetime.now(UTC),
+            reply_outcome=reply.outcome,
+            reply_data=reply.data,
+            received_at=datetime.now(UTC),
+        )
+        assert self._sync_process_repo is not None
+        self._sync_process_repo.update_step_reply(
+            process.domain, process.process_id, reply.command_id, entry, conn=conn
+        )
+
+    def _run_compensations_sync(
+        self,
+        process: ProcessMetadata[TState, TStep],
+        conn: Connection[Any],
+    ) -> None:
+        """Run compensating commands for completed steps in reverse order (sync version)."""
+        assert self._sync_process_repo is not None
+        completed_steps = self._sync_process_repo.get_completed_steps(
+            process.domain, process.process_id, conn=conn
+        )
+
+        for step_name in reversed(completed_steps):
+            step: Any = step_name
+
+            comp_step = self.get_compensation_step(step)
+            if comp_step:
+                process.current_step = comp_step
+                process.status = ProcessStatus.COMPENSATING
+                self._sync_process_repo.update(process, conn=conn)
+                self._execute_step_sync(process, comp_step, conn)
+
+        process.status = ProcessStatus.COMPENSATED
+        process.completed_at = datetime.now(UTC)
+        self._sync_process_repo.update(process, conn=conn)
 
     async def before_send_command(
         self,
