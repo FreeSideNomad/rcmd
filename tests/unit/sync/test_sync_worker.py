@@ -562,7 +562,12 @@ class TestSyncWorkerHealthTracking:
     def test_check_stuck_threads(self) -> None:
         """Should detect stuck threads based on timeout."""
         mock_pool = MagicMock()
-        worker = SyncWorker(mock_pool, domain="payments", visibility_timeout=1)
+        worker = SyncWorker(
+            mock_pool,
+            domain="payments",
+            visibility_timeout=30,
+            statement_timeout=1000,  # 1s statement timeout
+        )
 
         # Add an old in-flight task
         mock_future = MagicMock()

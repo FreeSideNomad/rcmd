@@ -13,9 +13,13 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from psycopg import errors as psycopg_errors
+from psycopg_pool import PoolTimeout
+
 from commandbus.models import Reply, ReplyOutcome
 from commandbus.sync.health import HealthStatus
 from commandbus.sync.pgmq import SyncPgmqClient
+from commandbus.sync.timeouts import validate_timeouts
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -99,7 +103,13 @@ class SyncProcessReplyRouter:
             domain: Domain this router handles
             visibility_timeout: Default visibility timeout in seconds
             statement_timeout: PostgreSQL statement timeout in milliseconds
+
+        Raises:
+            ValueError: If statement_timeout >= visibility_timeout
         """
+        # Validate timeout hierarchy
+        validate_timeouts(statement_timeout, visibility_timeout)
+
         self._pool = pool
         self._process_repo = process_repo
         self._managers = managers
@@ -220,15 +230,20 @@ class SyncProcessReplyRouter:
         if available <= 0:
             return
 
-        # Read messages from reply queue
-        with self._pool.connection() as conn:
-            conn.execute(f"SET statement_timeout = {self._statement_timeout}")
-            messages = self._pgmq.read(
-                self._reply_queue,
-                visibility_timeout=self._visibility_timeout,
-                batch_size=available,
-                conn=conn,
-            )
+        # Read messages from reply queue, handling pool exhaustion
+        try:
+            with self._pool.connection() as conn:
+                conn.execute(f"SET statement_timeout = {self._statement_timeout}")
+                messages = self._pgmq.read(
+                    self._reply_queue,
+                    visibility_timeout=self._visibility_timeout,
+                    batch_size=available,
+                    conn=conn,
+                )
+        except PoolTimeout:
+            logger.warning(f"Pool exhaustion while polling for {self._domain} replies")
+            self._health.record_pool_exhaustion()
+            return
 
         for msg in messages:
             future = self._executor.submit(self._process_reply, msg)  # type: ignore[union-attr]
@@ -245,6 +260,15 @@ class SyncProcessReplyRouter:
         try:
             self._dispatch_reply(msg)
             self._health.record_success()
+        except psycopg_errors.QueryCanceled:
+            logger.warning(f"Statement timeout processing reply message {msg_id}")
+            self._health.record_failure()
+            # Leave message for retry (visibility timeout)
+        except PoolTimeout:
+            logger.warning(f"Pool timeout processing reply message {msg_id}")
+            self._health.record_pool_exhaustion()
+            self._health.record_failure()
+            # Leave message for retry (visibility timeout)
         except Exception:
             logger.exception(f"Error processing reply message {msg_id}")
             self._health.record_failure()
