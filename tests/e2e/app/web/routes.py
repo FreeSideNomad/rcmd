@@ -91,3 +91,17 @@ async def process_detail(request: Request, process_id: str) -> HTMLResponse:
     return templates.TemplateResponse(
         request, "pages/process_detail.html", {"process_id": process_id}
     )
+
+
+@web_router.get("/process-batches", response_class=HTMLResponse)
+async def process_batches_list(request: Request) -> HTMLResponse:
+    """Process batches list page."""
+    return templates.TemplateResponse(request, "pages/process_batches.html")
+
+
+@web_router.get("/process-batches/{batch_id}", response_class=HTMLResponse)
+async def process_batch_detail(request: Request, batch_id: str) -> HTMLResponse:
+    """Process batch detail page."""
+    return templates.TemplateResponse(
+        request, "pages/process_batch_detail.html", {"batch_id": batch_id}
+    )

@@ -26,18 +26,18 @@ class ProcessSQL:
     SELECT_COLUMNS = """
         domain, process_id, process_type, status, current_step,
         state, error_code, error_message,
-        created_at, updated_at, completed_at
+        created_at, updated_at, completed_at, batch_id
     """
 
     SAVE = """
         INSERT INTO commandbus.process (
             domain, process_id, process_type, status, current_step,
             state, error_code, error_message,
-            created_at, updated_at, completed_at
+            created_at, updated_at, completed_at, batch_id
         ) VALUES (
             %s, %s, %s, %s, %s,
             %s, %s, %s,
-            %s, %s, %s
+            %s, %s, %s, %s
         )
     """
 
@@ -112,7 +112,7 @@ class ProcessParams:
             state_data: Serialized state data (dict form)
 
         Returns:
-            Tuple of 11 parameters for SAVE SQL
+            Tuple of 12 parameters for SAVE SQL
         """
         return (
             process.domain,
@@ -126,6 +126,7 @@ class ProcessParams:
             process.created_at,
             process.updated_at,
             process.completed_at,
+            process.batch_id,
         )
 
     @staticmethod
@@ -218,10 +219,10 @@ class ProcessParsers:
     def from_row(row: tuple[Any, ...]) -> ProcessMetadata[Any, Any]:
         """Parse a database row to ProcessMetadata.
 
-        Expected column order (11 fields):
+        Expected column order (12 fields):
             domain, process_id, process_type, status, current_step,
             state, error_code, error_message,
-            created_at, updated_at, completed_at
+            created_at, updated_at, completed_at, batch_id
 
         Args:
             row: Database row tuple
@@ -245,6 +246,7 @@ class ProcessParsers:
             created_at=row[8],
             updated_at=row[9],
             completed_at=row[10],
+            batch_id=row[11] if len(row) > 11 else None,
         )
 
     @staticmethod

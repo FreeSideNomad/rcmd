@@ -85,9 +85,10 @@ class TestProcessParams:
         params = ProcessParams.save(process, {"key": "value"})
 
         assert isinstance(params, tuple)
-        assert len(params) == 11
+        assert len(params) == 12  # Includes batch_id
         assert params[0] == "test"
         assert params[3] == "PENDING"
+        assert params[11] is None  # batch_id
 
     def test_update_returns_tuple(self) -> None:
         """update should return tuple with correct length."""

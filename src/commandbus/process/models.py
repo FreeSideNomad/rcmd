@@ -68,6 +68,9 @@ class ProcessMetadata(Generic[TState, TStep]):
     error_code: str | None = None
     error_message: str | None = None
 
+    # Batch tracking (optional - links process to a batch for aggregate monitoring)
+    batch_id: UUID | None = None
+
 
 @dataclass
 class ProcessAuditEntry:

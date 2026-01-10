@@ -295,25 +295,27 @@ class BatchCommand:
 
 @dataclass
 class BatchMetadata:
-    """Metadata stored for a batch of commands.
+    """Metadata stored for a batch of commands or processes.
 
     Attributes:
         domain: The domain this batch belongs to
         batch_id: Unique identifier
+        batch_type: Type of batch ('COMMAND' or 'PROCESS')
         name: Optional human-readable name for the batch
         custom_data: Optional custom metadata
         status: Current batch status
-        total_count: Total number of commands in the batch
-        completed_count: Number of successfully completed commands
-        canceled_count: Number of canceled commands (after TSQ resolution)
-        in_troubleshooting_count: Number of commands currently in TSQ
+        total_count: Total number of items in the batch
+        completed_count: Number of successfully completed items
+        canceled_count: Number of canceled items (after TSQ resolution or process failure)
+        in_troubleshooting_count: Number of items currently in TSQ (or in-progress for processes)
         created_at: Batch creation timestamp
-        started_at: When first command was processed
-        completed_at: When all commands reached terminal state
+        started_at: When first item was processed
+        completed_at: When all items reached terminal state
     """
 
     domain: str
     batch_id: UUID
+    batch_type: str = "COMMAND"
     status: BatchStatus = BatchStatus.PENDING
     name: str | None = None
     custom_data: dict[str, Any] | None = None
