@@ -120,7 +120,7 @@ async def test_async_mode_default(
 
 
 @pytest.mark.asyncio
-async def test_sync_mode_lifecycle(
+async def test_sync_mode_lifecycle(  # noqa: PLR0915
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Test native sync mode worker lifecycle."""
@@ -158,7 +158,8 @@ async def test_sync_mode_lifecycle(
 
     monkeypatch.setattr(worker_module, "_load_runtime_settings", fake_load_runtime_settings)
 
-    expected_min, expected_max, expected_concurrency = worker_module._calculate_pool_plan(
+    # For sync mode, use the sync pool plan calculation (different sizing requirements)
+    expected_min, expected_max, expected_concurrency = worker_module._calculate_sync_pool_plan(
         worker_cfg, pool_cap
     )
 
@@ -237,11 +238,16 @@ async def test_sync_mode_lifecycle(
     await worker_module.run_worker(shutdown_event=shutdown_event)
 
     assert pool.closed
-    assert pool.min_size == expected_min
-    assert pool.max_size == expected_max
+    # In sync mode, the async pool is sized smaller (just for handlers that use it)
+    assert pool.min_size == worker_module.POOL_MIN_SIZE
+    async_pool_max = max(worker_module.POOL_MIN_SIZE, expected_concurrency)
+    assert pool.max_size == async_pool_max
 
-    # Check sync pool was created and closed
+    # Check sync pool was created with correct sizing and closed
     assert len(created_sync_pools) == 1
+    sync_pool_params = created_sync_pools[0].kwargs
+    assert sync_pool_params["min_size"] == expected_min
+    assert sync_pool_params["max_size"] == expected_max
     assert created_sync_pools[0].closed
 
     # Check native sync workers were created
@@ -410,7 +416,8 @@ async def test_sync_pool_created_with_correct_parameters(
 
     monkeypatch.setattr(worker_module, "_load_runtime_settings", fake_load_runtime_settings)
 
-    expected_min, expected_max, _ = worker_module._calculate_pool_plan(worker_cfg, pool_cap)
+    # For sync mode, use the sync pool plan calculation
+    expected_min, expected_max, _ = worker_module._calculate_sync_pool_plan(worker_cfg, pool_cap)
 
     # Track sync pool creation parameters
     created_sync_pools: list[dict[str, Any]] = []
@@ -486,4 +493,37 @@ def test_calculate_pool_plan_caps_when_pool_small() -> None:
     _, max_size, effective = worker_module._calculate_pool_plan(worker_cfg, pool_cap)
     assert max_size == pool_cap
     assert effective < worker_cfg.concurrency
+    assert effective >= 1
+
+
+def test_calculate_sync_pool_plan_sizes_for_all_threads() -> None:
+    """Sync pool must accommodate all concurrent threads (workers + router)."""
+    worker_cfg = WorkerConfig(concurrency=4)
+    pool_cap = 100
+    min_size, max_size, effective = worker_module._calculate_sync_pool_plan(worker_cfg, pool_cap)
+    # Each service (workers + router) needs `concurrency` connections plus overhead.
+    total_services = len(worker_module.WORKER_DOMAINS) + 1
+    expected_max = total_services * 4 + worker_module.SYNC_POOL_OVERHEAD
+    assert max_size == expected_max
+    assert effective == 4
+    assert min_size >= worker_module.POOL_MIN_SIZE
+
+
+def test_calculate_sync_pool_plan_caps_concurrency_when_pool_limited() -> None:
+    """When pool_cap is small, reduce concurrency to fit."""
+    worker_cfg = WorkerConfig(concurrency=20)
+    pool_cap = 20
+    min_size, max_size, effective = worker_module._calculate_sync_pool_plan(worker_cfg, pool_cap)
+    # With pool_cap=20 and SYNC_POOL_OVERHEAD=2, available=18
+    # 3 services means max concurrency = 18 // 3 = 6
+    assert effective == 6
+    assert max_size <= pool_cap
+    assert min_size <= max_size
+
+
+def test_calculate_sync_pool_plan_handles_minimum_concurrency() -> None:
+    """Ensure at least concurrency=1 even with tiny pool."""
+    worker_cfg = WorkerConfig(concurrency=100)
+    pool_cap = 5
+    _, _, effective = worker_module._calculate_sync_pool_plan(worker_cfg, pool_cap)
     assert effective >= 1
