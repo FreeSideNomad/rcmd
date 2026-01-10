@@ -47,18 +47,7 @@ from commandbus.setup import check_schema_exists, get_schema_sql, setup_database
 from commandbus.sync import (
     SyncCommandBus,
     SyncProcessReplyRouter,
-    SyncRuntime,
-    SyncTroubleshootingQueue,
     SyncWorker,
-)
-from commandbus.sync import (
-    configure as configure_sync,
-)
-from commandbus.sync import (
-    get_default_runtime as get_default_sync_runtime,
-)
-from commandbus.sync import (
-    get_thread_pool_size as get_sync_thread_pool_size,
 )
 from commandbus.worker import ReceivedCommand, Worker
 
@@ -99,8 +88,6 @@ __all__ = [
     "SendResult",
     "SyncCommandBus",
     "SyncProcessReplyRouter",
-    "SyncRuntime",
-    "SyncTroubleshootingQueue",
     "SyncWorker",
     "TransientCommandError",
     "TroubleshootingItem",
@@ -110,11 +97,8 @@ __all__ = [
     "check_and_invoke_batch_callback",
     "check_schema_exists",
     "clear_all_callbacks",
-    "configure_sync",
     "get_batch_callback",
-    "get_default_sync_runtime",
     "get_schema_sql",
-    "get_sync_thread_pool_size",
     "handler",
     "register_batch_callback",
     "remove_batch_callback",

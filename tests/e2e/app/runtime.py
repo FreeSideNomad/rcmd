@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 from typing import Any, cast
 
+from psycopg_pool import ConnectionPool
+
 from commandbus import CommandBus, TroubleshootingQueue
 from commandbus.process import PostgresProcessRepository
-from commandbus.sync import SyncCommandBus, SyncRuntime, SyncTroubleshootingQueue
+from commandbus.sync import SyncCommandBus
 
-from .config import RuntimeConfig
+from .config import Config, RuntimeConfig
 from .models import TestCommandRepository
 from .process.statement_report import StatementReportProcess
 
 
 class _RuntimeAdapter:
-    """Wraps async objects and optionally dispatches to sync wrappers via a thread."""
+    """Wraps async objects and optionally dispatches to sync methods via a thread."""
 
     def __init__(
         self,
@@ -61,9 +63,8 @@ class RuntimeManager:
         self._report_process: StatementReportProcess | None = None
         self._bus_adapter: _RuntimeAdapter | None = None
         self._tsq_adapter: _RuntimeAdapter | None = None
-        self._sync_runtime: SyncRuntime | None = None
+        self._sync_pool: ConnectionPool[Any] | None = None
         self._sync_bus: SyncCommandBus | None = None
-        self._sync_tsq: SyncTroubleshootingQueue | None = None
 
     async def start(self, runtime_config: RuntimeConfig) -> None:
         """Initialize runtime resources based on configuration."""
@@ -75,14 +76,18 @@ class RuntimeManager:
         self._process_repo = PostgresProcessRepository(self._pool)
 
         if self._mode == "sync":
-            self._sync_runtime = SyncRuntime()
-            self._sync_bus = SyncCommandBus(bus=self._async_bus, runtime=self._sync_runtime)
-            self._sync_tsq = SyncTroubleshootingQueue(
-                queue=self._async_tsq, runtime=self._sync_runtime
+            # Create sync connection pool for native sync command bus
+            self._sync_pool = ConnectionPool(
+                conninfo=Config.DATABASE_URL,
+                min_size=2,
+                max_size=10,
+                open=True,
             )
+            self._sync_bus = SyncCommandBus(self._sync_pool)
 
         self._bus_adapter = _RuntimeAdapter(self._mode, self._async_bus, self._sync_bus)
-        self._tsq_adapter = _RuntimeAdapter(self._mode, self._async_tsq, self._sync_tsq)
+        # Use async troubleshooting queue for both modes (no native sync version)
+        self._tsq_adapter = _RuntimeAdapter(self._mode, self._async_tsq, None)
 
         self._report_process = StatementReportProcess(
             command_bus=self._bus_adapter,
@@ -98,13 +103,12 @@ class RuntimeManager:
 
     async def shutdown(self) -> None:
         """Clean up runtime-specific resources."""
-        if self._sync_runtime is not None:
-            self._sync_runtime.shutdown()
+        if self._sync_pool is not None:
+            self._sync_pool.close()
         self._bus_adapter = None
         self._tsq_adapter = None
-        self._sync_runtime = None
+        self._sync_pool = None
         self._sync_bus = None
-        self._sync_tsq = None
         self._async_bus = None
         self._async_tsq = None
         self._process_repo = None
