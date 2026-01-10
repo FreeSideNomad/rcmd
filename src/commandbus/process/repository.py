@@ -138,11 +138,11 @@ class PostgresProcessRepository:
             INSERT INTO commandbus.process (
                 domain, process_id, process_type, status, current_step,
                 state, error_code, error_message,
-                created_at, updated_at, completed_at
+                created_at, updated_at, completed_at, batch_id
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s,
-                %s, %s, %s
+                %s, %s, %s, %s
             )
             """,
             (
@@ -157,6 +157,7 @@ class PostgresProcessRepository:
                 process.created_at,
                 process.updated_at,
                 process.completed_at,
+                process.batch_id,
             ),
         )
         logger.debug(f"Saved process {process.domain}.{process.process_id}")
@@ -240,7 +241,7 @@ class PostgresProcessRepository:
                 """
                 SELECT domain, process_id, process_type, status, current_step,
                        state, error_code, error_message,
-                       created_at, updated_at, completed_at
+                       created_at, updated_at, completed_at, batch_id
                 FROM commandbus.process
                 WHERE domain = %s AND process_id = %s
                 """,
@@ -265,6 +266,7 @@ class PostgresProcessRepository:
             created_at=row[8],
             updated_at=row[9],
             completed_at=row[10],
+            batch_id=row[11] if len(row) > 11 else None,
         )
 
     async def find_by_status(
@@ -293,7 +295,7 @@ class PostgresProcessRepository:
                 """
                 SELECT domain, process_id, process_type, status, current_step,
                        state, error_code, error_message,
-                       created_at, updated_at, completed_at
+                       created_at, updated_at, completed_at, batch_id
                 FROM commandbus.process
                 WHERE domain = %s AND status = ANY(%s)
                 """,

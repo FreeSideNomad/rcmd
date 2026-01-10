@@ -54,7 +54,7 @@
     </div>
 
     <!-- Counters -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
         <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 text-center">
             <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Total</dt>
             <dd class="text-2xl font-bold text-gray-900 dark:text-white" id="count-total">0</dd>
@@ -70,6 +70,10 @@
         <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 text-center">
             <dt class="text-sm font-medium text-blue-600 dark:text-blue-400">In Progress</dt>
             <dd class="text-2xl font-bold text-blue-700 dark:text-blue-300" id="count-in-progress">0</dd>
+        </div>
+        <div class="bg-yellow-50 dark:bg-yellow-900/20 rounded-lg p-4 text-center">
+            <dt class="text-sm font-medium text-yellow-600 dark:text-yellow-400">Blocked (TSQ)</dt>
+            <dd class="text-2xl font-bold text-yellow-700 dark:text-yellow-300" id="count-blocked">0</dd>
         </div>
     </div>
 </div>
@@ -202,6 +206,7 @@
         document.getElementById('count-completed').textContent = result.completed_count;
         document.getElementById('count-failed').textContent = result.failed_count;
         document.getElementById('count-in-progress').textContent = result.in_progress_count;
+        document.getElementById('count-blocked').textContent = result.blocked_count;
     }
 
     // Load batch processes

@@ -626,6 +626,7 @@ class ProcessBatchDetailResponse(BaseModel):
     completed_count: int
     failed_count: int
     in_progress_count: int
+    blocked_count: int  # Processes blocked by commands in TSQ
     progress_percent: float
     created_at: datetime | None
     started_at: datetime | None

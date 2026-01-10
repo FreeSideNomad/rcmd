@@ -3,6 +3,13 @@
 --
 -- This migration consolidates all command bus database objects into a dedicated schema
 -- for better organization and separation of concerns.
+--
+-- Includes:
+-- - Command and batch tables
+-- - Process manager tables
+-- - All stored procedures
+-- - On-demand batch stats refresh (eliminates hot row contention)
+-- - Process batch support (batch_type discriminator)
 
 -- Enable PGMQ extension (required for message queuing)
 CREATE EXTENSION IF NOT EXISTS pgmq;
@@ -18,6 +25,7 @@ SET search_path TO commandbus, pgmq, public;
 -- ============================================================================
 
 -- Batch table (must be created before command table for FK reference)
+-- Supports both command batches and process batches via batch_type
 CREATE TABLE IF NOT EXISTS commandbus.batch (
     domain                    TEXT NOT NULL,
     batch_id                  UUID NOT NULL,
@@ -31,8 +39,13 @@ CREATE TABLE IF NOT EXISTS commandbus.batch (
     created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     started_at                TIMESTAMPTZ NULL,
     completed_at              TIMESTAMPTZ NULL,
+    batch_type                TEXT NOT NULL DEFAULT 'COMMAND',
     PRIMARY KEY (domain, batch_id)
 );
+
+COMMENT ON COLUMN commandbus.batch.batch_type IS
+'Type of batch: COMMAND for command batches, PROCESS for process batches.
+Default is COMMAND for backward compatibility with existing batches.';
 
 CREATE INDEX IF NOT EXISTS ix_batch_status
     ON commandbus.batch(domain, status);
@@ -76,6 +89,9 @@ CREATE INDEX IF NOT EXISTS ix_command_updated
 CREATE INDEX IF NOT EXISTS ix_command_batch
     ON commandbus.command(domain, batch_id) WHERE batch_id IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS ix_command_batch_status
+    ON commandbus.command(batch_id, status) WHERE batch_id IS NOT NULL;
+
 -- Audit table (append-only)
 CREATE TABLE IF NOT EXISTS commandbus.audit (
     audit_id      BIGSERIAL PRIMARY KEY,
@@ -97,6 +113,58 @@ CREATE TABLE IF NOT EXISTS commandbus.payload_archive (
     archived_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY(domain, command_id)
 );
+
+-- ============================================================================
+-- Process Manager Tables
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS commandbus.process (
+    domain VARCHAR(255) NOT NULL,
+    process_id UUID NOT NULL,
+    process_type VARCHAR(255) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    current_step VARCHAR(255),
+    state JSONB NOT NULL DEFAULT '{}',
+    error_code VARCHAR(255),
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    batch_id UUID,
+
+    PRIMARY KEY (domain, process_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_type ON commandbus.process(domain, process_type);
+CREATE INDEX IF NOT EXISTS idx_process_status ON commandbus.process(domain, status);
+CREATE INDEX IF NOT EXISTS idx_process_created ON commandbus.process(created_at);
+
+-- Partial index for looking up processes by batch
+CREATE INDEX IF NOT EXISTS ix_process_batch_id
+    ON commandbus.process(batch_id) WHERE batch_id IS NOT NULL;
+
+-- Index for efficient stats calculation by batch and status
+CREATE INDEX IF NOT EXISTS ix_process_batch_status
+    ON commandbus.process(batch_id, status) WHERE batch_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS commandbus.process_audit (
+    id BIGSERIAL PRIMARY KEY,
+    domain VARCHAR(255) NOT NULL,
+    process_id UUID NOT NULL,
+    step_name VARCHAR(255) NOT NULL,
+    command_id UUID NOT NULL,
+    command_type VARCHAR(255) NOT NULL,
+    command_data JSONB,
+    sent_at TIMESTAMPTZ NOT NULL,
+    reply_outcome VARCHAR(50),
+    reply_data JSONB,
+    received_at TIMESTAMPTZ,
+
+    FOREIGN KEY (domain, process_id) REFERENCES commandbus.process(domain, process_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_audit_process ON commandbus.process_audit(domain, process_id);
+CREATE INDEX IF NOT EXISTS idx_process_audit_command ON commandbus.process_audit(command_id);
 
 -- ============================================================================
 -- Stored Procedures
@@ -206,16 +274,9 @@ $$ LANGUAGE plpgsql;
 
 
 -- sp_finish_command: Atomically finish a command (success or failure)
--- Combines: update status/error + insert audit + update batch counters
--- Returns is_batch_complete (TRUE if batch is now complete, for callback triggering)
---
--- Race condition fix: When a command takes longer than visibility timeout:
--- 1. Worker A receives command, starts processing (takes >30s)
--- 2. Visibility timeout expires, message redelivered
--- 3. Worker B receives same command, exhausts retries -> moves to TSQ
--- 4. Worker A finishes successfully -> calls complete
--- Solution: Check current status and use correct counter operation based on
--- the actual state transition (not just the target status).
+-- Combines: update status/error + insert audit
+-- Note: Batch counter updates removed to eliminate hot row contention.
+-- Batch stats are calculated on-demand via sp_refresh_batch_stats.
 CREATE OR REPLACE FUNCTION commandbus.sp_finish_command(
     p_domain TEXT,
     p_command_id UUID,
@@ -229,8 +290,6 @@ CREATE OR REPLACE FUNCTION commandbus.sp_finish_command(
 ) RETURNS BOOLEAN AS $$
 DECLARE
     v_current_status TEXT;
-    v_is_batch_complete BOOLEAN := FALSE;
-    v_update_type TEXT;
 BEGIN
     -- Get current status with row lock to prevent race conditions
     SELECT status INTO v_current_status
@@ -265,37 +324,18 @@ BEGIN
     INSERT INTO commandbus.audit (domain, command_id, event_type, details_json)
     VALUES (p_domain, p_command_id, p_event_type, p_details);
 
-    -- Update batch counters if command belongs to a batch
-    IF p_batch_id IS NOT NULL THEN
-        -- Determine update type based on state transition
-        IF p_status = 'COMPLETED' THEN
-            IF v_current_status = 'IN_PROGRESS' THEN
-                -- Normal completion: IN_PROGRESS -> COMPLETED
-                v_update_type := 'complete';
-            ELSIF v_current_status = 'IN_TROUBLESHOOTING_QUEUE' THEN
-                -- Late completion after TSQ: decrement TSQ, increment completed
-                v_update_type := 'tsq_complete';
-            END IF;
-        ELSIF p_status = 'IN_TROUBLESHOOTING_QUEUE' THEN
-            IF v_current_status = 'IN_PROGRESS' THEN
-                -- Normal TSQ move: IN_PROGRESS -> TSQ
-                v_update_type := 'tsq_move';
-            ELSIF v_current_status = 'COMPLETED' THEN
-                -- Edge case: trying to move already completed command to TSQ - skip
-                v_update_type := NULL;
-            END IF;
-        END IF;
+    -- NOTE: Batch counter updates removed to eliminate hot row contention.
+    -- Batch stats are now calculated on-demand via sp_refresh_batch_stats.
+    -- The p_batch_id parameter is kept for backward compatibility but not used.
 
-        IF v_update_type IS NOT NULL THEN
-            v_is_batch_complete := commandbus.sp_update_batch_counters(
-                p_domain, p_batch_id, v_update_type
-            );
-        END IF;
-    END IF;
-
-    RETURN v_is_batch_complete;
+    RETURN FALSE;  -- Always return FALSE since we no longer track batch completion here
 END;
 $$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION commandbus.sp_finish_command IS
+'Finish a command (success or failure). Updates command status and creates audit entry.
+Batch counter updates are removed to eliminate hot row contention.
+Batch stats are calculated on-demand via sp_refresh_batch_stats when viewing batch details.';
 
 
 -- sp_fail_command: Handle transient failure with error update + audit
@@ -346,11 +386,10 @@ $$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- Batch Status Tracking Stored Procedures
--- Consolidated batch counter updates with is_batch_complete return value
 -- ============================================================================
 
 -- sp_update_batch_counters: Central helper for updating batch counters
--- Called from sp_finish_command and TSQ operations
+-- Called from TSQ operations (not from sp_finish_command anymore)
 -- Returns TRUE if batch is now complete (for callback triggering)
 --
 -- update_type values:
@@ -498,6 +537,106 @@ BEGIN
     RETURN FALSE;
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- On-Demand Batch Stats Refresh
+-- Calculates batch stats from command/process tables to avoid hot row contention
+-- ============================================================================
+
+-- sp_refresh_batch_stats: Calculate batch stats on demand
+-- Supports both COMMAND batches and PROCESS batches via batch_type discriminator
+CREATE OR REPLACE FUNCTION commandbus.sp_refresh_batch_stats(
+    p_domain TEXT,
+    p_batch_id UUID
+) RETURNS TABLE (
+    completed_count BIGINT,
+    canceled_count BIGINT,
+    in_troubleshooting_count BIGINT,
+    is_complete BOOLEAN
+) AS $$
+DECLARE
+    v_total_count INT;
+    v_batch_type TEXT;
+    v_completed BIGINT;
+    v_canceled BIGINT;
+    v_in_tsq BIGINT;
+    v_is_complete BOOLEAN;
+BEGIN
+    -- Get total count and batch_type from batch
+    SELECT b.total_count, b.batch_type INTO v_total_count, v_batch_type
+    FROM commandbus.batch b
+    WHERE b.domain = p_domain AND b.batch_id = p_batch_id;
+
+    IF v_total_count IS NULL THEN
+        -- Batch not found
+        RETURN;
+    END IF;
+
+    -- Calculate stats based on batch type
+    IF v_batch_type = 'PROCESS' THEN
+        -- Process batch: count from process table
+        -- Success states: COMPLETED, COMPENSATED
+        -- Failure states: FAILED, CANCELED (maps to canceled_count)
+        -- In-progress: everything else (maps to in_troubleshooting_count for display)
+        SELECT
+            COALESCE(SUM(CASE WHEN status IN ('COMPLETED', 'COMPENSATED') THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status IN ('FAILED', 'CANCELED') THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status NOT IN ('COMPLETED', 'COMPENSATED', 'FAILED', 'CANCELED') THEN 1 ELSE 0 END), 0)
+        INTO v_completed, v_canceled, v_in_tsq
+        FROM commandbus.process
+        WHERE batch_id = p_batch_id;
+    ELSE
+        -- Command batch: count from command table (existing behavior)
+        SELECT
+            COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'CANCELED' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'IN_TROUBLESHOOTING_QUEUE' THEN 1 ELSE 0 END), 0)
+        INTO v_completed, v_canceled, v_in_tsq
+        FROM commandbus.command
+        WHERE batch_id = p_batch_id;
+    END IF;
+
+    -- Check if batch is complete (all items in terminal state)
+    -- For process batches, in_tsq represents in-progress count
+    IF v_batch_type = 'PROCESS' THEN
+        v_is_complete := (v_completed + v_canceled) >= v_total_count;
+    ELSE
+        v_is_complete := (v_completed + v_canceled + v_in_tsq) >= v_total_count;
+    END IF;
+
+    -- Update batch table with calculated stats
+    UPDATE commandbus.batch
+    SET completed_count = v_completed,
+        canceled_count = v_canceled,
+        in_troubleshooting_count = v_in_tsq,
+        status = CASE
+            WHEN v_is_complete AND v_canceled > 0 THEN 'COMPLETED_WITH_FAILURES'
+            WHEN v_is_complete THEN 'COMPLETED'
+            WHEN status = 'PENDING' AND (v_completed + v_canceled + v_in_tsq) > 0 THEN 'IN_PROGRESS'
+            ELSE status
+        END,
+        completed_at = CASE
+            WHEN v_is_complete AND completed_at IS NULL THEN NOW()
+            ELSE completed_at
+        END,
+        started_at = CASE
+            WHEN started_at IS NULL AND (v_completed + v_canceled + v_in_tsq) > 0 THEN NOW()
+            ELSE started_at
+        END
+    WHERE domain = p_domain AND batch_id = p_batch_id;
+
+    -- Return the calculated stats
+    RETURN QUERY SELECT v_completed, v_canceled, v_in_tsq, v_is_complete;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION commandbus.sp_refresh_batch_stats IS
+'Calculate and update batch statistics on demand.
+For COMMAND batches: counts from command table (COMPLETED, CANCELED, IN_TROUBLESHOOTING_QUEUE).
+For PROCESS batches: counts from process table (COMPLETED/COMPENSATED, FAILED/CANCELED, in-progress).
+Called from UI when displaying batch details to avoid hot row contention during processing.
+Returns: completed_count, canceled_count (or failed for process), in_troubleshooting_count (or in_progress), is_complete';
 
 
 -- ============================================================================

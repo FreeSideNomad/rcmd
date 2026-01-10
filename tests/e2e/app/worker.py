@@ -13,7 +13,7 @@ from psycopg_pool import AsyncConnectionPool, ConnectionPool
 
 from commandbus import CommandBus, HandlerRegistry, RetryPolicy, Worker
 from commandbus.process import PostgresProcessRepository, ProcessReplyRouter
-from commandbus.sync import SyncProcessReplyRouter, SyncWorker
+from commandbus.sync import SyncCommandBus, SyncProcessReplyRouter, SyncWorker
 from commandbus.sync.repositories import SyncProcessRepository
 
 from .config import Config, ConfigStore, RetryConfig, WorkerConfig
@@ -226,15 +226,6 @@ async def run_worker(  # noqa: PLR0915
         process_repo = PostgresProcessRepository(pool)
         behavior_repo = TestCommandRepository(pool)
 
-        report_process = StatementReportProcess(
-            command_bus=bus,
-            process_repo=process_repo,
-            reply_queue="reporting__process_replies",
-            pool=pool,
-            behavior_repo=behavior_repo,
-        )
-        managers = {report_process.process_type: report_process}
-
         logger.info(
             "Runtime mode: %s (pool_max=%s, concurrency=%s)",
             runtime_mode,
@@ -258,12 +249,40 @@ async def run_worker(  # noqa: PLR0915
                 worker_config.concurrency,
             )
 
+            # Create dedicated pool for router (avoids contention with workers)
+            router_pool = ConnectionPool(
+                conninfo=Config.DATABASE_URL,
+                min_size=5,
+                max_size=worker_config.concurrency + 5,
+                open=True,
+            )
+            logger.info(
+                "Created router pool (min_size=5, max_size=%s)",
+                worker_config.concurrency + 5,
+            )
+
             # Create native sync handlers that use sync pool directly
             # No async wrappers - handlers use sync repositories
             sync_registry = create_sync_handler_registry(sync_pool)
 
-            # Create sync process repository for native router
-            sync_process_repo = SyncProcessRepository(sync_pool)
+            # Create sync process repository for native router (uses router pool)
+            sync_process_repo = SyncProcessRepository(router_pool)
+
+            # Create sync command bus for process manager (uses router pool)
+            sync_command_bus = SyncCommandBus(router_pool)
+
+            # Create process manager with sync components for native sync mode
+            report_process = StatementReportProcess(
+                command_bus=bus,
+                process_repo=process_repo,
+                reply_queue="reporting__process_replies",
+                pool=pool,
+                behavior_repo=behavior_repo,
+                sync_pool=router_pool,
+                sync_command_bus=sync_command_bus,
+                sync_process_repo=sync_process_repo,
+            )
+            managers = {report_process.process_type: report_process}
 
             # Build retry policy
             retry_policy = RetryPolicy(
@@ -287,9 +306,9 @@ async def run_worker(  # noqa: PLR0915
                 retry_policy=retry_policy,
             )
 
-            # Create native sync process reply router
+            # Create native sync process reply router (uses dedicated router pool)
             sync_router = SyncProcessReplyRouter(
-                pool=sync_pool,
+                pool=router_pool,
                 process_repo=sync_process_repo,
                 managers=managers,
                 reply_queue="reporting__process_replies",
@@ -303,8 +322,19 @@ async def run_worker(  # noqa: PLR0915
                 worker_config=worker_config,
                 stop_event=stop_event,
                 sync_pool=sync_pool,
+                router_pool=router_pool,
             )
         else:
+            # Async mode - create process manager without sync components
+            report_process = StatementReportProcess(
+                command_bus=bus,
+                process_repo=process_repo,
+                reply_queue="reporting__process_replies",
+                pool=pool,
+                behavior_repo=behavior_repo,
+            )
+            managers = {report_process.process_type: report_process}
+
             e2e_worker = create_worker(
                 pool,
                 domain="e2e",
@@ -389,6 +419,7 @@ async def _run_sync_services(
     worker_config: WorkerConfig,
     stop_event: asyncio.Event,
     sync_pool: ConnectionPool[Any],
+    router_pool: ConnectionPool[Any],
 ) -> None:
     """Run native sync workers and router in background threads."""
     worker_tasks = [
@@ -452,8 +483,9 @@ async def _run_sync_services(
     stop_waiter.cancel()
     await asyncio.gather(stop_waiter, return_exceptions=True)
 
-    # Close the sync pool
+    # Close the pools
     sync_pool.close()
+    router_pool.close()
 
 
 if __name__ == "__main__":

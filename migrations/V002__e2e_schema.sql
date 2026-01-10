@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS ix_test_command_command_id
 CREATE INDEX IF NOT EXISTS ix_test_command_created_at
     ON e2e.test_command(created_at);
 
--- Configuration table for worker/retry settings
+-- Configuration table for worker/retry/runtime settings
 CREATE TABLE IF NOT EXISTS e2e.config (
     key TEXT PRIMARY KEY,
     value JSONB NOT NULL,
@@ -42,8 +42,19 @@ CREATE TABLE IF NOT EXISTS e2e.config (
 
 -- Insert default configuration
 INSERT INTO e2e.config (key, value) VALUES
-    ('worker', '{"visibility_timeout": 30, "concurrency": 4, "poll_interval": 1.0, "batch_size": 10}'::jsonb),
-    ('retry', '{"max_attempts": 3, "backoff_schedule": [10, 60, 300]}'::jsonb)
+    ('worker', '{
+        "visibility_timeout": 30,
+        "concurrency": 20,
+        "poll_interval": 1.0,
+        "batch_size": 10
+    }'::jsonb),
+    ('retry', '{
+        "max_attempts": 3,
+        "backoff_schedule": [10, 60, 300]
+    }'::jsonb),
+    ('runtime', '{
+        "mode": "sync"
+    }'::jsonb)
 ON CONFLICT (key) DO NOTHING;
 
 
@@ -63,6 +74,11 @@ SELECT pgmq.create('reports__replies');
 -- Create E2E demo application queues
 SELECT pgmq.create('e2e__commands');
 SELECT pgmq.create('e2e__replies');
+
+-- Create reporting domain queues (for process manager)
+SELECT pgmq.create('reporting__commands');
+SELECT pgmq.create('reporting__replies');
+SELECT pgmq.create('reporting__process_replies');
 
 -- ============================================================================
 -- Batch Summary Table for Reply Queue Aggregation
