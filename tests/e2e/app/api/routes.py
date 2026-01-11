@@ -288,6 +288,7 @@ async def stats_overview(pool: Pool) -> StatsOverviewResponse:
                 "PENDING": 0,
                 "IN_PROGRESS": 0,
                 "COMPLETED": 0,
+                "FAILED": 0,
                 "CANCELLED": 0,
                 "IN_TSQ": 0,
             }
@@ -358,6 +359,7 @@ async def stats_overview(pool: Pool) -> StatsOverviewResponse:
                 "PENDING": 0,
                 "IN_PROGRESS": 0,
                 "COMPLETED": 0,
+                "FAILED": 0,
                 "CANCELLED": 0,
                 "IN_TSQ": 0,
             },
@@ -977,7 +979,10 @@ async def list_batches(
         for row in rows:
             total_count = row[3] or 0
             completed = row[4] or 0
-            progress = (completed / total_count * 100) if total_count > 0 else 0
+            failed = row[5] or 0
+            canceled = row[6] or 0
+            terminal_count = completed + failed + canceled
+            progress = (terminal_count / total_count * 100) if total_count > 0 else 0
             batches.append(
                 BatchSummary(
                     batch_id=row[0],
@@ -985,8 +990,8 @@ async def list_batches(
                     status=row[2],
                     total_count=total_count,
                     completed_count=completed,
-                    failed_count=row[5] or 0,
-                    canceled_count=row[6] or 0,
+                    failed_count=failed,
+                    canceled_count=canceled,
                     in_troubleshooting_count=row[7] or 0,
                     progress_percent=round(progress, 1),
                     created_at=row[8],
@@ -1016,7 +1021,10 @@ async def get_batch(batch_id: UUID, pool: Pool) -> BatchDetailResponse:
 
     total_count = batch.total_count or 0
     completed = batch.completed_count or 0
-    progress = (completed / total_count * 100) if total_count > 0 else 0
+    failed = batch.failed_count or 0
+    canceled = batch.canceled_count or 0
+    terminal_count = completed + failed + canceled
+    progress = (terminal_count / total_count * 100) if total_count > 0 else 0
 
     return BatchDetailResponse(
         batch_id=batch.batch_id,

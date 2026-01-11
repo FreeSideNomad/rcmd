@@ -14,7 +14,7 @@
 </div>
 
 <!-- Status Cards -->
-<div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+<div class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
         <div class="flex items-center justify-between">
             <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Pending</div>
@@ -47,6 +47,15 @@
         <div class="text-xs text-gray-400 mt-1">
             <span id="change-completed" class="text-green-500"></span>
         </div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-medium text-gray-500 dark:text-gray-400">Failed</div>
+            <svg class="w-5 h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+        </div>
+        <div class="text-2xl font-bold text-orange-500 mt-2" id="count-failed">0</div>
     </div>
     <div class="bg-white rounded-lg shadow p-4 dark:bg-gray-800">
         <div class="flex items-center justify-between">
@@ -229,6 +238,7 @@
             document.getElementById('count-pending').textContent = formatNumber(stats.status_counts.PENDING || 0);
             document.getElementById('count-in-progress').textContent = formatNumber(stats.status_counts.IN_PROGRESS || 0);
             document.getElementById('count-completed').textContent = formatNumber(stats.status_counts.COMPLETED || 0);
+            document.getElementById('count-failed').textContent = formatNumber(stats.status_counts.FAILED || 0);
             document.getElementById('count-cancelled').textContent = formatNumber(stats.status_counts.CANCELLED || 0);
             document.getElementById('count-tsq').textContent = formatNumber(stats.status_counts.IN_TSQ || 0);
 
