@@ -7,7 +7,11 @@ from typing import Any
 from psycopg_pool import AsyncConnectionPool
 
 from commandbus import Command, HandlerContext, handler
-from commandbus.exceptions import PermanentCommandError, TransientCommandError
+from commandbus.exceptions import (
+    BusinessRuleException,
+    PermanentCommandError,
+    TransientCommandError,
+)
 
 from ..models import TestCommandRepository
 
@@ -66,8 +70,9 @@ class TestCommandHandlers:
     Commands are evaluated sequentially in this order:
     1. Roll for fail_permanent_pct -> PermanentCommandError
     2. Roll for fail_transient_pct -> TransientCommandError
-    3. Roll for timeout_pct -> Sleep > visibility_timeout, then success
-    4. Otherwise -> Success with duration from normal distribution
+    3. Roll for fail_business_rule_pct -> BusinessRuleException
+    4. Roll for timeout_pct -> Sleep > visibility_timeout, then success
+    5. Otherwise -> Success with duration from normal distribution
     """
 
     def __init__(self, pool: AsyncConnectionPool) -> None:
@@ -81,6 +86,7 @@ class TestCommandHandlers:
         Probabilities are evaluated sequentially:
         - fail_permanent_pct: Chance of permanent failure (0-100%)
         - fail_transient_pct: Chance of transient failure (0-100%)
+        - fail_business_rule_pct: Chance of business rule failure (0-100%)
         - timeout_pct: Chance of timeout behavior (0-100%)
         - If none trigger, command succeeds with duration sampled from
           normal distribution between min_duration_ms and max_duration_ms
@@ -110,6 +116,13 @@ class TestCommandHandlers:
             error_code = behavior.get("error_code", "TRANSIENT_ERROR")
             error_message = behavior.get("error_message", "Probabilistic transient failure")
             raise TransientCommandError(code=error_code, message=error_message)
+
+        # Roll for business rule failure
+        fail_business_rule_pct = behavior.get("fail_business_rule_pct", 0.0)
+        if random.random() * 100 < fail_business_rule_pct:
+            error_code = behavior.get("error_code", "BUSINESS_RULE_VIOLATION")
+            error_message = behavior.get("error_message", "Probabilistic business rule failure")
+            raise BusinessRuleException(code=error_code, message=error_message)
 
         # Roll for timeout
         timeout_pct = behavior.get("timeout_pct", 0.0)

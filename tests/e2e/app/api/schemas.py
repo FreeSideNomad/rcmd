@@ -18,8 +18,9 @@ class CommandBehavior(BaseModel):
     Commands are evaluated sequentially:
     1. Roll for fail_permanent_pct -> PermanentCommandError
     2. Roll for fail_transient_pct -> TransientCommandError
-    3. Roll for timeout_pct -> Sleep > visibility_timeout
-    4. Otherwise -> Success with duration from normal distribution
+    3. Roll for fail_business_rule_pct -> BusinessRuleException
+    4. Roll for timeout_pct -> Sleep > visibility_timeout
+    5. Otherwise -> Success with duration from normal distribution
     """
 
     fail_permanent_pct: float = Field(
@@ -33,6 +34,12 @@ class CommandBehavior(BaseModel):
         ge=0.0,
         le=100.0,
         description="Probability (0-100) of transient failure",
+    )
+    fail_business_rule_pct: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+        description="Probability (0-100) of business rule failure",
     )
     timeout_pct: float = Field(
         default=0.0,

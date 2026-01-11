@@ -6,7 +6,11 @@ import uuid
 from typing import Any
 
 from commandbus import Command, HandlerContext, handler
-from commandbus.exceptions import PermanentCommandError, TransientCommandError
+from commandbus.exceptions import (
+    BusinessRuleException,
+    PermanentCommandError,
+    TransientCommandError,
+)
 
 from ..models import TestCommandRepository
 from .base import _sample_duration
@@ -40,6 +44,13 @@ class ReportingHandlers:
             error_code = behavior.get("error_code", "REPORTING_TRANSIENT")
             error_message = behavior.get("error_message", "Probabilistic transient")
             raise TransientCommandError(code=error_code, message=error_message)
+
+        # Roll for business rule failure
+        fail_business_rule_pct = behavior.get("fail_business_rule_pct", 0.0)
+        if random.random() * 100 < fail_business_rule_pct:
+            error_code = behavior.get("error_code", "REPORTING_BUSINESS_RULE")
+            error_message = behavior.get("error_message", "Probabilistic business rule failure")
+            raise BusinessRuleException(code=error_code, message=error_message)
 
         # Duration
         min_ms = behavior.get("min_duration_ms", 0)
