@@ -13,6 +13,7 @@ from commandbus.exceptions import (
     PermanentCommandError,
     TransientCommandError,
 )
+from commandbus.handler import HandlerRegistry
 from commandbus.models import Command, CommandMetadata, CommandStatus, HandlerContext
 from commandbus.pgmq.client import PgmqMessage
 from commandbus.policies import RetryPolicy
@@ -1860,8 +1861,6 @@ class TestWorkerBusinessRuleErrorHandling:
     @pytest.fixture
     def worker(self, mock_pool: MagicMock) -> Worker:
         """Create a worker with mocked pool and registry."""
-        from commandbus.handler import HandlerRegistry
-
         registry = HandlerRegistry()
 
         @registry.handler("payments", "DebitAccount")
