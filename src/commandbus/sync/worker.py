@@ -19,7 +19,11 @@ from psycopg_pool import PoolTimeout
 
 from commandbus._core.pgmq_sql import PGMQ_NOTIFY_CHANNEL
 from commandbus.batch import invoke_sync_batch_callback
-from commandbus.exceptions import PermanentCommandError, TransientCommandError
+from commandbus.exceptions import (
+    BusinessRuleException,
+    PermanentCommandError,
+    TransientCommandError,
+)
 from commandbus.models import (
     Command,
     CommandMetadata,
@@ -462,6 +466,10 @@ class SyncWorker:
             # Permanent error - move to troubleshooting queue
             self._fail_permanent(received, e)
             self._health.record_failure(e)
+        except BusinessRuleException as e:
+            # Business rule failure - set FAILED status, send FAILED reply
+            self._fail_business_rule(received, e)
+            self._health.record_failure(e)
         except psycopg_errors.QueryCanceled as e:
             # Statement timeout exceeded - treat as transient
             logger.warning(
@@ -663,6 +671,75 @@ class SyncWorker:
             f"(command_id={command_id}), moved to troubleshooting queue: "
             f"[{error.code}] {error.error_message}"
         )
+
+    def _fail_business_rule(
+        self,
+        received: ReceivedCommand,
+        error: BusinessRuleException,
+    ) -> None:
+        """Handle a business rule failure by setting status to FAILED.
+
+        Unlike permanent failures that go to the Troubleshooting Queue,
+        business rule failures set the command status directly to FAILED
+        and send a FAILED reply (if configured). No operator intervention
+        is required.
+
+        Args:
+            received: The received command that failed
+            error: The business rule exception that occurred
+        """
+        command = received.command
+        command_id = command.command_id
+        domain = command.domain
+
+        with self._pool.connection() as conn, conn.transaction():
+            # Archive message
+            self._pgmq.archive(self._queue_name, received.msg_id, conn)
+
+            # Use stored procedure to finish command
+            is_batch_complete = self._command_repo.sp_finish_command(
+                domain,
+                command_id,
+                CommandStatus.FAILED,
+                event_type="BUSINESS_RULE_FAILED",
+                error_type="BUSINESS_RULE",
+                error_code=error.code,
+                error_msg=error.error_message,
+                details={
+                    "msg_id": received.msg_id,
+                    "attempt": received.context.attempt,
+                    "error_code": error.code,
+                    "error_msg": error.error_message,
+                    "error_details": error.details,
+                },
+                batch_id=received.metadata.batch_id,
+                conn=conn,
+            )
+
+            # Send FAILED reply if reply_to is configured
+            if command.reply_to:
+                reply_message = {
+                    "command_id": str(command_id),
+                    "correlation_id": str(command.correlation_id)
+                    if command.correlation_id
+                    else None,
+                    "outcome": ReplyOutcome.FAILED.value,
+                    "result": {
+                        "error_code": error.code,
+                        "error_message": error.error_message,
+                        "error_details": error.details,
+                    },
+                }
+                self._pgmq.send(command.reply_to, reply_message, conn=conn)
+
+        logger.warning(
+            f"Business rule failure for {domain}.{command.command_type} "
+            f"(command_id={command_id}): [{error.code}] {error.error_message}"
+        )
+
+        # Invoke batch completion callback - outside transaction
+        if is_batch_complete and received.metadata.batch_id is not None:
+            invoke_sync_batch_callback(domain, received.metadata.batch_id, self._batch_repo)
 
     def _fail_exhausted(
         self,
