@@ -34,7 +34,7 @@
         <!-- Failure Probabilities -->
         <div class="p-4 bg-gray-50 rounded-lg dark:bg-gray-700">
             <h3 class="text-sm font-medium text-gray-900 dark:text-white mb-4">Failure Probabilities</h3>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div>
                     <label for="fail-permanent-pct" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Permanent Failure %</label>
                     <input type="number" id="fail-permanent-pct" min="0" max="100" step="0.1" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
@@ -42,6 +42,10 @@
                 <div>
                     <label for="fail-transient-pct" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Transient Failure %</label>
                     <input type="number" id="fail-transient-pct" min="0" max="100" step="0.1" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
+                </div>
+                <div>
+                    <label for="fail-business-rule-pct" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Business Rule Failure %</label>
+                    <input type="number" id="fail-business-rule-pct" min="0" max="100" step="0.1" value="0" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 dark:bg-gray-600 dark:border-gray-500 dark:text-white">
                 </div>
                 <div>
                     <label for="timeout-pct" class="block mb-2 text-sm text-gray-700 dark:text-gray-300">Timeout %</label>
@@ -120,6 +124,13 @@
                     <div class="w-20 text-sm text-right text-blue-700 dark:text-blue-400"><span id="expected-transient">0</span></div>
                 </div>
                 <div class="flex items-center">
+                    <div class="w-24 text-sm text-blue-700 dark:text-blue-400">Business Rule</div>
+                    <div class="flex-1 h-4 bg-blue-100 rounded dark:bg-blue-800 overflow-hidden">
+                        <div id="bar-business-rule" class="h-full bg-purple-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="w-20 text-sm text-right text-blue-700 dark:text-blue-400"><span id="expected-business-rule">0</span></div>
+                </div>
+                <div class="flex items-center">
                     <div class="w-24 text-sm text-blue-700 dark:text-blue-400">Timeout</div>
                     <div class="flex-1 h-4 bg-blue-100 rounded dark:bg-blue-800 overflow-hidden">
                         <div id="bar-timeout" class="h-full bg-yellow-500 transition-all duration-300" style="width: 0%"></div>
@@ -152,19 +163,23 @@
     const api = new ApiClient();
 
     // Calculate expected outcomes based on sequential probability evaluation
-    function calculateExpectedOutcomes(count, failPermanent, failTransient, timeout) {
+    function calculateExpectedOutcomes(count, failPermanent, failTransient, failBusinessRule, timeout) {
         const permanentCount = count * (failPermanent / 100);
         const remainingAfterPermanent = count - permanentCount;
 
         const transientCount = remainingAfterPermanent * (failTransient / 100);
         const remainingAfterTransient = remainingAfterPermanent - transientCount;
 
-        const timeoutCount = remainingAfterTransient * (timeout / 100);
-        const successCount = remainingAfterTransient - timeoutCount;
+        const businessRuleCount = remainingAfterTransient * (failBusinessRule / 100);
+        const remainingAfterBusinessRule = remainingAfterTransient - businessRuleCount;
+
+        const timeoutCount = remainingAfterBusinessRule * (timeout / 100);
+        const successCount = remainingAfterBusinessRule - timeoutCount;
 
         return {
             permanent: Math.round(permanentCount),
             transient: Math.round(transientCount),
+            businessRule: Math.round(businessRuleCount),
             timeout: Math.round(timeoutCount),
             success: Math.round(successCount),
         };
@@ -175,20 +190,23 @@
         const count = parseInt(document.getElementById('command-count').value) || 100;
         const failPermanent = parseFloat(document.getElementById('fail-permanent-pct').value) || 0;
         const failTransient = parseFloat(document.getElementById('fail-transient-pct').value) || 0;
+        const failBusinessRule = parseFloat(document.getElementById('fail-business-rule-pct').value) || 0;
         const timeout = parseFloat(document.getElementById('timeout-pct').value) || 0;
 
-        const outcomes = calculateExpectedOutcomes(count, failPermanent, failTransient, timeout);
+        const outcomes = calculateExpectedOutcomes(count, failPermanent, failTransient, failBusinessRule, timeout);
 
         // Update counts
         document.getElementById('expected-success').textContent = outcomes.success;
         document.getElementById('expected-permanent').textContent = outcomes.permanent;
         document.getElementById('expected-transient').textContent = outcomes.transient;
+        document.getElementById('expected-business-rule').textContent = outcomes.businessRule;
         document.getElementById('expected-timeout').textContent = outcomes.timeout;
 
         // Update bars
         document.getElementById('bar-success').style.width = (outcomes.success / count * 100) + '%';
         document.getElementById('bar-permanent').style.width = (outcomes.permanent / count * 100) + '%';
         document.getElementById('bar-transient').style.width = (outcomes.transient / count * 100) + '%';
+        document.getElementById('bar-business-rule').style.width = (outcomes.businessRule / count * 100) + '%';
         document.getElementById('bar-timeout').style.width = (outcomes.timeout / count * 100) + '%';
     }
 
@@ -207,7 +225,7 @@
     }
 
     // Add event listeners for all probability inputs
-    ['command-count', 'fail-permanent-pct', 'fail-transient-pct', 'timeout-pct'].forEach(id => {
+    ['command-count', 'fail-permanent-pct', 'fail-transient-pct', 'fail-business-rule-pct', 'timeout-pct'].forEach(id => {
         document.getElementById(id).addEventListener('input', updateExpected);
     });
 
@@ -245,6 +263,7 @@
         const commandCount = parseInt(document.getElementById('command-count').value) || 100;
         const failPermanentPct = parseFloat(document.getElementById('fail-permanent-pct').value) || 0;
         const failTransientPct = parseFloat(document.getElementById('fail-transient-pct').value) || 0;
+        const failBusinessRulePct = parseFloat(document.getElementById('fail-business-rule-pct').value) || 0;
         const timeoutPct = parseFloat(document.getElementById('timeout-pct').value) || 0;
         const minDuration = parseInt(document.getElementById('min-duration').value) || 0;
         const maxDuration = parseInt(document.getElementById('max-duration').value) || 0;
@@ -259,6 +278,7 @@
         const behavior = {
             fail_permanent_pct: failPermanentPct,
             fail_transient_pct: failTransientPct,
+            fail_business_rule_pct: failBusinessRulePct,
             timeout_pct: timeoutPct,
             min_duration_ms: minDuration,
             max_duration_ms: maxDuration,

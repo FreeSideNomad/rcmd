@@ -1,0 +1,8 @@
+- filter by status do not work: http://localhost:8080/commands?commandType=&status=COMPLETED
+- populate command Type with distinct from DB (make it dropdown)
+- make actions icons on http://localhost:8080/tsq
+- you should be able to see the detail of the command by clicking on row on http://localhost:8080/tsq
+- you should be able to create new batch on http://localhost:8080/batches, for details on command type see: /Users/igormusic/code/rcmd/tests/e2e/app/templates/pages/batch_new.html
+- on http://localhost:8080/processes you should be able to create new process batch, have a look at recent commits on https://github.com/FreeSideNomad/rcmd where process batch was introduced. Copy migrations from /Users/igormusic/code/rcmd/migrations but then also look at all of the repositories and domain objects. This is a bigger task so do a proper plan and document in @docs .md file
+- om http://localhost:8080/queues it would be nice to be able to select queue from dropdown (get list of queues and show in dropdown)
+- http://localhost:8080/send should allow you to send batches with probablilties see: /Users/igormusic/code/rcmd/tests/e2e/app/templates/pages/batch_new.html

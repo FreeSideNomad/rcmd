@@ -64,6 +64,39 @@ class PermanentCommandError(CommandBusError):
         super().__init__(f"[{code}] {message}")
 
 
+class BusinessRuleException(CommandBusError):
+    """Raised for business rule violations that should fail immediately.
+
+    Unlike TransientCommandError (retries, then TSQ) or PermanentCommandError (TSQ),
+    BusinessRuleException:
+    - Bypasses the Troubleshooting Queue entirely
+    - Sets command status directly to FAILED
+    - Triggers immediate compensation for process-managed commands
+    - Does not require operator intervention
+
+    Use this for deterministic business rule violations where:
+    - Retrying won't help (the failure is inherent to the request)
+    - Operator intervention isn't needed (the appropriate action is predetermined)
+    - The system should automatically recover via compensation
+
+    Examples:
+    - Account closed before statement generation
+    - Invalid date range in report request
+    - Missing required data that won't appear later
+    """
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code
+        self.error_message = message
+        self.details = details or {}
+        super().__init__(f"[{code}] {message}")
+
+
 class CommandNotFoundError(CommandBusError):
     """Raised when a command does not exist."""
 

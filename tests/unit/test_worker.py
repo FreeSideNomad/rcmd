@@ -8,7 +8,12 @@ from uuid import uuid4
 
 import pytest
 
-from commandbus.exceptions import PermanentCommandError, TransientCommandError
+from commandbus.exceptions import (
+    BusinessRuleException,
+    PermanentCommandError,
+    TransientCommandError,
+)
+from commandbus.handler import HandlerRegistry
 from commandbus.models import Command, CommandMetadata, CommandStatus, HandlerContext
 from commandbus.pgmq.client import PgmqMessage
 from commandbus.policies import RetryPolicy
@@ -1654,3 +1659,271 @@ class TestWorkerFailExhausted:
             mock_exhausted.assert_called_once_with(
                 exhausted_command, "TRANSIENT", "RuntimeError", "Unexpected database error"
             )
+
+
+class TestWorkerFailBusinessRule:
+    """Tests for Worker.fail_business_rule() business rule error handling."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool with transaction support."""
+        pool = MagicMock()
+        conn = MagicMock()
+        conn.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+        return pool
+
+    @pytest.fixture
+    def worker(self, mock_pool: MagicMock) -> Worker:
+        """Create a worker with mocked pool."""
+        return Worker(mock_pool, domain="payments")
+
+    @pytest.fixture
+    def received_command(self) -> ReceivedCommand:
+        """Create a received command for testing."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        command = Command(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=command_id,
+            data={"account_id": "123", "amount": 100},
+            reply_to="payments__replies",
+            created_at=now,
+        )
+
+        context = HandlerContext(
+            command=command,
+            attempt=1,
+            max_attempts=3,
+            msg_id=42,
+        )
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_PROGRESS,
+            attempts=1,
+            max_attempts=3,
+            created_at=now,
+            updated_at=now,
+        )
+
+        return ReceivedCommand(
+            command=command,
+            context=context,
+            msg_id=42,
+            metadata=metadata,
+        )
+
+    @pytest.mark.asyncio
+    async def test_fail_business_rule_archives_message(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_business_rule archives the message."""
+        error = BusinessRuleException("ACCOUNT_CLOSED", "Account is closed")
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock) as mock_archive,
+            patch.object(worker._command_repo, "sp_finish_command", new_callable=AsyncMock),
+            patch.object(worker._pgmq, "send", new_callable=AsyncMock),
+        ):
+            await worker.fail_business_rule(received_command, error)
+
+            mock_archive.assert_called_once()
+            call_args = mock_archive.call_args
+            assert call_args[0][0] == "payments__commands"
+            assert call_args[0][1] == 42
+
+    @pytest.mark.asyncio
+    async def test_fail_business_rule_sets_failed_status(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_business_rule sets status to FAILED (not TSQ)."""
+        error = BusinessRuleException("ACCOUNT_CLOSED", "Account is closed")
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
+            patch.object(worker._pgmq, "send", new_callable=AsyncMock),
+        ):
+            await worker.fail_business_rule(received_command, error)
+
+            mock_finish_command.assert_called_once()
+            call_args = mock_finish_command.call_args
+            assert call_args[0][2] == CommandStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_fail_business_rule_stores_error_details(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_business_rule stores error details."""
+        error = BusinessRuleException(
+            "ACCOUNT_CLOSED",
+            "Account is closed",
+            details={"account_id": "123", "closed_date": "2024-01-01"},
+        )
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
+            patch.object(worker._pgmq, "send", new_callable=AsyncMock),
+        ):
+            await worker.fail_business_rule(received_command, error)
+
+            mock_finish_command.assert_called_once()
+            call_kwargs = mock_finish_command.call_args[1]
+            assert call_kwargs["error_type"] == "BUSINESS_RULE"
+            assert call_kwargs["error_code"] == "ACCOUNT_CLOSED"
+            assert call_kwargs["error_msg"] == "Account is closed"
+
+    @pytest.mark.asyncio
+    async def test_fail_business_rule_sends_failed_reply(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_business_rule sends a FAILED reply."""
+        error = BusinessRuleException("ACCOUNT_CLOSED", "Account is closed")
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(worker._command_repo, "sp_finish_command", new_callable=AsyncMock),
+            patch.object(worker._pgmq, "send", new_callable=AsyncMock) as mock_send,
+        ):
+            await worker.fail_business_rule(received_command, error)
+
+            mock_send.assert_called_once()
+            call_args = mock_send.call_args
+            assert call_args[0][0] == "payments__replies"
+            reply_msg = call_args[0][1]
+            assert reply_msg["outcome"] == "FAILED"
+            assert reply_msg["result"]["error_code"] == "ACCOUNT_CLOSED"
+            assert reply_msg["result"]["error_message"] == "Account is closed"
+
+    @pytest.mark.asyncio
+    async def test_fail_business_rule_uses_correct_event_type(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that fail_business_rule uses BUSINESS_RULE_FAILED event type."""
+        error = BusinessRuleException("ACCOUNT_CLOSED", "Account is closed")
+
+        with (
+            patch.object(worker._pgmq, "archive", new_callable=AsyncMock),
+            patch.object(
+                worker._command_repo, "sp_finish_command", new_callable=AsyncMock
+            ) as mock_finish_command,
+            patch.object(worker._pgmq, "send", new_callable=AsyncMock),
+        ):
+            await worker.fail_business_rule(received_command, error)
+
+            mock_finish_command.assert_called_once()
+            call_kwargs = mock_finish_command.call_args[1]
+            assert call_kwargs["event_type"] == "BUSINESS_RULE_FAILED"
+
+
+class TestWorkerBusinessRuleErrorHandling:
+    """Tests for automatic business rule error handling in _process_command."""
+
+    @pytest.fixture
+    def mock_pool(self) -> MagicMock:
+        """Create a mock connection pool."""
+        pool = MagicMock()
+        conn = MagicMock()
+        conn.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_connection():
+            yield conn
+
+        @asynccontextmanager
+        async def mock_transaction():
+            yield
+
+        pool.connection = mock_connection
+        conn.transaction = mock_transaction
+        return pool
+
+    @pytest.fixture
+    def worker(self, mock_pool: MagicMock) -> Worker:
+        """Create a worker with mocked pool and registry."""
+        registry = HandlerRegistry()
+
+        @registry.handler("payments", "DebitAccount")
+        async def handler(command: Command, context: HandlerContext) -> dict:
+            raise BusinessRuleException("INSUFFICIENT_FUNDS", "Not enough balance")
+
+        worker = Worker(mock_pool, domain="payments", registry=registry)
+        return worker
+
+    @pytest.fixture
+    def received_command(self) -> ReceivedCommand:
+        """Create a received command for testing."""
+        command_id = uuid4()
+        now = datetime.now(UTC)
+
+        command = Command(
+            domain="payments",
+            command_type="DebitAccount",
+            command_id=command_id,
+            data={"account_id": "123", "amount": 100},
+            created_at=now,
+        )
+
+        context = HandlerContext(
+            command=command,
+            attempt=1,
+            max_attempts=3,
+            msg_id=42,
+        )
+
+        metadata = CommandMetadata(
+            domain="payments",
+            command_id=command_id,
+            command_type="DebitAccount",
+            status=CommandStatus.IN_PROGRESS,
+            attempts=1,
+            max_attempts=3,
+            created_at=now,
+            updated_at=now,
+        )
+
+        return ReceivedCommand(
+            command=command,
+            context=context,
+            msg_id=42,
+            metadata=metadata,
+        )
+
+    @pytest.mark.asyncio
+    async def test_process_command_handles_business_rule_error(
+        self, worker: Worker, received_command: ReceivedCommand
+    ) -> None:
+        """Test that _process_command calls fail_business_rule for BusinessRuleException."""
+        semaphore = asyncio.Semaphore(1)
+
+        with patch.object(
+            worker, "fail_business_rule", new_callable=AsyncMock
+        ) as mock_fail_business:
+            await worker._process_command(received_command, semaphore)
+
+            mock_fail_business.assert_called_once()
+            call_args = mock_fail_business.call_args
+            assert call_args[0][0] == received_command
+            error = call_args[0][1]
+            assert isinstance(error, BusinessRuleException)
+            assert error.code == "INSUFFICIENT_FUNDS"

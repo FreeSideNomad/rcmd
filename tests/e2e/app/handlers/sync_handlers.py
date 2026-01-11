@@ -12,7 +12,11 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from commandbus import Command, HandlerContext, HandlerRegistry
-from commandbus.exceptions import PermanentCommandError, TransientCommandError
+from commandbus.exceptions import (
+    BusinessRuleException,
+    PermanentCommandError,
+    TransientCommandError,
+)
 
 from ..sync_models import SyncTestCommandRepository
 
@@ -80,6 +84,7 @@ class SyncTestCommandHandlers:
         Probabilities are evaluated sequentially:
         - fail_permanent_pct: Chance of permanent failure (0-100%)
         - fail_transient_pct: Chance of transient failure (0-100%)
+        - fail_business_rule_pct: Chance of business rule failure (0-100%)
         - timeout_pct: Chance of timeout behavior (0-100%)
         - If none trigger, command succeeds with duration sampled from
           normal distribution between min_duration_ms and max_duration_ms
@@ -107,6 +112,13 @@ class SyncTestCommandHandlers:
             error_code = behavior.get("error_code", "TRANSIENT_ERROR")
             error_message = behavior.get("error_message", "Probabilistic transient failure")
             raise TransientCommandError(code=error_code, message=error_message)
+
+        # Roll for business rule failure
+        fail_business_rule_pct = behavior.get("fail_business_rule_pct", 0.0)
+        if random.random() * 100 < fail_business_rule_pct:
+            error_code = behavior.get("error_code", "BUSINESS_RULE_VIOLATION")
+            error_message = behavior.get("error_message", "Probabilistic business rule failure")
+            raise BusinessRuleException(code=error_code, message=error_message)
 
         # Roll for timeout
         timeout_pct = behavior.get("timeout_pct", 0.0)
@@ -165,6 +177,13 @@ class SyncReportingHandlers:
             error_message = behavior.get("error_message", "Probabilistic transient")
             raise TransientCommandError(code=error_code, message=error_message)
 
+        # Roll for business rule failure
+        fail_business_rule_pct = behavior.get("fail_business_rule_pct", 0.0)
+        if random.random() * 100 < fail_business_rule_pct:
+            error_code = behavior.get("error_code", "REPORTING_BUSINESS_RULE")
+            error_message = behavior.get("error_message", "Probabilistic business rule failure")
+            raise BusinessRuleException(code=error_code, message=error_message)
+
         # Duration
         min_ms = behavior.get("min_duration_ms", 0)
         max_ms = behavior.get("max_duration_ms", 0)
@@ -193,6 +212,13 @@ class SyncReportingHandlers:
                 error_code = behavior.get("error_code", "REPORT_GENERATION_TIMEOUT")
                 error_message = behavior.get("error_message", "Report generation timed out")
                 raise TransientCommandError(code=error_code, message=error_message)
+
+            # Roll for business rule failure
+            fail_business_rule_pct = behavior.get("fail_business_rule_pct", 0.0)
+            if random.random() * 100 < fail_business_rule_pct:
+                error_code = behavior.get("error_code", "REPORT_BUSINESS_RULE")
+                error_message = behavior.get("error_message", "Report business rule violation")
+                raise BusinessRuleException(code=error_code, message=error_message)
 
             # Simulate processing time
             min_ms = behavior.get("min_duration_ms", 10)

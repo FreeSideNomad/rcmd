@@ -195,7 +195,14 @@ async def test_handle_reply_complete(manager, mock_repo, mock_bus):
 
 
 @pytest.mark.asyncio
-async def test_handle_failure(manager, mock_repo, mock_bus):
+async def test_handle_failure_triggers_compensation(manager, mock_repo, mock_bus):
+    """Test that FAILED reply triggers compensation and ends in CANCELED status.
+
+    FAILED replies come from BusinessRuleException and should:
+    1. Run compensations for completed steps
+    2. Set final status to CANCELED (not WAITING_FOR_TSQ)
+    3. Store error details
+    """
     process = ProcessMetadata(
         domain="d",
         process_id=uuid4(),
@@ -209,15 +216,19 @@ async def test_handle_failure(manager, mock_repo, mock_bus):
         command_id=uuid4(),
         correlation_id=process.process_id,
         outcome=ReplyOutcome.FAILED,
-        error_code="ERR",
-        error_message="Fail",
+        error_code="BUSINESS_RULE_VIOLATION",
+        error_message="Account closed",
     )
 
     await manager.handle_reply(reply, process)
 
-    assert process.status == ProcessStatus.WAITING_FOR_TSQ
-    assert process.error_code == "ERR"
-    assert not mock_bus.send.called
+    # Final status should be CANCELED after compensation
+    assert process.status == ProcessStatus.CANCELED
+    assert process.error_code == "BUSINESS_RULE_VIOLATION"
+    assert process.error_message == "Account closed"
+    # Compensation runs (sends commands for completed steps with compensation steps)
+    # get_completed_steps returns ["step_2", "step_1"] and only step_2 has compensation
+    assert mock_bus.send.call_count == 1  # One compensation command sent
     assert mock_repo.update.called
 
 

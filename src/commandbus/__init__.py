@@ -11,6 +11,7 @@ from commandbus.batch import (
 from commandbus.bus import CommandBus
 from commandbus.exceptions import (
     BatchNotFoundError,
+    BusinessRuleException,
     CommandBusError,
     CommandNotFoundError,
     DuplicateCommandError,
@@ -61,6 +62,7 @@ __all__ = [
     "BatchNotFoundError",
     "BatchSendResult",
     "BatchStatus",
+    "BusinessRuleException",
     "Command",
     "CommandBus",
     "CommandBusError",

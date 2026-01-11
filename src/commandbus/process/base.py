@@ -253,7 +253,7 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
 
             self.update_state(typed_process.state, current_step, reply)
 
-            # Handle failure (goes to TSQ, wait for operator)
+            # Handle business rule failure - trigger immediate compensation
             if reply.outcome == ReplyOutcome.FAILED:
                 await self._handle_failure(typed_process, reply, c)
                 return
@@ -341,7 +341,7 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
 
             self.update_state(typed_process.state, current_step, reply)
 
-            # Handle failure (goes to TSQ, wait for operator)
+            # Handle business rule failure - trigger immediate compensation
             if reply.outcome == ReplyOutcome.FAILED:
                 self._handle_failure_sync(typed_process, reply, c)
                 return
@@ -447,10 +447,27 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
         reply: Reply,
         conn: Connection[Any],
     ) -> None:
-        """Handle step failure - command is in TSQ (sync version)."""
-        process.status = ProcessStatus.WAITING_FOR_TSQ
+        """Handle step failure - command has business rule failure (sync version).
+
+        Business rule failures (FAILED reply) trigger immediate compensation
+        without waiting for operator intervention. Unlike TSQ failures where
+        we wait for operator resolution, business rule failures are deterministic
+        and the process should automatically compensate and end in CANCELED state.
+        """
+        logger.info(
+            f"Process {process.process_id} command failed with business rule error, "
+            f"running compensations"
+        )
+
+        # Store error information
         process.error_code = reply.error_code
         process.error_message = reply.error_message
+
+        # Run compensations (this sets status to COMPENSATING, then COMPENSATED)
+        self._run_compensations_sync(process, conn)
+
+        # Override final status to CANCELED (not COMPENSATED) for business rule failures
+        process.status = ProcessStatus.CANCELED
         process.updated_at = datetime.now(UTC)
         assert self._sync_process_repo is not None
         self._sync_process_repo.update(process, conn=conn)
@@ -626,10 +643,27 @@ class BaseProcessManager(ABC, Generic[TState, TStep]):
         reply: Reply,
         conn: AsyncConnection[Any],
     ) -> None:
-        """Handle step failure - command is in TSQ."""
-        process.status = ProcessStatus.WAITING_FOR_TSQ
+        """Handle step failure - command has business rule failure.
+
+        Business rule failures (FAILED reply) trigger immediate compensation
+        without waiting for operator intervention. Unlike TSQ failures where
+        we wait for operator resolution, business rule failures are deterministic
+        and the process should automatically compensate and end in CANCELED state.
+        """
+        logger.info(
+            f"Process {process.process_id} command failed with business rule error, "
+            f"running compensations"
+        )
+
+        # Store error information
         process.error_code = reply.error_code
         process.error_message = reply.error_message
+
+        # Run compensations (this sets status to COMPENSATING, then COMPENSATED)
+        await self._run_compensations(process, conn)
+
+        # Override final status to CANCELED (not COMPENSATED) for business rule failures
+        process.status = ProcessStatus.CANCELED
         process.updated_at = datetime.now(UTC)
         await self.process_repo.update(process, conn=conn)
 

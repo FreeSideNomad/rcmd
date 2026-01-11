@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from commandbus.batch import invoke_batch_callback
-from commandbus.exceptions import PermanentCommandError, TransientCommandError
+from commandbus.exceptions import (
+    BusinessRuleException,
+    PermanentCommandError,
+    TransientCommandError,
+)
 from commandbus.models import (
     Command,
     CommandMetadata,
@@ -419,6 +423,78 @@ class Worker:
             f"[{error.code}] {error.error_message}"
         )
 
+    async def fail_business_rule(
+        self,
+        received: ReceivedCommand,
+        error: BusinessRuleException,
+    ) -> None:
+        """Handle a business rule failure by setting status to FAILED.
+
+        Unlike permanent failures that go to the Troubleshooting Queue,
+        business rule failures set the command status directly to FAILED
+        and send a FAILED reply (if configured). No operator intervention
+        is required.
+
+        For process-managed commands, the FAILED reply triggers immediate
+        compensation in the process manager.
+
+        Args:
+            received: The received command that failed
+            error: The business rule exception that occurred
+        """
+        command = received.command
+        command_id = command.command_id
+        domain = command.domain
+
+        async with self._pool.connection() as conn, conn.transaction():
+            # Archive message (not delete - keeps history)
+            await self._pgmq.archive(self._queue_name, received.msg_id, conn)
+
+            # Use stored procedure: update status + error + audit + batch counter in ONE DB CALL
+            is_batch_complete = await self._command_repo.sp_finish_command(
+                domain,
+                command_id,
+                CommandStatus.FAILED,
+                event_type="BUSINESS_RULE_FAILED",
+                error_type="BUSINESS_RULE",
+                error_code=error.code,
+                error_msg=error.error_message,
+                details={
+                    "msg_id": received.msg_id,
+                    "attempt": received.context.attempt,
+                    "error_code": error.code,
+                    "error_msg": error.error_message,
+                    "error_details": error.details,
+                },
+                batch_id=received.metadata.batch_id,
+                conn=conn,
+            )
+
+            # Send FAILED reply if reply_to is configured
+            if command.reply_to:
+                reply_message = {
+                    "command_id": str(command_id),
+                    "correlation_id": str(command.correlation_id)
+                    if command.correlation_id
+                    else None,
+                    "outcome": ReplyOutcome.FAILED.value,
+                    "result": {
+                        "error_code": error.code,
+                        "error_message": error.error_message,
+                        "error_details": error.details,
+                    },
+                }
+                await self._pgmq.send(command.reply_to, reply_message, conn=conn)
+
+        logger.warning(
+            f"Business rule failure for {domain}.{command.command_type} "
+            f"(command_id={command_id}): [{error.code}] {error.error_message}"
+        )
+
+        # Invoke batch completion callback (S043) - outside transaction
+        if is_batch_complete and received.metadata.batch_id is not None:
+            await invoke_batch_callback(domain, received.metadata.batch_id, self._batch_repo)
+
     async def _fail_exhausted(
         self,
         received: ReceivedCommand,
@@ -720,6 +796,9 @@ class Worker:
             except PermanentCommandError as e:
                 # Permanent error - move to troubleshooting queue
                 await self.fail_permanent(received, e)
+            except BusinessRuleException as e:
+                # Business rule failure - set FAILED status, send FAILED reply
+                await self.fail_business_rule(received, e)
             except Exception as e:
                 # Unknown exception treated as transient
                 logger.exception(f"Error processing command {received.command.command_id}")
