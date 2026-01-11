@@ -25,6 +25,14 @@ A Python library providing Command Bus abstraction over PostgreSQL + PGMQ for re
 
 ## Release Highlights
 
+### v0.2.2 - BusinessRuleException & Batch Failed Count
+
+- **BusinessRuleException.** New exception type for business rule violations that should fail immediately without operator intervention. Unlike `TransientCommandError` (retries) or `PermanentCommandError` (TSQ), `BusinessRuleException` bypasses the Troubleshooting Queue entirely and sets command status directly to `FAILED`.
+- **Automatic process compensation.** When a process-managed command throws `BusinessRuleException`, the process manager automatically triggers compensation and ends in `CANCELED` status—no waiting for TSQ resolution.
+- **Batch failed_count tracking.** The batch table now tracks commands that failed due to business rule violations separately via the `failed_count` column. Progress calculation includes all terminal states (completed + failed + canceled).
+- **E2E behavior configuration.** Test handlers support `fail_business_rule_pct` for probabilistic business rule failures, available for both command batches and per-step process batches.
+- **Dashboard Failed count.** The E2E dashboard now displays Failed command counts alongside other status metrics.
+
 ### v0.2.1 - Process Batch Tracking & TSQ Detection
 
 - **Process batch tracking.** New `batch_type='PROCESS'` discriminator enables tracking completion of process batches (not just command batches). Processes can be linked to batches via `batch_id` for aggregate status monitoring.
