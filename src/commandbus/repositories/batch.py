@@ -56,10 +56,10 @@ class PostgresBatchRepository:
             """
             INSERT INTO commandbus.batch (
                 domain, batch_id, batch_type, name, custom_data, status,
-                total_count, completed_count,
+                total_count, completed_count, failed_count,
                 canceled_count, in_troubleshooting_count,
                 created_at, started_at, completed_at
-            ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 metadata.domain,
@@ -70,6 +70,7 @@ class PostgresBatchRepository:
                 metadata.status.value,
                 metadata.total_count,
                 metadata.completed_count,
+                metadata.failed_count,
                 metadata.canceled_count,
                 metadata.in_troubleshooting_count,
                 metadata.created_at,
@@ -112,7 +113,7 @@ class PostgresBatchRepository:
             await cur.execute(
                 """
                 SELECT domain, batch_id, batch_type, name, custom_data, status,
-                       total_count, completed_count,
+                       total_count, completed_count, failed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
                 FROM commandbus.batch
@@ -220,7 +221,7 @@ class PostgresBatchRepository:
             await cur.execute(
                 f"""
                 SELECT domain, batch_id, batch_type, name, custom_data, status,
-                       total_count, completed_count,
+                       total_count, completed_count, failed_count,
                        canceled_count, in_troubleshooting_count,
                        created_at, started_at, completed_at
                 FROM commandbus.batch
@@ -237,9 +238,10 @@ class PostgresBatchRepository:
     def _row_to_metadata(self, row: tuple[Any, ...]) -> BatchMetadata:
         """Convert a database row to BatchMetadata.
 
-        Expected column order (13 fields):
+        Expected column order (14 fields):
             domain, batch_id, batch_type, name, custom_data, status,
-            total_count, completed_count, canceled_count, in_troubleshooting_count,
+            total_count, completed_count, failed_count,
+            canceled_count, in_troubleshooting_count,
             created_at, started_at, completed_at
         """
         custom_data = row[4]
@@ -255,11 +257,12 @@ class PostgresBatchRepository:
             status=BatchStatus(row[5]),
             total_count=row[6],
             completed_count=row[7],
-            canceled_count=row[8],
-            in_troubleshooting_count=row[9],
-            created_at=row[10],
-            started_at=row[11],
-            completed_at=row[12],
+            failed_count=row[8],
+            canceled_count=row[9],
+            in_troubleshooting_count=row[10],
+            created_at=row[11],
+            started_at=row[12],
+            completed_at=row[13],
         )
 
     # =========================================================================

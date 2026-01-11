@@ -39,9 +39,9 @@ def make_batch_metadata(
 def make_row_from_metadata(metadata: BatchMetadata) -> tuple:
     """Create a database row tuple from BatchMetadata.
 
-    Row format matches BatchParsers.from_row expectations (12 fields):
+    Row format matches BatchParsers.from_row expectations (13 fields):
         domain, batch_id, name, custom_data, status,
-        total_count, completed_count,
+        total_count, completed_count, failed_count,
         canceled_count, in_troubleshooting_count,
         created_at, started_at, completed_at
     """
@@ -53,6 +53,7 @@ def make_row_from_metadata(metadata: BatchMetadata) -> tuple:
         metadata.status.value,
         metadata.total_count,
         metadata.completed_count,
+        metadata.failed_count,
         metadata.canceled_count,
         metadata.in_troubleshooting_count,
         metadata.created_at,
