@@ -6,7 +6,10 @@
 ALTER TABLE commandbus.batch
 ADD COLUMN IF NOT EXISTS failed_count INT NOT NULL DEFAULT 0;
 
--- Update sp_refresh_batch_stats to include failed_count
+-- Drop existing function first (return type is changing)
+DROP FUNCTION IF EXISTS commandbus.sp_refresh_batch_stats(TEXT, UUID);
+
+-- Recreate sp_refresh_batch_stats with failed_count in return type
 CREATE OR REPLACE FUNCTION commandbus.sp_refresh_batch_stats(
     p_domain TEXT,
     p_batch_id UUID
