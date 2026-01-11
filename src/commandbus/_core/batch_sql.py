@@ -20,7 +20,7 @@ class BatchSQL:
     # Column order for SELECT queries
     SELECT_COLUMNS = """
         domain, batch_id, name, custom_data, status,
-        total_count, completed_count,
+        total_count, completed_count, failed_count,
         canceled_count, in_troubleshooting_count,
         created_at, started_at, completed_at
     """
@@ -28,10 +28,10 @@ class BatchSQL:
     SAVE = """
         INSERT INTO commandbus.batch (
             domain, batch_id, name, custom_data, status,
-            total_count, completed_count,
+            total_count, completed_count, failed_count,
             canceled_count, in_troubleshooting_count,
             created_at, started_at, completed_at
-        ) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
 
     GET = f"""
@@ -83,7 +83,7 @@ class BatchParams:
             metadata: Batch metadata to save
 
         Returns:
-            Tuple of 12 parameters for SAVE SQL
+            Tuple of 13 parameters for SAVE SQL
         """
         custom_data_json = json.dumps(metadata.custom_data) if metadata.custom_data else None
         return (
@@ -94,6 +94,7 @@ class BatchParams:
             metadata.status.value,
             metadata.total_count,
             metadata.completed_count,
+            metadata.failed_count,
             metadata.canceled_count,
             metadata.in_troubleshooting_count,
             metadata.created_at,
@@ -144,9 +145,9 @@ class BatchParsers:
     def from_row(row: tuple[Any, ...]) -> BatchMetadata:
         """Parse a database row to BatchMetadata.
 
-        Expected column order (12 fields):
+        Expected column order (13 fields):
             domain, batch_id, name, custom_data, status,
-            total_count, completed_count,
+            total_count, completed_count, failed_count,
             canceled_count, in_troubleshooting_count,
             created_at, started_at, completed_at
 
@@ -168,11 +169,12 @@ class BatchParsers:
             status=BatchStatus(row[4]),
             total_count=row[5],
             completed_count=row[6],
-            canceled_count=row[7],
-            in_troubleshooting_count=row[8],
-            created_at=row[9],
-            started_at=row[10],
-            completed_at=row[11],
+            failed_count=row[7],
+            canceled_count=row[8],
+            in_troubleshooting_count=row[9],
+            created_at=row[10],
+            started_at=row[11],
+            completed_at=row[12],
         )
 
     @staticmethod

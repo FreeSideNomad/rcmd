@@ -306,6 +306,7 @@ class BatchMetadata:
         status: Current batch status
         total_count: Total number of items in the batch
         completed_count: Number of successfully completed items
+        failed_count: Number of items that failed due to business rule violations
         canceled_count: Number of canceled items (after TSQ resolution or process failure)
         in_troubleshooting_count: Number of items currently in TSQ (or in-progress for processes)
         created_at: Batch creation timestamp
@@ -321,6 +322,7 @@ class BatchMetadata:
     custom_data: dict[str, Any] | None = None
     total_count: int = 0
     completed_count: int = 0
+    failed_count: int = 0
     canceled_count: int = 0
     in_troubleshooting_count: int = 0
     created_at: datetime = field(default_factory=datetime.utcnow)

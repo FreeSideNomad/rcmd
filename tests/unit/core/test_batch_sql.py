@@ -21,8 +21,8 @@ class TestBatchSQL:
         assert "status" in BatchSQL.SELECT_COLUMNS
 
     def test_save_sql_has_correct_placeholders(self) -> None:
-        """SAVE SQL should have 12 placeholders."""
-        assert BatchSQL.SAVE.count("%s") == 12
+        """SAVE SQL should have 13 placeholders."""
+        assert BatchSQL.SAVE.count("%s") == 13
 
     def test_get_sql_has_placeholders(self) -> None:
         """GET SQL should have 2 placeholders for domain and batch_id."""
@@ -75,9 +75,9 @@ class TestBatchParams:
         )
 
     def test_save_returns_correct_tuple_length(self, sample_metadata: BatchMetadata) -> None:
-        """save() should return 12 parameters."""
+        """save() should return 13 parameters."""
         params = BatchParams.save(sample_metadata)
-        assert len(params) == 12
+        assert len(params) == 13
 
     def test_save_returns_correct_values(self, sample_metadata: BatchMetadata) -> None:
         """save() should return values in correct order."""
@@ -90,11 +90,12 @@ class TestBatchParams:
         assert params[4] == sample_metadata.status.value
         assert params[5] == sample_metadata.total_count
         assert params[6] == sample_metadata.completed_count
-        assert params[7] == sample_metadata.canceled_count
-        assert params[8] == sample_metadata.in_troubleshooting_count
-        assert params[9] == sample_metadata.created_at
-        assert params[10] == sample_metadata.started_at
-        assert params[11] == sample_metadata.completed_at
+        assert params[7] == sample_metadata.failed_count
+        assert params[8] == sample_metadata.canceled_count
+        assert params[9] == sample_metadata.in_troubleshooting_count
+        assert params[10] == sample_metadata.created_at
+        assert params[11] == sample_metadata.started_at
+        assert params[12] == sample_metadata.completed_at
 
     def test_save_handles_none_custom_data(self, sample_metadata: BatchMetadata) -> None:
         """save() should handle None custom_data."""
@@ -160,6 +161,7 @@ class TestBatchParsers:
             "COMPLETED",  # status
             10,  # total_count
             9,  # completed_count
+            0,  # failed_count
             1,  # canceled_count
             0,  # in_troubleshooting_count
             created_at,  # created_at
@@ -176,6 +178,7 @@ class TestBatchParsers:
         assert metadata.status == BatchStatus.COMPLETED
         assert metadata.total_count == 10
         assert metadata.completed_count == 9
+        assert metadata.failed_count == 0
         assert metadata.canceled_count == 1
         assert metadata.in_troubleshooting_count == 0
         assert metadata.created_at == created_at
@@ -192,6 +195,7 @@ class TestBatchParsers:
             "PENDING",
             5,
             0,
+            0,  # failed_count
             0,
             0,
             datetime.now(),
@@ -213,6 +217,7 @@ class TestBatchParsers:
             "PENDING",
             5,
             0,
+            0,  # failed_count
             0,
             0,
             datetime.now(),
@@ -234,6 +239,7 @@ class TestBatchParsers:
                 status.value,
                 10,
                 0,
+                0,  # failed_count
                 0,
                 0,
                 datetime.now(),
@@ -255,6 +261,7 @@ class TestBatchParsers:
                 "PENDING",
                 5,
                 0,
+                0,  # failed_count
                 0,
                 0,
                 datetime.now(),
@@ -269,6 +276,7 @@ class TestBatchParsers:
                 "COMPLETED",
                 10,
                 10,
+                0,  # failed_count
                 0,
                 0,
                 datetime.now(),
